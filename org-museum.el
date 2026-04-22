@@ -1095,7 +1095,7 @@ Run M-x org-museum-init to configure"))
   (unless (file-directory-p org-museum-root-dir)
     (error "Org Museum [Config]: root-dir does not exist: %s"
            org-museum-root-dir))
-  (dolist (dir (list (org-museum--shared-root) (org-museum--pages-root)))
+  (dolist (dir (list (org-museum--shared-root) (org-museum--scan-root)))
     (condition-case nil
         (make-directory dir t)
       (error
@@ -1176,18 +1176,20 @@ Known limitation: only rewrites extensions: png jpg gif webp svg pdf txt."
       (let* ((target-html (org-museum--export-filename (org-museum-page-path page)))
              (base-dir    (if current-out-file
                               (file-name-directory (expand-file-name current-out-file))
-                            (org-museum--pages-root))))
+                            (org-museum--shared-root))))
         (replace-regexp-in-string "\\\\" "/"
                                   (file-relative-name target-html base-dir)))
     (concat id ".html")))
 
 (defun org-museum--export-filename (org-file)
-  "Return the target HTML path for ORG-FILE."
+  "Return the target HTML path for ORG-FILE.
+The output mirrors the source directory structure under scan-root,
+ensuring org-museum--page-href can correctly compute relative URLs."
   (let* ((scan-root (org-museum--scan-root))
          (rel-dir   (file-relative-name
                      (file-name-directory (expand-file-name org-file))
                      scan-root))
-         (out-root  (org-museum--pages-root))
+         (out-root  (org-museum--scan-root))
          (out-dir   (if (string= rel-dir ".")
                         out-root
                       (expand-file-name rel-dir out-root))))
