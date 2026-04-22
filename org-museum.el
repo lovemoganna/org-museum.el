@@ -147,7 +147,17 @@ Applicable scope: org-museum--on-save (Fix-02).")
   (or org-museum--plugin-dir
       (setq org-museum--plugin-dir
             (if-let ((lib (locate-library "org-museum")))
-                (file-name-directory lib)
+                (let* ((dir (file-name-directory lib))
+                       (css (expand-file-name org-museum-css-file dir)))
+                  (if (file-exists-p css)
+                      dir
+                    (let ((repos (expand-file-name
+                                  (concat "straight/repos/org-museum.el/")
+                                  user-emacs-directory)))
+                      (if (file-exists-p
+                           (expand-file-name org-museum-css-file repos))
+                          repos
+                        dir))))
               default-directory))))
 
 (defun org-museum--shared-root ()
