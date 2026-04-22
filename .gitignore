@@ -1,0 +1,27 @@
+# Build and Export
+exports/
+*.html
+!README.md
+!test.md
+
+# Cache and Index
+.org-museum-index.json
+.org-museum-cache.el
+.wiki-index.json
+*.db
+
+# Emacs backup and lock files
+*~
+\#*\#
+.\#*
+
+# Local config (not committed)
+bak.el
+bak_v2.el
+baks.el
+bakss.el
+load.el
+CLAUD.md
+
+# Misc
+pt.md
