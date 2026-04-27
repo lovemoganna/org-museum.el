@@ -2,7 +2,7 @@
 
 A MECE-refactored static wiki generator based on Org Mode, featuring a Monokai theme, D3.js graph visualization, and Zen writing mode.
 
-**Version:** 2.2.0
+**Version:** 2.3.0
 
 ## Installation
 
@@ -220,6 +220,13 @@ Not:
 Verify that `org-museum-css-file` points to a valid path relative to the plugin directory.
 
 ## Version History
+
+### v2.3.0
+
+- Fix-13: Pre-declare `org-museum--dispatch-transient` to prevent void-variable errors
+- Fix-14: New `org-museum-pages-subdir` for consistent page organization
+- Fix-15: Added `org-museum--pages-base-dir` helper
+- Fix-16: Page creation now correctly follows the normalized category directory structure
 
 ### v2.2.0
 

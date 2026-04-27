@@ -1,13 +1,13 @@
 ;;; org-museum.el --- Org Mode Wiki Generator -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2026
-;; Version: 2.2.0
+;; Version: 2.3.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: wiki, org-mode, hypermedia
 
 ;;; Commentary:
 ;; MECE-refactored static wiki generator based on Org Mode.
-;; v2.2.0 — 12 targeted fixes applied:
+;; v2.3.0 — all prior fixes retained + 4 new changes:
 ;;   Fix-01  §9   Bidirectional linked-from stale removal on third-party edits
 ;;   Fix-02  §29  Debounced on-save via run-with-idle-timer
 ;;   Fix-03  §11  CSS mtime included in needs-export-p
@@ -20,6 +20,12 @@
 ;;   Fix-10  §25  Tubes mousemove listener promoted to module-level named ref
 ;;   Fix-11  §17  update-links-globally handles [[id:...]] links
 ;;   Fix-12  §28  Status report includes stale-exports count
+;;   Fix-13  §29  defvar org-museum--dispatch-transient before with-eval-after-load
+;;                to prevent void-variable error on transient load
+;;   Fix-14  §2   New defcustom org-museum-pages-subdir ("pages")
+;;   Fix-15  §5   New helper org-museum--pages-base-dir
+;;   Fix-16  §17  org-museum-create-page files under pages/<category-dir>/
+;;                with org-museum--category-to-dir normalization + guards
 
 ;;; Code:
 
@@ -76,6 +82,18 @@
 (defcustom org-museum-scan-dir nil
   "Subdirectory to scan for .org files.  nil means entire root."
   :type '(choice (const nil) string)
+  :group 'org-museum)
+
+;; Fix-14: pages base directory — all category subdirs live here.
+(defcustom org-museum-pages-subdir "pages"
+  "Subdirectory under `org-museum-root-dir' where all page files are stored.
+Category subdirectories are created inside this directory by
+`org-museum-create-page'.  Must be consistent with `org-museum-scan-dir'
+when that variable is non-nil.
+Example final layout:
+  <root>/pages/risk-control/aml-detection.org
+  <root>/pages/market/wash-trading.org"
+  :type 'string
   :group 'org-museum)
 
 (defcustom org-museum-index-file ".org-museum-index.json"
@@ -171,6 +189,14 @@ Applicable scope: org-museum--on-save (Fix-02).")
 (defun org-museum--scan-root ()
   "Absolute path to the .org scan root."
   (expand-file-name (or org-museum-scan-dir "") org-museum-root-dir))
+
+;; Fix-15: single source of truth for the pages base directory.
+(defun org-museum--pages-base-dir ()
+  "Absolute path to the pages base directory.
+All category subdirectories created by `org-museum-create-page'
+are rooted here, regardless of `org-museum-scan-dir'.
+Layout: <org-museum-root-dir>/<org-museum-pages-subdir>/"
+  (expand-file-name org-museum-pages-subdir org-museum-root-dir))
 
 (defun org-museum--index-file-path ()
   "Absolute path to the index JSON cache."
@@ -422,16 +448,13 @@ Known limitation: step 5 is O(n) over all pages; scales to ~5000 pages."
                          (copy-sequence (org-museum-page-links-to old-pg))
                        '())))
 
-    ;; 步骤1：清除旧条目
     (when old-id
       (org-museum--index-remove-page old-id old-pg))
 
-    ;; 步骤2：重新解析并注册
     (condition-case err
         (when-let ((new-pg (org-museum--parse-page-metadata file)))
           (org-museum--index-register-page org-museum--index new-pg)
 
-          ;; 步骤3：解析新出链
           (let* ((new-links  (org-museum--extract-links-from-file
                               file (org-museum-index-pages org-museum--index)))
                  (new-id     (org-museum-page-id new-pg))
@@ -440,7 +463,6 @@ Known limitation: step 5 is O(n) over all pages; scales to ~5000 pages."
 
             (setf (org-museum-page-links-to new-pg) new-links)
 
-            ;; 步骤4：精确修复受影响页面的 linked-from
             (dolist (target-id removed)
               (when-let ((target (gethash target-id pages)))
                 (setf (org-museum-page-linked-from target)
@@ -451,15 +473,13 @@ Known limitation: step 5 is O(n) over all pages; scales to ~5000 pages."
                 (cl-pushnew new-id (org-museum-page-linked-from target)
                             :test #'equal)))
 
-            ;; 步骤5 [Fix-01]：全量重建本页的 linked-from，
-            ;; 修正因第三方页面编辑但未经本页更新路径造成的反链残留。
+            ;; Fix-01: full inbound scan to repair stale linked-from
             (org-museum--verify-linked-from-for-page new-id)))
 
       (error
        (message "Org Museum [Index]: incremental update failed for %s: %s"
                 file (error-message-string err))))
 
-    ;; 步骤6：持久化
     (org-museum--index-save org-museum--index
                             (org-museum--index-file-path))))
 
@@ -630,12 +650,10 @@ malformed HTML."
   (with-temp-buffer
     (insert-file-contents out-file)
     (org-museum--pp-remove-inline-styles)
-    ;; Fix-05: gate subsequent steps on successful content wrapping
     (if (not (org-museum--pp-wrap-content-div out-file))
         (progn
           (message "Org Museum [Export]: aborting post-processing for %s \
 (#content div not found)" out-file)
-          ;; Signal to export-all by returning nil — caller checks this
           nil)
       (org-museum--pp-append-nav-and-graph out-file org-file)
       (org-museum--pp-inject-sidebars-and-scripts out-file)
@@ -792,7 +810,6 @@ check org-export output for this file" out-file)
    (org-museum--build-sidebar-injection out-file)
    "</body>\n</html>\n"))
 
-
 ;; ============================================================
 ;; §15  KNOWLEDGE GRAPH EXPORT  [Fix-06]
 ;; ============================================================
@@ -912,32 +929,101 @@ Applicable scope: graph.html generation."
                            nil t)))
 
 ;; ============================================================
-;; §17  PAGE MANAGEMENT  [Fix-11]
+;; §17  PAGE MANAGEMENT  [Fix-11 + Fix-16]
 ;; ============================================================
 
 ;;;###autoload
 (defun org-museum-create-page (title &optional category)
-  "Create a new Org Museum page with TITLE and optional CATEGORY."
+  "Create a new Org Museum page with TITLE filed under a category subdirectory.
+
+Directory layout (always under `org-museum-pages-subdir'):
+  <root>/<pages-subdir>/<category-dir>/<id>.org
+
+Example:
+  org-museum-root-dir     = ~/wiki/
+  org-museum-pages-subdir = \"pages\"  (default)
+  title    = \"AML Detection\"
+  category = \"risk control\"
+  → ~/wiki/pages/risk-control/aml-detection.org
+
+Guards:
+  - Empty title:    signals an error before touching the filesystem
+  - Path collision: refuses if the target .org file already exists
+  - ID collision:   refuses if ID already registered in the index in any
+                    other location, preventing silent link breakage
+
+[Fix-16] Files are now placed under `org-museum--pages-base-dir'/
+<category-dir>/ regardless of `org-museum-scan-dir'."
   (interactive
-   (list (read-string "Page Title: ")
-         (completing-read "Category: "
-                          (when org-museum--index
-                            (hash-table-keys (org-museum-index-categories org-museum--index)))
-                          nil nil)))
-  (let* ((id       (org-museum--title-to-id title))
-         (filepath (expand-file-name
-                    (concat (or org-museum-scan-dir "") id ".org")
-                    org-museum-root-dir)))
-    (when (file-exists-p filepath) (error "Page already exists: %s" filepath))
-    (make-directory (file-name-directory filepath) t)
+   (list
+    ;; ── Arg 1: title ─────────────────────────────────────────────
+    (let ((raw (string-trim (read-string "Page Title: "))))
+      (when (string-empty-p raw)
+        (error "Org Museum [Create]: title must not be empty"))
+      raw)
+    ;; ── Arg 2: category (existing or new, with completion) ───────
+    (let* ((existing (when org-museum--index
+                       (sort (hash-table-keys
+                              (org-museum-index-categories org-museum--index))
+                             #'string<)))
+           (raw (string-trim
+                 (completing-read
+                  "Category (existing or new, default: uncategorized): "
+                  existing nil nil))))
+      (if (string-empty-p raw) "uncategorized" raw))))
+
+  ;; ── Derived path values ───────────────────────────────────────
+  (let* ((id         (org-museum--title-to-id title))
+         (cat        (if (and category
+                              (not (string-empty-p (string-trim category))))
+                         (string-trim category)
+                       "uncategorized"))
+         (cat-dir    (org-museum--category-to-dir cat))
+         ;; Fix-16: always rooted at <root>/pages/, not at scan-root
+         (base-dir   (org-museum--pages-base-dir))
+         (target-dir (expand-file-name cat-dir base-dir))
+         (filepath   (expand-file-name (concat id ".org") target-dir)))
+
+    ;; ── Guard 1: file path collision ─────────────────────────────
+    (when (file-exists-p filepath)
+      (error "Org Museum [Create]: file already exists: %s"
+             (file-relative-name filepath org-museum-root-dir)))
+
+    ;; ── Guard 2: ID collision across all categories ───────────────
+    (when (and org-museum--index
+               (gethash id (org-museum-index-pages org-museum--index)))
+      (error "Org Museum [Create]: ID '%s' already registered in index \
+(possibly a duplicate title in another category)" id))
+
+    ;; ── Create subdirectory + file ────────────────────────────────
+    (make-directory target-dir t)
     (find-file filepath)
-    (insert (format "#+TITLE: %s\n#+WIKI_ID: %s\n#+CATEGORY: %s\n\
-#+WIKI_STATUS: draft\n#+DATE: %s\n#+FILETAGS: :%s:\n\n\
-* %s\n\n** Overview\n\n** Content\n\n** References\n"
-                    title id (or category "uncategorized")
+    (insert (format "\
+#+TITLE:       %s
+#+WIKI_ID:     %s
+#+CATEGORY:    %s
+#+WIKI_STATUS: draft
+#+DATE:        %s
+#+FILETAGS:    :%s:
+
+* %s
+
+** Overview
+
+** Content
+
+** References
+"
+                    title id cat
                     (format-time-string "%Y-%m-%d")
-                    (or category "uncategorized") title))
-    (org-museum-index-build t)))
+                    cat-dir   ; use normalised dir name as tag (no spaces)
+                    title))
+
+    ;; ── Rebuild index + confirm ───────────────────────────────────
+    (org-museum-index-build t)
+    (message "Org Museum [Create]: '%s' → %s"
+             title
+             (file-relative-name filepath org-museum-root-dir))))
 
 ;;;###autoload
 (defun org-museum-rename-page (old-id new-id)
@@ -977,10 +1063,6 @@ Known limitation: does not handle custom_id property links."
 Applicable scope: org-museum-rename-page, on-save ID change detection.
 Known limitation: CUSTOM_ID property links are not rewritten."
   (let ((count 0)
-        (esc   (regexp-quote old-id))
-        ;; Pattern captures the link prefix and the trailing ] or [
-        ;; group 1: prefix (wiki|museum|id)
-        ;; group 2: trailing delimiter
         (pattern (format "\\[\\[\\(wiki\\|museum\\|id\\):%s\\(\\]\\|\\[\\)"
                          (regexp-quote old-id))))
     (dolist (file (directory-files-recursively (org-museum--scan-root) "\\.org$"))
@@ -996,7 +1078,7 @@ Known limitation: CUSTOM_ID property links are not rewritten."
             (cl-incf count)))))
     count))
 
-;; ── D-1  LINK CHECKER ────────────────────────────────────────
+;; ── LINK CHECKER ─────────────────────────────────────────────
 
 (defun org-museum-check-links ()
   "Scan all wiki links and report their validity.
@@ -1082,9 +1164,8 @@ Known limitation: only scans wiki:/museum:/id:/file: link types."
          (maxlen (max 1 (max (length set-a) (length set-b)))))
     (/ (float common) maxlen)))
 
-
 ;; ============================================================
-;; §18  UTILITY / HELPER FUNCTIONS  [Fix-04]
+;; §18  UTILITY / HELPER FUNCTIONS  [Fix-04 + Fix-16]
 ;; ============================================================
 
 (defun org-museum--file-in-project-p (file)
@@ -1175,7 +1256,6 @@ Known limitation: only rewrites extensions: png jpg gif webp svg pdf txt."
                                             (file-name-directory
                                              (buffer-file-name buf))))
              (rel-to-out  (org-museum--relative-path full-asset out-file)))
-        ;; Only rewrite if the resolved path differs from the original
         (unless (string= asset-path rel-to-out)
           (replace-match
            (format "[[file:%s]" rel-to-out) t t nil 0))))))
@@ -1231,6 +1311,25 @@ ensuring org-museum--page-href can correctly compute relative URLs."
   (downcase
    (replace-regexp-in-string "[^a-z0-9\u4e00-\u9fff]+" "-" (string-trim title))))
 
+;; Fix-16: category name → filesystem-safe directory name.
+(defun org-museum--category-to-dir (category)
+  "Convert CATEGORY to a filesystem-safe subdirectory name.
+Rules applied in order:
+  1. Trim surrounding whitespace
+  2. Collapse runs of non-alphanumeric, non-CJK chars to a single hyphen
+  3. Strip any leading or trailing hyphens
+  4. Lowercase the result
+CJK characters (\\u4e00–\\u9fff) are preserved as-is.
+Applicable scope: org-museum-create-page (Fix-16)."
+  (downcase
+   (replace-regexp-in-string
+    "-+$" ""
+    (replace-regexp-in-string
+     "^-+" ""
+     (replace-regexp-in-string
+      "[^a-z0-9\u4e00-\u9fff]+" "-"
+      (string-trim (or category "uncategorized")))))))
+
 (defun org-museum--file-mtime (file)
   "Return modification time of FILE as a float."
   (float-time (file-attribute-modification-time (file-attributes file))))
@@ -1259,9 +1358,6 @@ ensuring org-museum--page-href can correctly compute relative URLs."
                  (setq result page)))
              pages-table)
     result))
-;;; org-museum-part2.el — §19–§27: Sidebar / Graph / Scripts
-;;; This file is segment 2 of 3 of the full org-museum.el rewrite.
-;;; Paste after Part 1, before Part 3.
 
 ;; ============================================================
 ;; §19  SIDEBAR INJECTION
@@ -1405,7 +1501,6 @@ Known limitation: category coloring ignores :node-color and :center-color."
          (nav      (if (plist-get config :nav-on-click)       "true" "false"))
          (labels   (if (plist-get config :show-labels)        "true" "false"))
          (use-cat  (if (plist-get config :use-category-color) "true" "false"))
-         ;; Fix-07: arrow marker support
          (arrows   (if (plist-get config :link-arrow)         "true" "false"))
          (palette  (json-encode org-museum--graph-palette)))
     (format "
@@ -1419,7 +1514,6 @@ Known limitation: category coloring ignores :node-color and :center-color."
   var W=el.clientWidth||400,H=%d;
   var svg=d3.select('#%s').append('svg')
     .attr('width','100%%%%').attr('height',H).attr('viewBox','0 0 '+W+' '+H);
-  /* [Fix-07] arrow marker definition */
   if(%s){
     svg.append('defs').append('marker')
       .attr('id','arrow-%s').attr('viewBox','0 -4 8 8')
@@ -1475,7 +1569,6 @@ Known limitation: _overflow node always links to graph.html root, not
          (all-nbrs   (cl-union (org-museum-page-links-to page)
                                (org-museum-page-linked-from page)
                                :test #'equal))
-         ;; Sort by descending degree so high-value neighbours survive capping
          (sorted-nbrs
           (sort (copy-sequence all-nbrs)
                 (lambda (a b)
@@ -1501,7 +1594,6 @@ Known limitation: _overflow node always links to graph.html root, not
         (if (member nid (org-museum-page-links-to page))
             (push `((source . ,center-id) (target . ,nid)) links)
           (push `((source . ,nid) (target . ,center-id)) links))))
-    ;; Fix-08: add overflow virtual node when neighbours were truncated
     (when (> overflow 0)
       (let* ((graph-url (org-museum--relative-path
                          (expand-file-name "graph.html" (org-museum--shared-root))
@@ -1597,7 +1689,6 @@ in large-tier graphs."
     var nodes=raw.nodes.map(function(d){return Object.assign({},d);});
     var links=raw.links.map(function(d){return Object.assign({},d);});
 
-    /* ── 性能分级元数据 (E-1 + Fix-06) ── */
     var meta=raw.meta||{};
     var charge     = meta.charge      || -200;
     var alphaDecay = meta['alpha-decay'] || 0.0228;
@@ -1619,7 +1710,6 @@ in large-tier graphs."
     var cvs=document.getElementById('graph-canvas'),W=cvs.clientWidth,H=cvs.clientHeight;
     var svg=d3.select('#graph-canvas').append('svg').attr('width',W).attr('height',H);
 
-    /* ── Fix-06: arrow defs for global graph ── */
     svg.append('defs').append('marker')
       .attr('id','arrow-global').attr('viewBox','0 -4 8 8')
       .attr('refX',22).attr('refY',0)
@@ -1640,7 +1730,6 @@ in large-tier graphs."
       .force('center',d3.forceCenter(W/2,H/2))
       .force('collide',d3.forceCollide().radius(function(d){return nR(d)+8;}));
 
-    /* ── Fix-06: silent pre-heat — run N ticks before DOM binding ── */
     if(preTicks>0){
       sim.stop();
       for(var pt=0;pt<preTicks;pt++){sim.tick();}
@@ -1666,24 +1755,20 @@ in large-tier graphs."
       .text(function(d){return d.name;}).attr('fill','#f8f8f2')
       .style('font-size','11px').style('font-family','var(--font-sans)');
 
-    /* ── Tick 处理（含 tick limit）── */
     var tickCount=0;
     function tickRender(){
       lSel.attr('x1',function(d){return d.source.x;}).attr('y1',function(d){return d.source.y;})
           .attr('x2',function(d){return d.target.x;}).attr('y2',function(d){return d.target.y;});
       nSel.attr('transform',function(d){return 'translate('+d.x+','+d.y+')';});
     }
-    /* If pre-heat ran, render initial positions immediately */
     if(preTicks>0){tickRender();}
     sim.on('tick',function(){
       tickCount++;
       tickRender();
       if(tickLimit&&tickCount>=tickLimit)sim.stop();
     });
-    /* Restart sim after pre-heat */
     if(preTicks>0){sim.alpha(0.3).restart();}
 
-    /* ── 邻接表（hover 高亮）── */
     var adj={};
     nodes.forEach(function(n){adj[n.id]=new Set();});
     links.forEach(function(l){
@@ -1712,7 +1797,6 @@ in large-tier graphs."
       tt.style.visibility='hidden';
     }).on('click',function(e,d){window.location.href=d.url||(d.id+'.html');});
 
-    /* ── 控件 ── */
     var fz=false;
     document.getElementById('btn-reset').addEventListener('click',function(){
       svg.transition().duration(600).call(zm.transform,d3.zoomIdentity);});
@@ -1793,9 +1877,6 @@ function initScrollSpy(){
     });
   });
 
-  /* [Fix-09] Use IntersectionObserver with the scroll container as root.
-     This sidesteps the offsetTop vs scrollTop coordinate-system mismatch
-     that caused highlights to freeze on the first heading. */
   var activeId=null;
   var observer=new IntersectionObserver(function(entries){
     entries.forEach(function(entry){
@@ -1999,7 +2080,6 @@ window.addEventListener('load',function(){
    org-museum--hljs-css-cdn
    org-museum--hljs-js-cdn))
 
-
 ;; ============================================================
 ;; §25  SCRIPT: BACKGROUND EFFECTS  [Fix-10]
 ;; ============================================================
@@ -2108,8 +2188,6 @@ function startTubes(){
     ctx.globalAlpha=1.0;ctx.shadowBlur=0;ctx.stroke();
     aid=requestAnimationFrame(draw);
   }draw();
-  /* [Fix-10] tc.destroy is now redundant for listener cleanup (stp handles it),
-     but retained for any future per-effect teardown needs. */
   tc={destroy:function(){}};
 }
 
@@ -2198,9 +2276,6 @@ if(document.readyState==='loading')
 else init();
 })();
 </script>")
-;;; org-museum-part3.el — §28–§29: Status / Verify / Minor Mode
-;;; This file is segment 3 of 3 of the full org-museum.el rewrite.
-;;; Paste after Part 2. The final (provide 'org-museum) is here.
 
 ;; ============================================================
 ;; §28  STATUS & INTERACTIVE COMMANDS  [Fix-12]
@@ -2265,18 +2340,15 @@ Known limitation: does not re-parse file content; metadata may be stale."
          (ghost   (plist-get health :ghost))
          (broken  (plist-get health :broken))
          (repairs 0))
-    ;; 修复1：移除 Ghost Pages
     (dolist (id ghost)
       (when-let ((pg (gethash id pages)))
         (org-museum--index-remove-page id pg)
         (cl-incf repairs)))
-    ;; 修复2：移除 Broken 出链
     (dolist (pair broken)
       (when-let ((pg (gethash (car pair) pages)))
         (setf (org-museum-page-links-to pg)
               (delete (cdr pair) (org-museum-page-links-to pg)))
         (cl-incf repairs)))
-    ;; 修复3：全量重建 linked-from
     (maphash (lambda (_id pg)
                (setf (org-museum-page-linked-from pg) nil))
              pages)
@@ -2286,7 +2358,6 @@ Known limitation: does not re-parse file content; metadata may be stale."
                    (cl-pushnew id (org-museum-page-linked-from target)
                                :test #'equal))))
              pages)
-    ;; 持久化
     (org-museum--index-save org-museum--index (org-museum--index-file-path))
     (message "Org Museum [Index]: verify complete — %d repair(s). \
 Ghost: %d, Broken links: %d"
@@ -2302,7 +2373,6 @@ isolated pages, quick action links.
   (org-museum--guard-init)
   (let* ((pages  (org-museum-index-pages org-museum--index))
          (health (org-museum--index-health-report pages))
-         ;; Fix-12: compute stale count
          (stale  (org-museum--count-stale-pages)))
     (with-current-buffer (get-buffer-create "*Org Museum Status*")
       (erase-buffer) (org-mode)
@@ -2311,6 +2381,7 @@ isolated pages, quick action links.
 
       (insert "* Configuration\n\n")
       (insert (format "- Root Dir:    =%s=\n" org-museum-root-dir))
+      (insert (format "- Pages Dir:   =%s=\n" (org-museum--pages-base-dir)))
       (insert (format "- CSS Source:  =%s= %s\n"
                       (org-museum--css-source-path)
                       (if (file-exists-p (org-museum--css-source-path)) "✓" "✗ MISSING")))
@@ -2337,7 +2408,6 @@ isolated pages, quick action links.
                       (length (plist-get health :isolated))))
       (insert (format "- Draft Pages:    %d\n"
                       (length (plist-get health :draft))))
-      ;; Fix-12: stale exports line
       (insert (format "- Stale Exports:  %d  %s\n"
                       stale
                       (if (> stale 0)
@@ -2376,14 +2446,15 @@ isolated pages, quick action links.
   "Initialise an Org Museum workspace at ROOT-DIR."
   (interactive "DSelect Org Museum Root: ")
   (setq org-museum-root-dir (expand-file-name root-dir))
-  (dolist (dir '("pages" "themes" "exports/html" "exports/html/resources"))
+  (dolist (dir (list "pages" "themes" "exports/html" "exports/html/resources"
+                     org-museum-pages-subdir))
     (make-directory (expand-file-name dir org-museum-root-dir) t))
   (org-museum--ensure-css-deployed)
   (org-museum-index-build t)
   (message "Org Museum initialised: %s" org-museum-root-dir))
 
 ;; ============================================================
-;; §29  MINOR MODE  [Fix-02 debounce]
+;; §29  MINOR MODE  [Fix-02 debounce + Fix-13 defvar]
 ;; ============================================================
 
 (defun org-museum--dispatch-status-string ()
@@ -2424,6 +2495,13 @@ Applicable scope: daily editing workflow, discoverability."
   (if (fboundp 'transient-define-prefix)
       (org-museum--dispatch-transient)
     (org-museum--dispatch-minibuffer)))
+
+;; Fix-13: pre-declare the variable so transient's macro expansion does not
+;; raise void-variable when transient is loaded by a third-party package
+;; (e.g. dirvish) before org-museum-dispatch is first called.
+(defvar org-museum--dispatch-transient nil
+  "Transient prefix command for the Org Museum dispatch panel.
+Defined by `transient-define-prefix' inside `with-eval-after-load'.")
 
 (with-eval-after-load 'transient
   (transient-define-prefix org-museum--dispatch-transient ()
@@ -2494,7 +2572,6 @@ Known limitation: timer is per-buffer; simultaneous saves of different
              (buffer-file-name)
              (org-museum--file-in-project-p (buffer-file-name))
              (string-suffix-p ".org" (buffer-file-name)))
-    ;; Fix-02: cancel any pending timer before scheduling a new one
     (when (timerp org-museum--save-timer)
       (cancel-timer org-museum--save-timer)
       (setq org-museum--save-timer nil))
