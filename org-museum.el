@@ -2496,34 +2496,39 @@ Applicable scope: daily editing workflow, discoverability."
       (org-museum--dispatch-transient)
     (org-museum--dispatch-minibuffer)))
 
-;; Fix-13: pre-declare the variable so transient's macro expansion does not
-;; raise void-variable when transient is loaded by a third-party package
-;; (e.g. dirvish) before org-museum-dispatch is first called.
-(defvar org-museum--dispatch-transient nil
-  "Transient prefix command for the Org Museum dispatch panel.
-Defined by `transient-define-prefix' inside `with-eval-after-load'.")
+;; Fix-13 (revised): transient-define-prefix is a macro; when byte-compiled
+;; without transient present the compiler cannot expand it and treats it as a
+;; plain function, producing (invalid-function transient-define-prefix) at
+;; runtime.  Wrapping the call in (eval '(...) t) defers macro expansion to
+;; runtime, after transient has been loaded.  declare-function tells the
+;; byte-compiler the symbol will become a function, suppressing "not known to
+;; be defined" warnings without creating a defvar that shadows the function
+;; cell.
+(declare-function org-museum--dispatch-transient "org-museum")
 
 (with-eval-after-load 'transient
-  (transient-define-prefix org-museum--dispatch-transient ()
-    "Org Museum Command Panel."
-    [:description
-     (lambda () (format "Org Museum — %s"
-                        (org-museum--dispatch-status-string)))
-     ["Pages"
-      ("n" "Create Page"      org-museum-create-page)
-      ("r" "Rename Page"      org-museum-rename-page)
-      ("f" "Complete Link"    org-museum-link-complete)]
-     ["Export"
-      ("e" "Export This Page" org-museum-export-page)
-      ("E" "Export All"       org-museum-export-all)
-      ("g" "Export Graph"     org-museum-export-graph)]
-     ["Index"
-      ("i" "Rebuild Index"    org-museum-index-build)
-      ("v" "Verify & Repair"  org-museum-index-verify)
-      ("l" "Check Links"      org-museum-check-links)]
-     ["Workspace"
-      ("s" "Status Report"    org-museum-status)
-      ("I" "Init Workspace"   org-museum-init)]]))
+  (eval
+   '(transient-define-prefix org-museum--dispatch-transient ()
+      "Org Museum Command Panel."
+      [:description
+       (lambda () (format "Org Museum — %s"
+                          (org-museum--dispatch-status-string)))
+       ["Pages"
+        ("n" "Create Page"      org-museum-create-page)
+        ("r" "Rename Page"      org-museum-rename-page)
+        ("f" "Complete Link"    org-museum-link-complete)]
+       ["Export"
+        ("e" "Export This Page" org-museum-export-page)
+        ("E" "Export All"       org-museum-export-all)
+        ("g" "Export Graph"     org-museum-export-graph)]
+       ["Index"
+        ("i" "Rebuild Index"    org-museum-index-build)
+        ("v" "Verify & Repair"  org-museum-index-verify)
+        ("l" "Check Links"      org-museum-check-links)]
+       ["Workspace"
+        ("s" "Status Report"    org-museum-status)
+        ("I" "Init Workspace"   org-museum-init)]])
+   t))
 
 (defvar org-museum-mode-map
   (let ((map (make-sparse-keymap)))
