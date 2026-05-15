@@ -34,6 +34,7 @@
 (require 'ox-publish)
 (require 'cl-lib)
 (require 'json)
+(require 'subr-x)
 
 ;; ============================================================
 ;; §1  CONSTANTS
@@ -118,6 +119,38 @@ Applicable scope: org-museum--generate-local-graph-data (Fix-08)."
   :type 'integer
   :group 'org-museum)
 
+(defcustom org-museum-graph-exclude-tags '("no-graph" "incremental-watch" "plugin-watch")
+  "List of tag strings to exclude from the exported global graph.
+
+This is the primary noise-control lever for Org Museum's graph.html.
+Any page whose FILETAGS contains one of these tags will be omitted from:
+- nodes list
+- links list (links touching excluded nodes are removed)
+
+Recommended usage:
+- Add :no-graph: to low-value / one-off / dashboard pages you still want to
+  keep as HTML pages but do not want to surface in the graph.
+- Keep periodic watch dashboards (e.g. :incremental-watch: / :plugin-watch:)
+  out of the graph by default, so concept nodes and MOCs remain readable."
+  :type '(repeat string)
+  :group 'org-museum)
+
+(defcustom org-museum-graph-exclude-orphans t
+  "When non-nil, exclude orphan nodes (degree == 0) from the global graph.
+
+Orphans are typically low-context pages that are not linked from or to any
+other page, which adds noise and dilutes meaningful clusters."
+  :type 'boolean
+  :group 'org-museum)
+
+(defcustom org-museum-graph-exclude-id-regexp nil
+  "Optional regexp; when non-nil, exclude pages whose ID matches it.
+
+This is a secondary filter useful for excluding systematic one-off pages
+when tags are not reliable yet."
+  :type '(choice (const nil) regexp)
+  :group 'org-museum)
+
 (defcustom org-museum-save-debounce-seconds 0.5
   "Idle seconds to wait before flushing the index after a save.
 Applicable scope: org-museum--on-save debounce (Fix-02).
@@ -125,6 +158,21 @@ Known limitation: timer is per-buffer; rapid cross-buffer saves
 still trigger multiple flushes."
   :type 'number
   :group 'org-museum)
+
+;; ============================================================
+;; Graph noise control helpers
+;; ============================================================
+
+(defun org-museum--graph-page-excluded-p (id page)
+  "Return non-nil if PAGE (with ID) should be excluded from global graph."
+  (let* ((tags (org-museum-page-tags page))
+         (has-excluded-tag
+          (and org-museum-graph-exclude-tags
+               (cl-some (lambda (tag) (member tag org-museum-graph-exclude-tags)) tags)))
+         (id-matches
+          (and org-museum-graph-exclude-id-regexp
+               (string-match-p org-museum-graph-exclude-id-regexp id))))
+    (or has-excluded-tag id-matches)))
 
 ;; ============================================================
 ;; §3  INTERNAL STATE
@@ -178,10 +226,32 @@ Applicable scope: org-museum--on-save (Fix-02).")
                         dir))))
               default-directory))))
 
+(defun org-museum--d3-resource-path ()
+  "Absolute path to the bundled D3.js file under shared export resources."
+  (expand-file-name "resources/d3.v7.min.js" (org-museum--shared-root)))
+
+(defun org-museum--ensure-d3-deployed ()
+  "Ensure D3.js is available locally under shared export resources."
+  (let ((dest (org-museum--d3-resource-path)))
+    (unless (file-exists-p dest)
+      (require 'url)
+      (make-directory (file-name-directory dest) t)
+      (condition-case err
+          (url-copy-file org-museum--d3-cdn dest t)
+        (error
+         (message "Org Museum [Export]: failed to fetch D3.js: %s" (error-message-string err)))))
+    dest))
+
+(defun org-museum--d3-js-src (out-file)
+  "Return a URL (usually relative) to D3.js suitable for OUT-FILE HTML."
+  (let ((local (org-museum--ensure-d3-deployed)))
+    (if (and out-file local (file-exists-p local))
+        (org-museum--relative-path local out-file)
+      org-museum--d3-cdn)))
+
 (defun org-museum--shared-root ()
   "Absolute path to shared export root."
   (expand-file-name org-museum-shared-export-dir org-museum-root-dir))
-
 (defun org-museum--pages-root ()
   "Absolute path to per-page export root."
   (expand-file-name org-museum-export-dir org-museum-root-dir))
@@ -331,29 +401,38 @@ With prefix FORCE, always rebuild from scratch."
    (org-museum-index-pages index)))
 
 (defun org-museum--extract-links-from-file (file pages-table)
-  "Return list of page IDs linked from FILE (wiki:, museum:, id:, file: links)."
+  "Return canonical page IDs linked from FILE.
+Recognises wiki:, museum:, id:, and file: links.  Org-roam id links are
+resolved through every page's :ID: properties, so [[id:UUID][Title]] links
+connect to the exported Org Museum page even when the page ID is a slug or
+WIKI_ID rather than the Org-roam UUID."
   (with-temp-buffer
     (insert-file-contents file)
     (let ((links '())
-          (dir   (file-name-directory file)))
+          (dir   (file-name-directory file))
+          (aliases (org-museum--build-page-id-aliases pages-table)))
       (goto-char (point-min))
-      (while (re-search-forward "\\[\\[\\(?:wiki\\|museum\\):\\([^]]+\\)\\]" nil t)
-        (let ((id (match-string 1)))
-          (when (gethash id pages-table)
-            (cl-pushnew id links :test #'equal))))
+      (while (re-search-forward
+              "\\[\\[\\(?:wiki\\|museum\\):\\([^]\n]+\\)\\]\\(?:\\[[^]]*\\]\\)?\\]" nil t)
+        (when-let ((id (org-museum--resolve-page-link-id
+                        (match-string 1) pages-table aliases)))
+          (cl-pushnew id links :test #'equal)))
       (goto-char (point-min))
-      (while (re-search-forward "\\[\\[id:\\([^]]+\\)\\]" nil t)
-        (let ((id (match-string 1)))
-          (when (gethash id pages-table)
-            (cl-pushnew id links :test #'equal))))
+      (while (re-search-forward
+              "\\[\\[id:\\([^]\n]+\\)\\]\\(?:\\[[^]]*\\]\\)?\\]" nil t)
+        (when-let ((id (org-museum--resolve-page-link-id
+                        (match-string 1) pages-table aliases)))
+          (cl-pushnew id links :test #'equal)))
       (goto-char (point-min))
-      (while (re-search-forward "\\[\\[file:\\([^]]+\\.org\\)" nil t)
+      (while (re-search-forward
+              "\\[\\[file:\\([^]\n]+\\.org\\)\\]\\(?:\\[[^]]*\\]\\)?\\]" nil t)
         (let* ((target-file (expand-file-name (match-string 1) dir))
                (target-page (org-museum--find-page-by-path target-file pages-table)))
           (when target-page
             (cl-pushnew (org-museum-page-id target-page) links :test #'equal))))
+      (dolist (id (org-museum--org-roam-db-linked-page-ids file pages-table aliases))
+        (cl-pushnew id links :test #'equal))
       links)))
-
 ;; ============================================================
 ;; §8  INDEX FRESHNESS
 ;; ============================================================
@@ -574,8 +653,8 @@ When AS-LIST is non-nil, coerce vectors to lists."
     (if (and (not force) (not (org-museum--needs-export-p file out-file)))
         (message "Skipping unchanged page: %s" (file-name-nondirectory file))
       (make-directory (file-name-directory out-file) t)
-      (org-museum--export-with-theme file out-file))))
-
+      (org-museum--export-with-theme file out-file))
+    (org-museum--delete-legacy-source-html file out-file)))
 ;; Fix-03: CSS mtime now included in staleness check.
 (defun org-museum--needs-export-p (org-file html-file)
   "Return non-nil when ORG-FILE or the deployed CSS is newer than HTML-FILE.
@@ -591,6 +670,72 @@ Known limitation: does not track transitive template dependencies."
         (and (file-exists-p css-out)
              (> (org-museum--file-mtime css-out)
                 (org-museum--file-mtime html-file))))))
+
+(defconst org-museum--cjk-emphasis-before-chars
+  '(#x3001 #x3002 #xff0c #xff1b #xff1a #xff01 #xff1f
+    #xff09 #x3011 #x300b #x300d #x300f)
+  "CJK punctuation that can appear before Org inline markup during export.")
+
+(defconst org-museum--cjk-emphasis-after-chars
+  '(#x3001 #x3002 #xff0c #xff1b #xff1a #xff01 #xff1f
+    #xff09 #x3011 #x300b #x300d #x300f)
+  "CJK punctuation that can appear after Org inline markup during export.")
+
+(defun org-museum--parse-generic-emphasis-cjk (mark type)
+  "Parse Org emphasis like `org-element--parse-generic-emphasis', with CJK punctuation.
+
+Org's built-in parser only accepts ASCII punctuation around inline markup.
+This makes tokens such as =ox-skills= followed by CJK punctuation stay plain
+text.  Org Museum uses this parser only while exporting, so source buffers and
+user Org settings remain untouched."
+  (save-excursion
+    (let ((origin (point)))
+      (unless (bolp) (forward-char -1))
+      (let ((opening-re
+             (rx-to-string
+              `(seq (or line-start
+                        (any space ?- ?\( ?' ?\" ?\{
+                             ,@org-museum--cjk-emphasis-before-chars))
+                    ,mark
+                    (not space)))))
+        (when (looking-at-p opening-re)
+          (goto-char (1+ origin))
+          (let ((closing-re
+                 (rx-to-string
+                  `(seq
+                    (not space)
+                    (group ,mark)
+                    (or (any space ?- ?. ?, ?\; ?: ?! ?? ?' ?\" ?\) ?\}
+                             ?\\ ?\[
+                             ,@org-museum--cjk-emphasis-after-chars)
+                        line-end)))))
+            (when (re-search-forward closing-re nil t)
+              (let ((closing (match-end 1)))
+                (goto-char closing)
+                (let* ((post-blank (skip-chars-forward " \t"))
+                       (contents-begin (1+ origin))
+                       (contents-end (1- closing)))
+                  (org-element-create
+                   type
+                   (append
+                    (list :begin origin
+                          :end (point)
+                          :post-blank post-blank)
+                    (if (memq type '(code verbatim))
+                        (list :value
+                              (org-element-deferred-create
+                               t #'org-element--substring
+                               (- contents-begin origin)
+                               (- contents-end origin)))
+                      (list :contents-begin contents-begin
+                            :contents-end contents-end)))))))))))))
+
+(defmacro org-museum--with-cjk-emphasis-export (&rest body)
+  "Evaluate BODY with CJK punctuation accepted around Org inline markup."
+  (declare (indent 0) (debug t))
+  `(cl-letf (((symbol-function 'org-element--parse-generic-emphasis)
+              #'org-museum--parse-generic-emphasis-cjk))
+     ,@body))
 
 (defun org-museum--export-with-theme (org-file out-file)
   "Export ORG-FILE to OUT-FILE with CSS, link-rewriting, and post-processing."
@@ -617,8 +762,10 @@ Known limitation: does not track transitive template dependencies."
                         (org-export-with-broken-links        'mark)
                         (org-export-with-drawers             nil)
                         (org-export-with-properties          nil)
+                        (org-export-with-sub-superscripts    nil)
                         (coding-system-for-write             'utf-8))
-                    (org-export-to-file 'html out-file)))
+                    (org-museum--with-cjk-emphasis-export
+                      (org-export-to-file 'html out-file))))
               (when (buffer-live-p export-buf) (kill-buffer export-buf))))
           (when (file-exists-p out-file)
             (org-museum--postprocess-html out-file org-file)))
@@ -694,7 +841,7 @@ check org-export output for this file" out-file)
          (nav-html  (when (or links backs)
                       (org-museum--build-nav-html links backs out-file)))
          (graph-html (when page
-                       (org-museum--generate-local-graph-html page)))
+                       (org-museum--generate-local-graph-html page out-file)))
          (appended  (concat (or nav-html "") (or graph-html ""))))
     (goto-char (point-max))
     (cond
@@ -845,10 +992,11 @@ Applicable scope: graph.html generation."
          (graph-html  (expand-file-name "graph.html" shared-root))
          (css-href    (org-museum--relative-path
                        (org-museum--css-output-path) graph-html))
-         (data-json   (org-museum--generate-graph-json)))
+         (data-json   (org-museum--generate-graph-json))
+         (d3-src      (org-museum--d3-js-src graph-html)))
     (make-directory shared-root t)
     (with-temp-file graph-html
-      (insert (org-museum--build-graph-html data-json css-href)))
+      (insert (org-museum--build-graph-html data-json css-href d3-src)))
     (unless silent
       (browse-url (concat "file:///" (replace-regexp-in-string "\\\\" "/" graph-html)))
       (message "Graph generated: %s" graph-html))
@@ -857,24 +1005,56 @@ Applicable scope: graph.html generation."
 (defun org-museum--generate-graph-json ()
   "Return JSON string of all nodes and links, with performance tier metadata.
 [Fix-06] Includes pre-ticks in meta for large/medium tiers."
-  (let ((nodes '()) (links '()) (degree (make-hash-table :test 'equal)))
+  (let* ((pages    (org-museum-index-pages org-museum--index))
+         (nodes    '())
+         (links    '())
+         (degree   (make-hash-table :test 'equal))
+         (excluded (make-hash-table :test 'equal)))
+    ;; Phase 1: exclude-by-tag / exclude-by-id-regexp
     (maphash
      (lambda (id page)
-       (dolist (target (org-museum-page-links-to page))
-         (cl-incf (gethash id     degree 0))
-         (cl-incf (gethash target degree 0))
-         (push `((source . ,id) (target . ,target) (value . 1)) links)))
-     (org-museum-index-pages org-museum--index))
+       (when (org-museum--graph-page-excluded-p id page)
+         (puthash id t excluded)))
+     pages)
+    ;; Phase 2: build links and degrees, skipping excluded endpoints
     (maphash
      (lambda (id page)
-       (push `((id     . ,id)
-               (name   . ,(org-museum-page-title page))
-               (group  . ,(org-museum-page-category page))
-               (tags   . ,(vconcat (org-museum-page-tags page)))
-               (degree . ,(gethash id degree 0))
-               (url    . ,(org-museum--page-href id nil)))
-             nodes))
-     (org-museum-index-pages org-museum--index))
+       (unless (gethash id excluded)
+         (dolist (target (org-museum-page-links-to page))
+           (unless (gethash target excluded)
+             (cl-incf (gethash id     degree 0))
+             (cl-incf (gethash target degree 0))
+             (push `((source . ,id) (target . ,target) (value . 1)) links)))))
+     pages)
+    ;; Phase 3: optionally exclude orphans after filtering links, but never
+    ;; collapse the whole graph to an empty canvas.
+    (when org-museum-graph-exclude-orphans
+      (let ((has-linked-node nil))
+        (maphash
+         (lambda (id _page)
+           (when (and (not (gethash id excluded))
+                      (> (gethash id degree 0) 0))
+             (setq has-linked-node t)))
+         pages)
+        (when has-linked-node
+          (maphash
+           (lambda (id _page)
+             (when (and (not (gethash id excluded))
+                        (= (gethash id degree 0) 0))
+               (puthash id t excluded)))
+           pages))))
+    ;; Phase 4: build nodes list from remaining pages
+    (maphash
+     (lambda (id page)
+       (unless (gethash id excluded)
+         (push `((id     . ,id)
+                 (name   . ,(org-museum-page-title page))
+                 (group  . ,(org-museum-page-category page))
+                 (tags   . ,(vconcat (org-museum-page-tags page)))
+                 (degree . ,(gethash id degree 0))
+                 (url    . ,(org-museum--page-href id nil)))
+               nodes)))
+     pages)
     (let* ((n-count   (length nodes))
            (tier      (org-museum--graph-performance-tier n-count))
            (pre-ticks (plist-get tier :pre-ticks)))
@@ -1083,15 +1263,16 @@ Known limitation: CUSTOM_ID property links are not rewritten."
 (defun org-museum-check-links ()
   "Scan all wiki links and report their validity.
 Categories:
-  Valid    — target page exists in index
-  Missing  — target ID not in index (similarity suggestions provided)
-  Absolute — file: links with absolute paths (portability risk)
+  Valid    - target page exists in index
+  Missing  - target ID not in index (similarity suggestions provided)
+  Absolute - file: links with absolute paths (portability risk)
 Applicable scope: pre-publish review, CI validation.
 Known limitation: only scans wiki:/museum:/id:/file: link types."
   (interactive)
   (org-museum--guard-init)
-  (let ((pages (org-museum-index-pages org-museum--index))
-        valid-links missing-links absolute-links)
+  (let* ((pages (org-museum-index-pages org-museum--index))
+         (aliases (org-museum--build-page-id-aliases pages))
+         valid-links missing-links absolute-links)
     (maphash
      (lambda (_id page)
        (let ((file (org-museum-page-path page)))
@@ -1100,15 +1281,16 @@ Known limitation: only scans wiki:/museum:/id:/file: link types."
              (insert-file-contents file)
              (goto-char (point-min))
              (while (re-search-forward
-                     "\\[\\[\\(?:wiki\\|museum\\):\\([^]]+\\)\\]" nil t)
-               (let ((target (match-string 1)))
-                 (if (gethash target pages)
+                     "\\[\\[\\(?:wiki\\|museum\\|id\\):\\([^]\n]+\\)\\]\\(?:\\[[^]]*\\]\\)?\\]" nil t)
+               (let* ((raw-target (match-string 1))
+                      (target (org-museum--resolve-page-link-id raw-target pages aliases)))
+                 (if target
                      (push (list :from (org-museum-page-id page)
                                  :to target) valid-links)
                    (push (list :from (org-museum-page-id page)
-                               :to target
+                               :to raw-target
                                :suggestions
-                               (org-museum--suggest-similar-ids target pages))
+                               (org-museum--suggest-similar-ids raw-target pages))
                          missing-links))))
              (goto-char (point-min))
              (while (re-search-forward "\\[\\[file:\\([^]]+\\)\\]" nil t)
@@ -1128,7 +1310,7 @@ Known limitation: only scans wiki:/museum:/id:/file: link types."
       (when missing-links
         (insert "* Missing Link Targets\n\n")
         (dolist (item missing-links)
-          (insert (format "- [[museum:%s][%s]] → ==%s== not found\n"
+          (insert (format "- [[museum:%s][%s]] -> ==%s== not found\n"
                           (plist-get item :from)
                           (plist-get item :from)
                           (plist-get item :to)))
@@ -1139,14 +1321,13 @@ Known limitation: only scans wiki:/museum:/id:/file: link types."
       (when absolute-links
         (insert "\n* Absolute file: Links (Portability Risk)\n\n")
         (dolist (item absolute-links)
-          (insert (format "- [[museum:%s][%s]] → =%s=\n"
+          (insert (format "- [[museum:%s][%s]] -> =%s=\n"
                           (plist-get item :from)
                           (plist-get item :from)
                           (plist-get item :path)))))
       (display-buffer (current-buffer)))
     (message "Org Museum [Links]: %d valid, %d missing, %d absolute"
              (length valid-links) (length missing-links) (length absolute-links))))
-
 (defun org-museum--suggest-similar-ids (target pages)
   "Return up to 3 existing page IDs most similar to TARGET string."
   (let* ((all-ids (hash-table-keys pages))
@@ -1260,6 +1441,24 @@ Known limitation: only rewrites extensions: png jpg gif webp svg pdf txt."
           (replace-match
            (format "[[file:%s]" rel-to-out) t t nil 0))))))
 
+(defun org-museum--generated-html-file-p (file)
+  "Return non-nil when FILE looks like an Org Museum generated HTML file."
+  (and (file-exists-p file)
+       (with-temp-buffer
+         (insert-file-contents file)
+         (goto-char (point-min))
+         (re-search-forward
+          "org-museum-sidebar\\|local-graph-container\\|Org Museum" nil t))))
+
+(defun org-museum--delete-legacy-source-html (org-file out-file)
+  "Delete the old source-directory HTML for ORG-FILE after exporting to OUT-FILE."
+  (let ((legacy (expand-file-name
+                 (concat (file-name-base org-file) ".html")
+                 (file-name-directory (expand-file-name org-file)))))
+    (when (and (file-exists-p legacy)
+               (not (file-equal-p legacy out-file))
+               (org-museum--generated-html-file-p legacy))
+      (delete-file legacy))))
 (defun org-museum--page-href (id &optional current-out-file)
   "Return relative HTML path to page ID from CURRENT-OUT-FILE."
   (if-let ((page (org-museum--find-page id)))
@@ -1273,18 +1472,19 @@ Known limitation: only rewrites extensions: png jpg gif webp svg pdf txt."
 
 (defun org-museum--export-filename (org-file)
   "Return the target HTML path for ORG-FILE.
-The output mirrors the source directory structure under scan-root,
-ensuring org-museum--page-href can correctly compute relative URLs."
-  (let* ((scan-root (org-museum--scan-root))
-         (rel-dir   (file-relative-name
-                     (file-name-directory (expand-file-name org-file))
-                     scan-root))
-         (out-root  (org-museum--scan-root))
+The output mirrors page files under the per-page export root."
+  (let* ((file      (expand-file-name org-file))
+         (pages-dir (file-name-as-directory (expand-file-name (org-museum--pages-base-dir))))
+         (base-dir  (if (string-prefix-p (file-truename pages-dir)
+                                         (file-truename file))
+                        pages-dir
+                      (file-name-as-directory (org-museum--scan-root))))
+         (rel-dir   (file-relative-name (file-name-directory file) base-dir))
+         (out-root  (org-museum--pages-root))
          (out-dir   (if (string= rel-dir ".")
                         out-root
                       (expand-file-name rel-dir out-root))))
-    (expand-file-name (concat (file-name-base org-file) ".html") out-dir)))
-
+    (expand-file-name (concat (file-name-base file) ".html") out-dir)))
 (defun org-museum--parse-tags (tags-string)
   "Convert a FILETAGS string to a list of tag strings."
   (when (and tags-string (not (string-empty-p tags-string)))
@@ -1345,6 +1545,101 @@ Applicable scope: org-museum-create-page (Fix-16)."
         ((listp val)   val)
         (t             (list val))))
 
+(defun org-museum--page-node-ids (page)
+  "Return all Org-roam/Org node IDs declared inside PAGE's file."
+  (let ((ids (list (org-museum-page-id page))))
+    (when (file-exists-p (org-museum-page-path page))
+      (with-temp-buffer
+        (insert-file-contents (org-museum-page-path page))
+        (goto-char (point-min))
+        (while (re-search-forward "^[ \\t]*:ID:[ \\t]+\\(.+?\\)[ \\t]*$" nil t)
+          (let ((id (string-trim (match-string 1))))
+            (unless (string-empty-p id)
+              (cl-pushnew id ids :test #'equal))))
+        (goto-char (point-min))
+        (while (re-search-forward "^#\\+ID:[ \\t]*\\(.+?\\)[ \\t]*$" nil t)
+          (let ((id (string-trim (match-string 1))))
+            (unless (string-empty-p id)
+              (cl-pushnew id ids :test #'equal))))))
+    ids))
+
+(defun org-museum--read-db-string (value)
+  "Return VALUE as a plain string, unquoting org-roam DB text when needed."
+  (cond
+   ((not (stringp value)) value)
+   ((and (> (length value) 1)
+         (string-prefix-p "\"" value)
+         (string-suffix-p "\"" value))
+    (condition-case nil
+        (let ((read-value (read value)))
+          (if (stringp read-value) read-value value))
+      (error value)))
+   (t value)))
+
+(defun org-museum--org-roam-db-linked-page-ids (file pages-table aliases)
+  "Return canonical page IDs linked from FILE according to org-roam.db."
+  (let ((db-path (expand-file-name "org-roam.db" org-museum-root-dir))
+        (result '()))
+    (when (and (fboundp 'sqlite-open)
+               (file-exists-p db-path))
+      (let ((db (sqlite-open db-path)))
+        (unwind-protect
+            (dolist (source-id (org-museum--page-node-ids
+                                (org-museum--find-page-by-path file pages-table)))
+              (dolist (source (list source-id (format "%S" source-id)))
+                (dolist (row (sqlite-select db
+                                            "select dest from links where source = ?"
+                                            (vector source)))
+                  (let* ((dest (org-museum--read-db-string (car row)))
+                         (page-id (org-museum--resolve-page-link-id
+                                   dest pages-table aliases)))
+                    (when page-id
+                      (cl-pushnew page-id result :test #'equal))))))
+          (sqlite-close db))))
+    result))
+(defun org-museum--org-roam-db-related-page-ids (file pages-table aliases)
+  "Return canonical page IDs adjacent to FILE according to org-roam.db."
+  (let ((db-path (expand-file-name "org-roam.db" org-museum-root-dir))
+        (page (org-museum--find-page-by-path file pages-table))
+        (result '()))
+    (when (and page
+               (fboundp 'sqlite-open)
+               (file-exists-p db-path))
+      (let ((db (sqlite-open db-path)))
+        (unwind-protect
+            (dolist (node-id (org-museum--page-node-ids page))
+              (dolist (db-id (list node-id (format "%S" node-id)))
+                (dolist (row (sqlite-select db
+                                            "select source, dest from links where source = ? or dest = ?"
+                                            (vector db-id db-id)))
+                  (let* ((source (org-museum--read-db-string (nth 0 row)))
+                         (dest (org-museum--read-db-string (nth 1 row)))
+                         (other (if (equal source node-id) dest source))
+                         (page-id (org-museum--resolve-page-link-id
+                                   other pages-table aliases)))
+                    (when (and page-id
+                               (not (equal page-id (org-museum-page-id page))))
+                      (cl-pushnew page-id result :test #'equal))))))
+          (sqlite-close db))))
+    result))
+(defun org-museum--build-page-id-aliases (pages-table)
+  "Return a hash table mapping Org IDs and page IDs to canonical page IDs."
+  (let ((aliases (make-hash-table :test 'equal)))
+    (maphash
+     (lambda (id page)
+       (puthash id id aliases)
+       (dolist (alias (org-museum--page-node-ids page))
+         (unless (gethash alias aliases)
+           (puthash alias id aliases))))
+     pages-table)
+    aliases))
+
+(defun org-museum--resolve-page-link-id (raw-id pages-table &optional aliases)
+  "Resolve RAW-ID to a canonical Org Museum page ID using PAGES-TABLE."
+  (let* ((id (string-trim (or raw-id "")))
+         (alias-table (or aliases (org-museum--build-page-id-aliases pages-table))))
+    (or (gethash id alias-table)
+        (and (gethash id pages-table) id))))
 (defun org-museum--find-page (id)
   "Look up page by ID in the current index."
   (when org-museum--index
@@ -1506,14 +1801,14 @@ Known limitation: category coloring ignores :node-color and :center-color."
     (format "
   var pal=%s;
   var cats=Array.from(new Set((%s).nodes.map(function(d){return d.group||'';})));
-  function catCol(c){return pal[cats.indexOf(c)%%%%(pal.length)]||'#75715e';}
+  function catCol(c){return pal[cats.indexOf(c)%%(pal.length)]||'#75715e';}
   function nCol(d){return (%s)?catCol(d.group):(d.center?'%s':'%s');}
   function nR(d){return d.center?9:Math.max(5,Math.min(18,5+(d.degree||0)*1.8));}
   var el=document.getElementById('%s');
   if(!el||!(%s).nodes||(%s).nodes.length<1)return;
   var W=el.clientWidth||400,H=%d;
   var svg=d3.select('#%s').append('svg')
-    .attr('width','100%%%%').attr('height',H).attr('viewBox','0 0 '+W+' '+H);
+    .attr('width','100%%').attr('height',H).attr('viewBox','0 0 '+W+' '+H);
   if(%s){
     svg.append('defs').append('marker')
       .attr('id','arrow-%s').attr('viewBox','0 -4 8 8')
@@ -1531,8 +1826,14 @@ Known limitation: category coloring ignores :node-color and :center-color."
   var linkSel=g.append('g').selectAll('line').data((%s).links).enter()
     .append('line').attr('stroke','%s').attr('stroke-opacity',0.9).attr('stroke-width',2)
     .attr('marker-end',(%s)?'url(#arrow-%s)':null);
-  var node=g.append('g').selectAll('g').data((%s).nodes).enter()
-    .append('g').style('cursor','pointer');
+  var nodeEnter=g.append('g').selectAll('g').data((%s).nodes).enter();
+  var node=(%s)
+    ? nodeEnter.append('a')
+        .attr('href',function(d){return d.url||(d.id+'.html');})
+        .attr('xlink:href',function(d){return d.url||(d.id+'.html');})
+        .attr('target','_self')
+        .style('cursor','pointer')
+    : nodeEnter.append('g');
   node.append('circle').attr('r',nR).attr('fill',nCol)
     .attr('stroke','rgba(255,255,255,0.2)').attr('stroke-width',1.5);
   if(%s){
@@ -1551,29 +1852,32 @@ Known limitation: category coloring ignores :node-color and :center-color."
             cid dv dv height cid
             arrows cid l-col
             dv dv dv
-            l-col arrows cid dv
+            l-col arrows cid dv nav
             labels fsize nav)))
 
 ;; Fix-08: neighbour capping with _overflow virtual node.
-(defun org-museum--generate-local-graph-data (page)
+(defun org-museum--generate-local-graph-data (page &optional out-file)
   "Return JSON-compatible alist for a local graph centred on PAGE.
 [Fix-08] When total neighbour count exceeds `org-museum-local-graph-neighbour-limit',
 neighbours are sorted by degree descending; excess nodes are folded into a
-virtual node {id: \"_overflow\", name: \"+ N more\"} that links back to the
+virtual overflow node that links back to the
 page's entry in graph.html.
-Applicable scope: org-museum--generate-local-graph-html.
-Known limitation: _overflow node always links to graph.html root, not
-  to a pre-filtered view of this page's full neighbourhood."
+Applicable scope: org-museum--generate-local-graph-html."
   (let* ((center-id  (org-museum-page-id page))
          (limit      org-museum-local-graph-neighbour-limit)
-         (all-nbrs   (cl-union (org-museum-page-links-to page)
-                               (org-museum-page-linked-from page)
-                               :test #'equal))
+         (pages      (org-museum-index-pages org-museum--index))
+         (aliases    (org-museum--build-page-id-aliases pages))
+         (indexed-nbrs (cl-union (org-museum-page-links-to page)
+                                 (org-museum-page-linked-from page)
+                                 :test #'equal))
+         (db-nbrs    (org-museum--org-roam-db-related-page-ids
+                      (org-museum-page-path page) pages aliases))
+         (all-nbrs   (cl-union indexed-nbrs db-nbrs :test #'equal))
          (sorted-nbrs
           (sort (copy-sequence all-nbrs)
                 (lambda (a b)
-                  (let ((pa (gethash a (org-museum-index-pages org-museum--index)))
-                        (pb (gethash b (org-museum-index-pages org-museum--index))))
+                  (let ((pa (gethash a pages))
+                        (pb (gethash b pages)))
                     (> (if pa (length (org-museum-page-links-to pa)) 0)
                        (if pb (length (org-museum-page-links-to pb)) 0))))))
          (capped     (seq-take sorted-nbrs limit))
@@ -1582,14 +1886,14 @@ Known limitation: _overflow node always links to graph.html root, not
                              (name . ,(org-museum-page-title page))
                              (center . t)
                              (degree . 0)
-                             (url . ,(org-museum--page-href center-id nil)))))
+                             (url . ,(org-museum--page-href center-id out-file)))))
          (links      '()))
     (dolist (nid capped)
-      (when-let ((p (gethash nid (org-museum-index-pages org-museum--index))))
+      (when-let ((p (gethash nid pages)))
         (push `((id . ,nid)
                 (name . ,(org-museum-page-title p))
                 (degree . ,(length (org-museum-page-links-to p)))
-                (url . ,(org-museum--page-href nid nil)))
+                (url . ,(org-museum--page-href nid out-file)))
               nodes)
         (if (member nid (org-museum-page-links-to page))
             (push `((source . ,center-id) (target . ,nid)) links)
@@ -1606,13 +1910,35 @@ Known limitation: _overflow node always links to graph.html root, not
               nodes)
         (push `((source . ,center-id) (target . ,overflow-id)) links)))
     `((nodes . ,(vconcat nodes)) (links . ,(vconcat links)))))
-
-(defun org-museum--generate-local-graph-html (page)
+(defun org-museum--generate-local-graph-html (page &optional out-file)
   "Return HTML+JS for a local D3 graph around PAGE.
 [Fix-07] Passes :link-arrow t to the shared renderer.
 [Fix-08] Neighbour count is capped via generate-local-graph-data."
-  (let* ((data   (org-museum--generate-local-graph-data page))
+  (let* ((data   (org-museum--generate-local-graph-data page out-file))
          (json   (json-encode data))
+         (nodes  (append (cdr (assq 'nodes data)) nil))
+         (related
+          (cl-remove-if
+           (lambda (node)
+             (or (cdr (assq 'center node))
+                 (string= (or (cdr (assq 'id node)) "") "_overflow")))
+           nodes))
+         (related-html
+          (if related
+              (concat
+               "<ul class=\"org-museum-related-list\">\n"
+               (mapconcat
+                (lambda (node)
+                  (format "<li><a href=\"%s\">%s</a></li>"
+                          (org-html-encode-plain-text
+                           (or (cdr (assq 'url node)) "#"))
+                          (org-html-encode-plain-text
+                           (or (cdr (assq 'name node))
+                               (cdr (assq 'id node))
+                               "Untitled"))))
+                related "\n")
+               "\n</ul>")
+            "<p class=\"org-museum-related-empty\">No linked Org-roam pages found yet.</p>"))
          (render (org-museum--graph-render-js
                   (list :container-id    "local-graph"
                         :data-var        "data"
@@ -1628,6 +1954,7 @@ Known limitation: _overflow node always links to graph.html root, not
     (format "
 <div id=\"local-graph-container\">
   <h3>🕸 Related Pages</h3>
+  %s
   <div id=\"local-graph\"></div>
   <script>
   (function(){
@@ -1640,13 +1967,8 @@ Known limitation: _overflow node always links to graph.html root, not
   })();
   </script>
 </div>"
-            json render org-museum--d3-cdn)))
-
-;; ============================================================
-;; §23  GLOBAL GRAPH HTML  [Fix-06 pre-ticks]
-;; ============================================================
-
-(defun org-museum--build-graph-html (json-data css-href)
+            related-html json render (org-museum--d3-js-src out-file))))
+(defun org-museum--build-graph-html (json-data css-href &optional d3-src)
   "Return complete graph.html content with performance-tier awareness.
 [Fix-06] Reads meta.pre-ticks from JSON and silently pre-heats the
 D3 simulation before DOM rendering begins, preventing node pile-up
@@ -1818,7 +2140,7 @@ in large-tier graphs."
 </body>
 </html>"
           css-href
-          org-museum--d3-cdn
+          (or d3-src org-museum--d3-cdn)
           json-data
           (json-encode org-museum--graph-palette)))
 
