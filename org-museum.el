@@ -119,7 +119,7 @@ Applicable scope: org-museum--generate-local-graph-data (Fix-08)."
   :type 'integer
   :group 'org-museum)
 
-(defcustom org-museum-graph-exclude-tags '("no-graph" "incremental-watch" "plugin-watch")
+(defcustom org-museum-graph-exclude-tags '("no-graph")
   "List of tag strings to exclude from the exported global graph.
 
 This is the primary noise-control lever for Org Museum's graph.html.
@@ -130,8 +130,8 @@ Any page whose FILETAGS contains one of these tags will be omitted from:
 Recommended usage:
 - Add :no-graph: to low-value / one-off / dashboard pages you still want to
   keep as HTML pages but do not want to surface in the graph.
-- Keep periodic watch dashboards (e.g. :incremental-watch: / :plugin-watch:)
-  out of the graph by default, so concept nodes and MOCs remain readable."
+- Do not exclude broad workflow tags by default. A tagged page can still be a
+  graph hub, and filtering it would remove every edge connected to it."
   :type '(repeat string)
   :group 'org-museum)
 
