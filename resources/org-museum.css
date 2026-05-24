@@ -31,7 +31,7 @@
     --primary:         var(--mono-pink);
     --text-strong:     var(--mono-white);
     --text-main:       #e3e3dc;
-    --text-muted:      var(--mono-comment);
+    --text-muted:      #a29e8e; /* L1-3: Increased contrast to meet WCAG AA 4.5:1 against dark surface */
     --text-subtle:     #b9b9ae;
     
     /* Fluid Typography */
@@ -65,7 +65,7 @@
 /* ── 全局 Focus A11y 保护 ── */
 *:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 3px rgba(102, 217, 239, 0.4), 0 0 12px rgba(102, 217, 239, 0.2);
+    box-shadow: 0 0 0 3px rgba(102, 217, 239, 0.85), 0 0 12px rgba(102, 217, 239, 0.4); /* L1-1: High-contrast focus outline for accessibility */
     border-radius: 4px;
 }
 
@@ -237,7 +237,7 @@ body.desktop-sidebar-closed .desktop-sidebar-btn { left: 0; }
 /* 搜索框 */
 .sidebar-search { margin: 16px 0 32px; }
 .sidebar-search input {
-    width: 100%; border: 1px solid rgba(255,255,255,0.05);
+    width: 100%; border: 1px solid rgba(255,255,255,0.2); /* L1-2: Increased contrast boundary to meet WCAG 3:1 non-text contrast */
     background: rgba(0,0,0,0.2); border-radius: var(--radius-sm);
     color: var(--mono-white); padding: 12px 16px;
     font-size: 0.85rem; outline: none;
