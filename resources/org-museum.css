@@ -604,22 +604,55 @@ table {
     table-layout: auto;
     border-collapse: separate;
     border-spacing: 0;
-    margin: 2.2rem 0;
-    font-size: 0.92rem;
-    line-height: 1.58;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    margin: 2.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.62;
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: var(--radius-sm);
-    background: rgba(22, 23, 20, 0.72);
-    box-shadow: 0 12px 28px rgba(0,0,0,0.24), inset 0 0 0 1px rgba(255,255,255,0.03);
+    background: rgba(26, 27, 23, 0.75); /* Glassmorphic Monokai background */
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.02);
     -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+table:hover {
+    border-color: rgba(255, 255, 255, 0.12);
+    box-shadow: 0 20px 48px rgba(0, 0, 0, 0.45), 0 0 20px rgba(249, 38, 114, 0.05), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+}
+
+/* Custom Table Scrollbar */
+table::-webkit-scrollbar {
+    height: 6px;
+    background: transparent;
+}
+table::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 3px;
+}
+table::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 3px;
+    transition: background-color 0.2s ease;
+}
+table:hover::-webkit-scrollbar-thumb {
+    background: rgba(102, 217, 239, 0.35); /* Cyan highlight on hover */
+}
+table::-webkit-scrollbar-thumb:hover {
+    background: var(--mono-pink) !important; /* High contrast Monokai pink thumb on active scroll hover */
 }
 
 table caption {
     caption-side: top;
-    padding: 0 0 0.75rem;
-    color: var(--text-subtle);
+    padding: 0 0 1rem 0.5rem;
+    color: var(--mono-comment);
     text-align: left;
+    font-family: var(--font-mono);
     font-size: var(--font-small);
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
 }
 
 thead,
@@ -629,52 +662,95 @@ tbody {
 
 th,
 td {
-    min-width: 9rem;
-    max-width: 34rem;
-    padding: 12px 16px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-    border-right: 1px solid rgba(255, 255, 255, 0.055);
+    min-width: 9.5rem;
+    max-width: 32rem;
+    padding: 16px 20px; /* Generous padding for breathing room */
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-right: 1px solid rgba(255, 255, 255, 0.035); /* Faint vertical divider */
     text-align: left;
     vertical-align: top;
     color: var(--text-main);
     white-space: normal;
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
     word-break: normal;
-    hyphens: auto;
+    hyphens: none;
+    transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Explicit Org Mode Alignments */
+th.org-left, td.org-left { text-align: left; }
+th.org-right, td.org-right { 
+    text-align: right; 
+    font-family: var(--font-mono); 
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+}
+th.org-center, td.org-center { text-align: center; }
+
+/* Serial Number / Row Index Styling */
+td:first-child, th:first-child {
+    min-width: 4rem;
+    max-width: 6rem;
+    font-family: var(--font-mono);
+    color: var(--mono-comment);
+    text-align: center;
 }
 
 thead th {
-    background: rgba(25, 26, 23, 0.96);
+    background: rgba(30, 31, 28, 0.98); /* Solid matching surface */
     color: var(--mono-orange);
-    font-weight: 750;
-    line-height: 1.35;
-    letter-spacing: 0;
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    line-height: 1.4;
     position: sticky;
     top: 0;
     z-index: 5;
-    box-shadow: inset 0 -1px 0 rgba(255,255,255,0.09);
+    border-bottom: 2px solid var(--mono-pink); /* Bold Pink accent divider */
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35); /* Subtle shadow line below sticky header */
 }
 
 tr > :last-child {
     border-right: 0;
 }
 
-tbody tr:nth-child(even) td { background: rgba(255, 255, 255, 0.025); }
-tbody tr:hover td { background: rgba(102, 217, 239, 0.075); }
+tbody tr {
+    transition: background-color 0.2s ease;
+}
+
+tbody tr:nth-child(even) td { background: rgba(255, 255, 255, 0.012); }
+tbody tr:hover td { 
+    background: rgba(102, 217, 239, 0.08); /* Highlight row on hover with Monokai cyan */
+    color: var(--mono-white);
+}
 tbody tr:last-child td { border-bottom: 0; }
 
 td a, th a {
-    overflow-wrap: anywhere;
-    word-break: break-word;
+    color: var(--mono-blue);
+    text-decoration: none;
+    border-bottom: 1px dashed rgba(102, 217, 239, 0.3);
+    transition: color 0.15s ease, border-bottom-color 0.15s ease;
+    word-break: break-all;
+    overflow-wrap: break-word;
+}
+td a:hover, th a:hover {
+    color: var(--mono-pink);
+    border-bottom-color: var(--mono-pink);
 }
 
 td code, th code {
-    font-size: 0.84em;
+    font-family: var(--font-mono);
+    font-size: 0.82em;
     color: var(--mono-yellow);
-    background: rgba(0,0,0,0.2);
-    border: 1px solid rgba(255,255,255,0.06);
-    white-space: break-spaces;
-    overflow-wrap: anywhere;
+    background: rgba(230, 219, 116, 0.08); /* Subtle yellow tint badge */
+    border: 1px solid rgba(230, 219, 116, 0.15);
+    border-radius: var(--radius-sm);
+    padding: 2px 6px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    overflow-wrap: break-word;
 }
 
 thead th:first-child { border-top-left-radius: var(--radius-sm); }
@@ -801,12 +877,13 @@ span.tag {
     .article-container h2 { margin-top: 2.75rem; }
     table {
         margin: 1.75rem 0;
-        font-size: 0.86rem;
+        font-size: 0.84rem;
     }
     th, td {
-        min-width: 10rem;
-        max-width: 24rem;
-        padding: 10px 12px;
+        min-width: 8rem;
+        max-width: 20rem;
+        padding: 12px 14px;
+        line-height: 1.5;
     }
     pre {
         margin: 1.75rem 0;
