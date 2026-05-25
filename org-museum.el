@@ -1664,9 +1664,9 @@ Applicable scope: org-museum-create-page (Fix-16)."
    "<input type=\"checkbox\" id=\"mobile-sidebar-toggle\" class=\"mobile-toggle\">\n"
    "<input type=\"checkbox\" id=\"mobile-toc-toggle\"     class=\"mobile-toggle\">\n"
    "<div id=\"mobile-hud\">\n"
-   "  <label for=\"mobile-sidebar-toggle\" id=\"btn-sidebar\" class=\"hud-btn\">"
+   "  <label for=\"mobile-sidebar-toggle\" id=\"btn-sidebar\" class=\"hud-btn\" tabindex=\"0\" role=\"button\" aria-label=\"Toggle Menu\">"
    "<span>≡</span> MENU</label>\n"
-   "  <label for=\"mobile-toc-toggle\" id=\"btn-toc\" class=\"hud-btn\">"
+   "  <label for=\"mobile-toc-toggle\" id=\"btn-toc\" class=\"hud-btn\" tabindex=\"0\" role=\"button\" aria-label=\"Toggle Table of Contents\">"
    "TOC <span>≡</span></label>\n"
    "</div>\n"
    "<div id=\"zen-mask\"></div>\n"
@@ -1703,7 +1703,7 @@ Applicable scope: org-museum-create-page (Fix-16)."
       (princ (format "  <a class=\"sidebar-nav-btn graph\" href=\"%s\">🕸 Graph</a>\n"
                      (replace-regexp-in-string "\\\\" "/" graph-href)))
       (princ "  <div class=\"sidebar-search\">\n")
-      (princ "    <input type=\"text\" id=\"org-museum-search-input\" placeholder=\"Search…\">\n")
+      (princ "    <input type=\"text\" id=\"org-museum-search-input\" placeholder=\"Search…\" aria-label=\"Search pages\">\n")
       (princ "  </div>\n")
       (princ (org-museum--sidebar-fx-controls))
       (if (null cats)
@@ -1991,7 +1991,7 @@ in large-tier graphs."
     <button class=\"graph-btn\" id=\"btn-reset\">Reset View</button>
     <button class=\"graph-btn\" id=\"btn-freeze\">Freeze Layout</button>
     <div id=\"graph-search-wrap\">
-      <input id=\"graph-search\" type=\"text\" placeholder=\"Search nodes…\">
+      <input id=\"graph-search\" type=\"text\" placeholder=\"Search nodes…\" aria-label=\"Search graph nodes\">\n
     </div>
   </div>
   <div id=\"graph-canvas\"></div>
@@ -2376,8 +2376,19 @@ function initNavAura(){
 /* ── 12. Desktop sidebar toggle ── */
 function initDesktopSidebarToggle(){
   if(window.innerWidth<=1200)return;
-  var btn=document.createElement('div');btn.className='desktop-sidebar-btn';btn.textContent='‹';
+  var btn=document.createElement('div');
+  btn.className='desktop-sidebar-btn';
+  btn.textContent='‹';
+  btn.setAttribute('role','button');
+  btn.setAttribute('tabindex','0');
+  btn.setAttribute('aria-label','Toggle Sidebar');
   document.body.appendChild(btn);
+  btn.addEventListener('keydown',function(e){
+    if(e.key===' '||e.key==='Enter'){
+      e.preventDefault();
+      btn.click();
+    }
+  });
   btn.addEventListener('click',function(){
     var cl=document.body.classList.toggle('desktop-sidebar-closed');
     btn.textContent=cl?'›':'‹';
@@ -2585,9 +2596,23 @@ function init(){
     var t=this.value.toLowerCase().trim();
     document.querySelectorAll('#org-museum-sidebar .sidebar-category').forEach(function(c){
       var visible=false;
-      c.querySelectorAll('li').forEach(function(li){
-        var show=!t||li.textContent.toLowerCase().indexOf(t)>=0;
-        li.style.display=show?'':'none';if(show)visible=true;
+      c.querySelectorAll('li a').forEach(function(a){
+        if(!a.dataset.origText) a.dataset.origText = a.textContent;
+        var txt = a.dataset.origText;
+        var idx = txt.toLowerCase().indexOf(t);
+        var show = !t || idx >= 0;
+        a.parentElement.style.display = show ? '' : 'none';
+        if(show){
+          visible=true;
+          if(t){
+            var pre = txt.substring(0, idx);
+            var hl = txt.substring(idx, idx+t.length);
+            var post = txt.substring(idx+t.length);
+            a.innerHTML = pre + '<span class=\"search-highlight\">' + hl + '</span>' + post;
+          }else{
+            a.textContent = txt;
+          }
+        }
       });
       c.style.display=visible?'':'none';
     });
@@ -2944,3 +2969,15 @@ update all cross-links? " old-id new-id))
 (provide 'org-museum)
 
 ;;; org-museum.el ends here
+m.el ends here
+-or-no-p
+               (format "Org Museum: WIKI_ID changed %s → %s; \
+update all cross-links? " old-id new-id))
+          (let ((count (org-museum--update-links-globally old-id new-id)))
+            (message "Org Museum [Index]: updated %d file(s)." count)))))
+    (org-museum--index-update-file file)))
+
+(provide 'org-museum)
+
+;;; org-museum.el ends here
+m.el ends here
