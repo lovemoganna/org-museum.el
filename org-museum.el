@@ -212,19 +212,24 @@ Applicable scope: org-museum--on-save (Fix-02).")
   "Return the directory containing org-museum.el."
   (or org-museum--plugin-dir
       (setq org-museum--plugin-dir
-            (if-let ((lib (locate-library "org-museum")))
-                (let* ((dir (file-name-directory lib))
-                       (css (expand-file-name org-museum-css-file dir)))
-                  (if (file-exists-p css)
-                      dir
-                    (let ((repos (expand-file-name
-                                  (concat "straight/repos/org-museum.el/")
-                                  user-emacs-directory)))
-                      (if (file-exists-p
-                           (expand-file-name org-museum-css-file repos))
-                          repos
-                        dir))))
-              default-directory))))
+            (let* ((load-dir (when load-file-name
+                               (file-name-directory load-file-name)))
+                   (lib-dir  (when-let ((lib (locate-library "org-museum")))
+                               (file-name-directory lib)))
+                   (repos    (expand-file-name "straight/repos/org-museum.el/"
+                                               user-emacs-directory))
+                   (links    (expand-file-name "straight/links/org-museum/"
+                                               user-emacs-directory))
+                   (roam     (expand-file-name "org-roam/" user-emacs-directory))
+                   (dirs     (delq nil (list load-dir lib-dir repos links roam))))
+              (or (cl-find-if
+                   (lambda (dir)
+                     (file-exists-p
+                      (expand-file-name org-museum-css-file dir)))
+                   dirs)
+                  load-dir
+                  lib-dir
+                  default-directory)))))
 
 (defun org-museum--d3-resource-path ()
   "Absolute path to the bundled D3.js file under shared export resources."
@@ -627,9 +632,10 @@ When AS-LIST is non-nil, coerce vectors to lists."
 
 (defun org-museum--index-save (index path)
   "Write INDEX to JSON at PATH."
-  (with-temp-file path
-    (let ((json-encoding-pretty-print nil))
-      (insert (json-encode (org-museum--index-to-alist index))))))
+  (let ((coding-system-for-write 'utf-8))
+    (with-temp-file path
+      (let ((json-encoding-pretty-print nil))
+        (insert (json-encode (org-museum--index-to-alist index)))))))
 
 (defun org-museum--index-load (path)
   "Load index from JSON at PATH into `org-museum--index'."
@@ -2969,15 +2975,3 @@ update all cross-links? " old-id new-id))
 (provide 'org-museum)
 
 ;;; org-museum.el ends here
-m.el ends here
--or-no-p
-               (format "Org Museum: WIKI_ID changed %s → %s; \
-update all cross-links? " old-id new-id))
-          (let ((count (org-museum--update-links-globally old-id new-id)))
-            (message "Org Museum [Index]: updated %d file(s)." count)))))
-    (org-museum--index-update-file file)))
-
-(provide 'org-museum)
-
-;;; org-museum.el ends here
-m.el ends here
