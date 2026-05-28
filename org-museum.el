@@ -221,7 +221,7 @@ Applicable scope: org-museum--on-save (Fix-02).")
                    (links    (expand-file-name "straight/links/org-museum/"
                                                user-emacs-directory))
                    (roam     (expand-file-name "org-roam/" user-emacs-directory))
-                   (dirs     (delq nil (list load-dir lib-dir repos links roam))))
+                   (dirs     (delq nil (list load-dir lib-dir roam links repos))))
               (or (cl-find-if
                    (lambda (dir)
                      (file-exists-p
@@ -235,6 +235,30 @@ Applicable scope: org-museum--on-save (Fix-02).")
   "Absolute path to the bundled D3.js file under shared export resources."
   (expand-file-name "resources/d3.v7.min.js" (org-museum--shared-root)))
 
+(defun org-museum--hljs-css-resource-path ()
+  "Absolute path to the bundled Highlight.js CSS file."
+  (expand-file-name "resources/highlight.monokai.min.css"
+                    (org-museum--shared-root)))
+
+(defun org-museum--hljs-js-resource-path ()
+  "Absolute path to the bundled Highlight.js script file."
+  (expand-file-name "resources/highlight.min.js"
+                    (org-museum--shared-root)))
+
+(defun org-museum--ensure-url-resource (url dest label)
+  "Download URL to DEST if needed, returning DEST when it exists.
+LABEL is used only for diagnostic messages."
+  (unless (file-exists-p dest)
+    (require 'url)
+    (make-directory (file-name-directory dest) t)
+    (condition-case err
+        (url-copy-file url dest t)
+      (error
+       (message "Org Museum [Export]: failed to fetch %s: %s"
+                label (error-message-string err)))))
+  (when (file-exists-p dest)
+    dest))
+
 (defun org-museum--ensure-d3-deployed ()
   "Ensure D3.js is available locally under shared export resources."
   (let ((dest (org-museum--d3-resource-path)))
@@ -246,6 +270,30 @@ Applicable scope: org-museum--on-save (Fix-02).")
         (error
          (message "Org Museum [Export]: failed to fetch D3.js: %s" (error-message-string err)))))
     dest))
+
+(defun org-museum--ensure-hljs-deployed ()
+  "Ensure Highlight.js assets are available locally when possible."
+  (list
+   :css (org-museum--ensure-url-resource
+         org-museum--hljs-css-cdn
+         (org-museum--hljs-css-resource-path)
+         "Highlight.js CSS")
+   :js  (org-museum--ensure-url-resource
+         org-museum--hljs-js-cdn
+         (org-museum--hljs-js-resource-path)
+         "Highlight.js script")))
+
+(defun org-museum--hljs-css-src (out-file)
+  "Return Highlight.js CSS URL relative to OUT-FILE, falling back to CDN."
+  (or (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :css)))
+        (org-museum--relative-path path out-file))
+      org-museum--hljs-css-cdn))
+
+(defun org-museum--hljs-js-src (out-file)
+  "Return Highlight.js script URL relative to OUT-FILE, falling back to CDN."
+  (or (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :js)))
+        (org-museum--relative-path path out-file))
+      org-museum--hljs-js-cdn))
 
 (defun org-museum--d3-js-src (out-file)
   "Return a URL (usually relative) to D3.js suitable for OUT-FILE HTML."
@@ -769,6 +817,8 @@ user Org settings remain untouched."
                         (org-export-with-drawers             nil)
                         (org-export-with-properties          nil)
                         (org-export-with-sub-superscripts    nil)
+                        (org-html-htmlize-output-type
+                         (if (locate-library "htmlize") 'css nil))
                         (coding-system-for-write             'utf-8))
                     (org-museum--with-cjk-emphasis-export
                       (org-export-to-file 'html out-file))))
@@ -1680,7 +1730,7 @@ Applicable scope: org-museum-create-page (Fix-16)."
    (org-museum--generate-sidebar-html out-file)
    "<aside id=\"org-museum-right-sidebar\" class=\"glass-drawer\">"
    "<h4>ON THIS PAGE</h4></aside>\n"
-   (org-museum--script-ui-core)
+   (org-museum--script-ui-core out-file)
    (org-museum--script-effects)
    (org-museum--script-toc-relocate)))
 
@@ -2154,7 +2204,7 @@ in large-tier graphs."
 ;; §24  SCRIPT: UI CORE  [Fix-09]
 ;; ============================================================
 
-(defun org-museum--script-ui-core ()
+(defun org-museum--script-ui-core (out-file)
   "Return the main UI script block.
 [Fix-09] initScrollSpy now uses IntersectionObserver with #main-scroll
 as the root element, eliminating the offsetTop coordinate-system mismatch
@@ -2230,32 +2280,79 @@ function initScrollSpy(){
 
 /* ── 3. Code blocks ── */
 function initCodeBlocks(){
-  var blocks=document.querySelectorAll('pre.src');
+  var blocks=document.querySelectorAll('pre.src, pre.example');
   if(!blocks.length)return;
-  var langMap={\"emacs-lisp\":\"lisp\",\"sh\":\"bash\"};
+  var langMap={
+    \"emacs-lisp\":\"lisp\",\"elisp\":\"lisp\",\"lisp-data\":\"lisp\",
+    \"shell\":\"bash\",\"sh\":\"bash\",\"bash\":\"bash\",\"zsh\":\"bash\",
+    \"js\":\"javascript\",\"ts\":\"typescript\",\"py\":\"python\",
+    \"duckdb\":\"sql\",\"sqlite\":\"sql\",\"postgres\":\"sql\",\"postgresql\":\"sql\",
+    \"conf\":\"ini\",\"text\":\"plaintext\",\"example\":\"plaintext\"
+  };
+  var codes=[];
+  function detectLang(pre){
+    if(pre.classList.contains('example'))return 'plaintext';
+    var m=pre.className.match(/(?:^|\\s)src-([^\\s]+)/);
+    return langMap[m?m[1]:'text']||(m?m[1]:'plaintext');
+  }
+  function copyText(text,done){
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done,function(){fallback();});
+    }else{fallback();}
+    function fallback(){
+      var ta=document.createElement('textarea');
+      ta.value=text;ta.setAttribute('readonly','');
+      ta.style.position='fixed';ta.style.left='-9999px';
+      document.body.appendChild(ta);ta.select();
+      try{document.execCommand('copy');}catch(e){}
+      document.body.removeChild(ta);done();
+    }
+  }
   blocks.forEach(function(pre){
-    var m=pre.className.match(/src-(\\S+)/),lang=m?m[1]:'text';
-    lang=langMap[lang]||lang;
-    var code=pre.querySelector('code');
-    if(!code){code=document.createElement('code');code.innerHTML=pre.innerHTML;
-               pre.innerHTML='';pre.appendChild(code);}
-    code.className='hljs language-'+lang;
+    if(pre.dataset.orgMuseumCodeReady==='1')return;
+    pre.dataset.orgMuseumCodeReady='1';
+    pre.classList.add('org-museum-code-block');
+    var lang=detectLang(pre);
+    var code=null;
+    Array.prototype.some.call(pre.children,function(el){
+      if(el.tagName&&el.tagName.toLowerCase()==='code'){code=el;return true;}
+      return false;
+    });
+    if(!code){
+      code=document.createElement('code');
+      code.innerHTML=pre.innerHTML;
+      pre.innerHTML='';
+      pre.appendChild(code);
+    }
+    code.classList.add('org-museum-code','language-'+lang);
+    code.setAttribute('data-language',lang);
+    if(lang!=='plaintext')codes.push(code);
     var lbl=document.createElement('span');lbl.className='code-lang-label';
-    lbl.textContent=lang.toUpperCase();
+    lbl.textContent=(lang==='plaintext'?'TEXT':lang).toUpperCase();
     var btn=document.createElement('button');btn.className='code-copy-btn';btn.textContent='COPY';
+    btn.type='button';
     btn.onclick=function(){
-      navigator.clipboard.writeText(code.innerText).then(function(){
+      copyText(code.innerText||code.textContent,function(){
         btn.textContent='COPIED!';btn.classList.add('copied');
         setTimeout(function(){btn.textContent='COPY';btn.classList.remove('copied');},2000);
       });
     };
     pre.insertBefore(lbl,pre.firstChild);pre.insertBefore(btn,lbl.nextSibling);
   });
-  if(!window.hljs){
+  function runHighlight(){
+    if(!window.hljs)return;
+    codes.forEach(function(code){
+      if(!code.dataset.highlighted)hljs.highlightElement(code);
+    });
+  }
+  if(window.hljs){runHighlight();}
+  else{
     var css=document.createElement('link');css.rel='stylesheet';
     css.href='%s';document.head.appendChild(css);
     var js=document.createElement('script');js.src='%s';js.async=true;
-    js.onload=function(){hljs.highlightAll();};document.head.appendChild(js);
+    js.onload=runHighlight;
+    js.onerror=function(){document.body.classList.add('org-museum-no-code-highlight');};
+    document.head.appendChild(js);
   }
 }
 
@@ -2416,8 +2513,8 @@ window.addEventListener('load',function(){
 
 })();
 </script>\n"
-   org-museum--hljs-css-cdn
-   org-museum--hljs-js-cdn))
+   (org-museum--hljs-css-src out-file)
+   (org-museum--hljs-js-src out-file)))
 
 ;; ============================================================
 ;; §25  SCRIPT: BACKGROUND EFFECTS  [Fix-10]

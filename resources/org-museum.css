@@ -528,15 +528,39 @@ pre {
     max-width: 100%;
     background: rgba(14, 15, 13, 0.96);
     color: var(--mono-white);
-    padding: 30px 24px 24px;
+    padding: 36px 24px 24px;
     border-radius: var(--radius-sm);
-    font-size: var(--font-small);
+    font-family: var(--font-mono);
+    font-size: 0.92rem;
     line-height: 1.65;
     margin: 2.2rem 0;
     border: 1px solid rgba(255, 255, 255, 0.08);
     box-shadow: inset 0 2px 16px rgba(0,0,0,0.34);
     overflow-x: auto;
     position: relative;
+    tab-size: 4;
+    -webkit-font-smoothing: auto;
+    font-variant-ligatures: contextual;
+}
+
+pre.src,
+pre.example,
+pre.org-museum-code-block {
+    scrollbar-color: rgba(102, 217, 239, 0.38) rgba(255, 255, 255, 0.04);
+    scrollbar-width: thin;
+}
+
+pre.src::-webkit-scrollbar,
+pre.example::-webkit-scrollbar,
+pre.org-museum-code-block::-webkit-scrollbar {
+    height: 10px;
+}
+
+pre.src::-webkit-scrollbar-thumb,
+pre.example::-webkit-scrollbar-thumb,
+pre.org-museum-code-block::-webkit-scrollbar-thumb {
+    background: rgba(102, 217, 239, 0.38);
+    border-radius: 999px;
 }
 
 pre::before {
@@ -550,19 +574,35 @@ pre::before {
 }
 
 pre code,
-pre code.hljs {
+pre code.hljs,
+pre code.org-museum-code {
     background: transparent !important;
     border: none;
     padding: 0 !important;
     font-size: inherit;
+    line-height: inherit;
     color: inherit;
+    font-family: var(--font-mono);
     white-space: pre;
+    overflow-wrap: normal;
+    word-break: normal;
+    display: block;
+    min-width: max-content;
+}
+
+pre code.hljs {
+    color: var(--mono-white);
+}
+
+pre.example code.org-museum-code,
+pre code.language-plaintext {
+    color: var(--mono-white);
 }
 
 .code-lang-label {
-    position: absolute; right: 72px; top: 10px;
+    position: absolute; right: 78px; top: 10px;
     font-family: var(--font-mono); font-size: 0.7rem; font-weight: 800;
-    color: rgba(255,255,255,0.22); letter-spacing: 0.08em;
+    color: rgba(255,255,255,0.34); letter-spacing: 0.08em;
     pointer-events: none;
 }
 
