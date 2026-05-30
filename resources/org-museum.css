@@ -563,6 +563,17 @@ pre.org-museum-code-block::-webkit-scrollbar-thumb {
     border-radius: 999px;
 }
 
+pre.org-museum-code-collapsed {
+    max-height: 13rem;
+    overflow: hidden;
+}
+
+pre.org-museum-code-expanded {
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: visible;
+}
+
 pre::before {
     content: '';
     position: absolute;
@@ -571,6 +582,23 @@ pre::before {
     border-radius: 50%;
     background: #ff5f56;
     box-shadow: 15px 0 0 #ffbd2e, 30px 0 0 #27c93f;
+}
+
+pre.org-museum-code-collapsed::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 4.8rem;
+    pointer-events: none;
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    background: linear-gradient(
+        to bottom,
+        rgba(14, 15, 13, 0),
+        rgba(14, 15, 13, 0.92) 58%,
+        rgba(14, 15, 13, 0.98)
+    );
 }
 
 pre code,
@@ -600,10 +628,11 @@ pre code.language-plaintext {
 }
 
 .code-lang-label {
-    position: absolute; right: 78px; top: 10px;
+    position: absolute; right: 168px; top: 10px;
     font-family: var(--font-mono); font-size: 0.7rem; font-weight: 800;
     color: rgba(255,255,255,0.34); letter-spacing: 0.08em;
     pointer-events: none;
+    z-index: 2;
 }
 
 .code-copy-btn {
@@ -614,6 +643,12 @@ pre code.language-plaintext {
     cursor: pointer; transition: all var(--smooth-motion);
     opacity: 0; transform: translateY(4px);
     letter-spacing: 0.08em;
+    z-index: 3;
+}
+.code-toggle-btn {
+    right: 72px;
+    opacity: 1;
+    transform: translateY(0);
 }
 pre:hover .code-copy-btn { opacity: 1; transform: translateY(0); }
 .code-copy-btn:hover { background: rgba(255, 255, 255, 0.15); color: var(--mono-white); box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
@@ -957,6 +992,23 @@ span.tag {
         border-radius: 6px;
         font-size: 0.8rem;
     }
+    pre.org-museum-code-collapsed {
+        max-height: 10.5rem;
+    }
+    pre.org-museum-code-collapsed::after {
+        height: 4rem;
+    }
+    .code-lang-label {
+        right: 150px;
+        font-size: 0.64rem;
+    }
+    .code-copy-btn {
+        padding: 4px 8px;
+        font-size: 0.6rem;
+    }
+    .code-toggle-btn {
+        right: 66px;
+    }
     
     /* 启用 Mobile HUD 按钮区 */
     #mobile-hud {
@@ -1271,8 +1323,5 @@ body.zen-mode #main-scroll {
 .tufte-margin-note:hover { opacity: 1; border-color: var(--mono-pink); }
 @media (max-width: 1400px) {
     /* 容器不足时回退为交互式 Tooltip，使用固定屏幕右侧悬浮，或者直接悬停在正文中 */
-    .tufte-margin-note { display: none !important; }
-}
-正文中 */
     .tufte-margin-note { display: none !important; }
 }
