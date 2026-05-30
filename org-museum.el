@@ -2311,7 +2311,7 @@ function initCodeBlocks(){
   blocks.forEach(function(pre){
     if(pre.dataset.orgMuseumCodeReady==='1')return;
     pre.dataset.orgMuseumCodeReady='1';
-    pre.classList.add('org-museum-code-block');
+    pre.classList.add('org-museum-code-block','org-museum-code-collapsed');
     var lang=detectLang(pre);
     var code=null;
     Array.prototype.some.call(pre.children,function(el){
@@ -2329,6 +2329,17 @@ function initCodeBlocks(){
     if(lang!=='plaintext')codes.push(code);
     var lbl=document.createElement('span');lbl.className='code-lang-label';
     lbl.textContent=(lang==='plaintext'?'TEXT':lang).toUpperCase();
+    var toggle=document.createElement('button');
+    toggle.className='code-copy-btn code-toggle-btn';
+    toggle.type='button';
+    toggle.textContent='EXPAND';
+    toggle.setAttribute('aria-expanded','false');
+    toggle.onclick=function(){
+      var expanded=pre.classList.toggle('org-museum-code-expanded');
+      pre.classList.toggle('org-museum-code-collapsed',!expanded);
+      toggle.textContent=expanded?'COLLAPSE':'EXPAND';
+      toggle.setAttribute('aria-expanded',expanded?'true':'false');
+    };
     var btn=document.createElement('button');btn.className='code-copy-btn';btn.textContent='COPY';
     btn.type='button';
     btn.onclick=function(){
@@ -2337,7 +2348,9 @@ function initCodeBlocks(){
         setTimeout(function(){btn.textContent='COPY';btn.classList.remove('copied');},2000);
       });
     };
-    pre.insertBefore(lbl,pre.firstChild);pre.insertBefore(btn,lbl.nextSibling);
+    pre.insertBefore(lbl,pre.firstChild);
+    pre.insertBefore(toggle,lbl.nextSibling);
+    pre.insertBefore(btn,toggle.nextSibling);
   });
   function runHighlight(){
     if(!window.hljs)return;
