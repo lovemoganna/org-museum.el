@@ -722,10 +722,10 @@ blockquote p:last-child {
 
 /* Long-form tables */
 table {
-    display: block;
-    width: 100%;
-    max-width: 100%;
-    overflow-x: auto;
+    display: table;
+    width: max-content;
+    min-width: 100%;
+    max-width: none;
     table-layout: auto;
     border-collapse: separate;
     border-spacing: 0;
@@ -738,8 +738,6 @@ table {
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.02);
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: thin;
     transition: border-color 0.3s ease, box-shadow 0.3s ease;
     /* T-03: Scroll hints */
     background-image: linear-gradient(to right, rgba(26, 27, 23, 0.9) 10%, rgba(26, 27, 23, 0)), linear-gradient(to left, rgba(26, 27, 23, 0.9) 10%, rgba(26, 27, 23, 0));
@@ -749,29 +747,60 @@ table {
     background-attachment: scroll, scroll;
 }
 
+.article-container .outline-text-2:has(> table),
+.article-container .outline-text-3:has(> table),
+.article-container .outline-text-4:has(> table),
+.article-container .outline-text-5:has(> table),
+.article-container .outline-text-6:has(> table) {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+}
+
 table:hover {
     border-color: rgba(255, 255, 255, 0.12);
     box-shadow: 0 20px 48px rgba(0, 0, 0, 0.45), 0 0 20px rgba(249, 38, 114, 0.05), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
 }
 
 /* Custom Table Scrollbar */
-table::-webkit-scrollbar {
+.article-container .outline-text-2:has(> table)::-webkit-scrollbar,
+.article-container .outline-text-3:has(> table)::-webkit-scrollbar,
+.article-container .outline-text-4:has(> table)::-webkit-scrollbar,
+.article-container .outline-text-5:has(> table)::-webkit-scrollbar,
+.article-container .outline-text-6:has(> table)::-webkit-scrollbar {
     height: 6px;
     background: transparent;
 }
-table::-webkit-scrollbar-track {
+.article-container .outline-text-2:has(> table)::-webkit-scrollbar-track,
+.article-container .outline-text-3:has(> table)::-webkit-scrollbar-track,
+.article-container .outline-text-4:has(> table)::-webkit-scrollbar-track,
+.article-container .outline-text-5:has(> table)::-webkit-scrollbar-track,
+.article-container .outline-text-6:has(> table)::-webkit-scrollbar-track {
     background: rgba(0, 0, 0, 0.15);
     border-radius: 3px;
 }
-table::-webkit-scrollbar-thumb {
+.article-container .outline-text-2:has(> table)::-webkit-scrollbar-thumb,
+.article-container .outline-text-3:has(> table)::-webkit-scrollbar-thumb,
+.article-container .outline-text-4:has(> table)::-webkit-scrollbar-thumb,
+.article-container .outline-text-5:has(> table)::-webkit-scrollbar-thumb,
+.article-container .outline-text-6:has(> table)::-webkit-scrollbar-thumb {
     background: rgba(255, 255, 255, 0.08);
     border-radius: 3px;
     transition: background-color 0.2s ease;
 }
-table:hover::-webkit-scrollbar-thumb {
+.article-container .outline-text-2:has(> table):hover::-webkit-scrollbar-thumb,
+.article-container .outline-text-3:has(> table):hover::-webkit-scrollbar-thumb,
+.article-container .outline-text-4:has(> table):hover::-webkit-scrollbar-thumb,
+.article-container .outline-text-5:has(> table):hover::-webkit-scrollbar-thumb,
+.article-container .outline-text-6:has(> table):hover::-webkit-scrollbar-thumb {
     background: rgba(102, 217, 239, 0.35); /* Cyan highlight on hover */
 }
-table::-webkit-scrollbar-thumb:hover {
+.article-container .outline-text-2:has(> table)::-webkit-scrollbar-thumb:hover,
+.article-container .outline-text-3:has(> table)::-webkit-scrollbar-thumb:hover,
+.article-container .outline-text-4:has(> table)::-webkit-scrollbar-thumb:hover,
+.article-container .outline-text-5:has(> table)::-webkit-scrollbar-thumb:hover,
+.article-container .outline-text-6:has(> table)::-webkit-scrollbar-thumb:hover {
     background: var(--mono-pink) !important; /* High contrast Monokai pink thumb on active scroll hover */
 }
 
@@ -793,8 +822,8 @@ tbody {
 
 th,
 td {
-    min-width: 9.5rem;
-    max-width: 32rem;
+    min-width: 10rem;
+    max-width: 42rem;
     padding: 16px 20px; /* Generous padding for breathing room */
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     border-right: 1px solid rgba(255, 255, 255, 0.035); /* Faint vertical divider */
@@ -820,11 +849,11 @@ th.org-center, td.org-center { text-align: center; }
 
 /* Serial Number / Row Index Styling */
 td:first-child, th:first-child {
-    min-width: 4rem;
-    max-width: 6rem;
+    min-width: 9rem;
+    max-width: 20rem;
     font-family: var(--font-mono);
     color: var(--mono-comment);
-    text-align: center;
+    text-align: left;
 }
 
 thead th {
@@ -863,8 +892,8 @@ td a, th a {
     text-decoration: none;
     border-bottom: 1px dashed rgba(102, 217, 239, 0.3);
     transition: color 0.15s ease, border-bottom-color 0.15s ease;
-    word-break: break-all;
-    overflow-wrap: break-word;
+    word-break: normal;
+    overflow-wrap: anywhere;
 }
 td a:hover, th a:hover {
     color: var(--mono-pink);
@@ -879,9 +908,9 @@ td code, th code {
     border: 1px solid rgba(230, 219, 116, 0.15);
     border-radius: var(--radius-sm);
     padding: 2px 6px;
-    white-space: pre-wrap;
-    word-break: break-all;
-    overflow-wrap: break-word;
+    white-space: nowrap;
+    word-break: normal;
+    overflow-wrap: normal;
 }
 
 thead th:first-child { border-top-left-radius: var(--radius-sm); }
