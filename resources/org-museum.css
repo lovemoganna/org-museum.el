@@ -627,6 +627,36 @@ pre code.language-plaintext {
     color: var(--mono-white);
 }
 
+.hljs-keyword,
+.hljs-built_in,
+.hljs-selector-tag {
+    color: var(--mono-pink);
+}
+
+.hljs-string,
+.hljs-title,
+.hljs-name {
+    color: var(--mono-yellow);
+}
+
+.hljs-comment,
+.hljs-quote {
+    color: var(--mono-comment);
+    font-style: italic;
+}
+
+.hljs-number,
+.hljs-literal,
+.hljs-symbol {
+    color: var(--mono-purple);
+}
+
+.hljs-function,
+.hljs-attr,
+.hljs-variable {
+    color: var(--mono-blue);
+}
+
 .code-lang-label {
     position: absolute; right: 168px; top: 10px;
     font-family: var(--font-mono); font-size: 0.7rem; font-weight: 800;

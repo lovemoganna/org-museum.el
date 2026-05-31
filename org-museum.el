@@ -852,6 +852,7 @@ user Org settings remain untouched."
                          (org-export-with-drawers             nil)
                          (org-export-with-properties          nil)
                          (org-export-with-sub-superscripts    nil)
+                         (org-export-use-babel                nil)
                          (org-html-htmlize-output-type
                           (if (and use-htmlize-p
                                    (locate-library "htmlize"))
@@ -914,6 +915,45 @@ the htmlize colour definitions that make code highlighting work."
         (when (re-search-forward "</style>" nil t)
           (delete-region beg (point)))))))
 
+(defun org-museum--hljs-language-for-org (lang)
+  "Return Highlight.js language name for Org source language LANG."
+  (let ((name (downcase (or lang ""))))
+    (pcase name
+      ((or "emacs-lisp" "elisp" "lisp-data") "lisp")
+      ((or "sh" "shell" "bash" "zsh") "bash")
+      ((or "duckdb" "sqlite" "postgres" "postgresql") "sql")
+      ("js" "javascript")
+      ("ts" "typescript")
+      ("py" "python")
+      ((or "example" "text") "plaintext")
+      (_ name))))
+
+(defun org-museum--html-attr-value (tag attr)
+  "Return ATTR value from HTML TAG, or nil when absent."
+  (when (string-match
+         (format "\\b%s=[\"']\\([^\"']+\\)[\"']" (regexp-quote attr))
+         tag)
+    (match-string 1 tag)))
+
+(defun org-museum--html-tag-add-class (tag class)
+  "Return HTML TAG with CLASS appended to its class attribute."
+  (let ((existing (org-museum--html-attr-value tag "class")))
+    (cond
+     ((and existing (member class (split-string existing " " t)))
+      tag)
+     (existing
+      (replace-regexp-in-string
+       "\\bclass=\\([\"']\\)\\([^\"']*\\)\\1"
+       (lambda (_)
+         (format "class=\"%s %s\"" existing class))
+       tag t t))
+     (t
+      (replace-regexp-in-string
+       "\\s-*/?>\\'"
+       (lambda (end)
+         (concat " class=\"" class "\"" end))
+       tag t t)))))
+
 (defun org-museum--pp-inject-hljs-language-classes ()
   "Rewrite Org src blocks to add hljs-compatible language class attributes.
 Org exports code blocks as:
@@ -925,11 +965,34 @@ src blocks, enabling reliable hljs auto-detection.
 Only runs when `org-museum-code-highlight-method' is 'hljs."
   (when (eq org-museum-code-highlight-method 'hljs)
     (goto-char (point-min))
-    (while (re-search-forward
-            "<pre class=\"src src-\\([a-zA-Z0-9_+-]+\\)\">" nil t)
-      (let ((lang (match-string 1)))
-        (when (re-search-forward "<code>" nil t)
-          (replace-match (format "<code class=\"language-%s\">" lang)))))))
+    (while (re-search-forward "<pre\\b[^>]*>" nil t)
+      (let* ((pre-end-pos (match-end 0))
+             (pre-tag (match-string 0))
+             (pre-class (or (org-museum--html-attr-value pre-tag "class") ""))
+             (org-lang
+              (cond
+               ((string-match "\\bsrc-\\([^[:space:]]+\\)" pre-class)
+                (match-string 1 pre-class))
+               ((member "example" (split-string pre-class " " t))
+                "plaintext")))
+             (hljs-lang (and org-lang
+                             (org-museum--hljs-language-for-org org-lang)))
+             (pre-close (save-excursion
+                          (when (re-search-forward "</pre>" nil t)
+                            (match-beginning 0)))))
+        (when (and hljs-lang pre-close)
+          (save-excursion
+            (goto-char pre-end-pos)
+            (if (re-search-forward "<code\\b[^>]*>" pre-close t)
+                (replace-match
+                 (org-museum--html-tag-add-class
+                  (match-string 0)
+                  (concat "language-" hljs-lang))
+                 t t)
+              (goto-char pre-close)
+              (insert "</code>")
+              (goto-char pre-end-pos)
+              (insert (format "<code class=\"language-%s\">" hljs-lang)))))))))
 
 ;; Fix-05: now returns t on success, nil on failure.
 (defun org-museum--pp-wrap-content-div (out-file)
