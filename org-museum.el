@@ -52,6 +52,10 @@
   "https://cdn.staticfile.net/highlight.js/11.10.0/highlight.min.js"
   "Highlight.js script CDN URL.")
 
+(defconst org-museum--hljs-lisp-js-cdn
+  "https://cdn.staticfile.net/highlight.js/11.10.0/languages/lisp.min.js"
+  "Highlight.js Lisp language module CDN URL.")
+
 (defconst org-museum--graph-palette
   ["#f92672" "#a6e22e" "#66d9ef" "#fd971f" "#ae81ff" "#e6db74" "#f8f8f2"]
   "Monokai-derived colour palette for graph categories.")
@@ -273,6 +277,11 @@ Applicable scope: org-museum--on-save (Fix-02).")
   (expand-file-name "resources/highlight.min.js"
                     (org-museum--shared-root)))
 
+(defun org-museum--hljs-lisp-js-resource-path ()
+  "Absolute path to the bundled Highlight.js Lisp language module."
+  (expand-file-name "resources/highlight-lisp.min.js"
+                    (org-museum--shared-root)))
+
 (defun org-museum--ensure-url-resource (url dest label)
   "Download URL to DEST if needed, returning DEST when it exists.
 LABEL is used only for diagnostic messages."
@@ -309,7 +318,11 @@ LABEL is used only for diagnostic messages."
    :js  (org-museum--ensure-url-resource
          org-museum--hljs-js-cdn
          (org-museum--hljs-js-resource-path)
-         "Highlight.js script")))
+         "Highlight.js script")
+   :lisp-js (org-museum--ensure-url-resource
+             org-museum--hljs-lisp-js-cdn
+             (org-museum--hljs-lisp-js-resource-path)
+             "Highlight.js Lisp language module")))
 
 (defun org-museum--hljs-css-src (out-file)
   "Return Highlight.js CSS URL relative to OUT-FILE, falling back to CDN."
@@ -322,6 +335,12 @@ LABEL is used only for diagnostic messages."
   (or (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :js)))
         (org-museum--relative-path path out-file))
       org-museum--hljs-js-cdn))
+
+(defun org-museum--hljs-lisp-js-src (out-file)
+  "Return Highlight.js Lisp module URL relative to OUT-FILE, falling back to CDN."
+  (or (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :lisp-js)))
+        (org-museum--relative-path path out-file))
+      org-museum--hljs-lisp-js-cdn))
 
 (defun org-museum--d3-js-src (out-file)
   "Return a URL (usually relative) to D3.js suitable for OUT-FILE HTML."
@@ -739,18 +758,24 @@ When AS-LIST is non-nil, coerce vectors to lists."
     (org-museum--delete-legacy-source-html file out-file)))
 ;; Fix-03: CSS mtime now included in staleness check.
 (defun org-museum--needs-export-p (org-file html-file)
-  "Return non-nil when ORG-FILE or the deployed CSS is newer than HTML-FILE.
+  "Return non-nil when export inputs are newer than HTML-FILE.
 Checks (in order):
   1. HTML-FILE does not exist
   2. ORG-FILE mtime > HTML-FILE mtime
   3. [Fix-03] CSS output file mtime > HTML-FILE mtime
+  4. org-museum.el mtime > HTML-FILE mtime
 Applicable scope: org-museum-export-page, org-museum--count-stale-pages.
-Known limitation: does not track transitive template dependencies."
+Known limitation: does not track every transitive template dependency."
   (or (not (file-exists-p html-file))
       (> (org-museum--file-mtime org-file) (org-museum--file-mtime html-file))
       (let ((css-out (org-museum--css-output-path)))
         (and (file-exists-p css-out)
              (> (org-museum--file-mtime css-out)
+                (org-museum--file-mtime html-file))))
+      (let ((exporter-file (or load-file-name (locate-library "org-museum"))))
+        (and exporter-file
+             (file-exists-p exporter-file)
+             (> (org-museum--file-mtime exporter-file)
                 (org-museum--file-mtime html-file))))))
 
 (defconst org-museum--cjk-emphasis-before-chars
@@ -2478,17 +2503,29 @@ function initCodeBlocks(){
   function runHighlight(){
     if(!window.hljs)return;
     codes.forEach(function(code){
-      if(!code.dataset.highlighted)hljs.highlightElement(code);
+      var lang=code.getAttribute('data-language')||'';
+      if(!code.dataset.highlighted&&(!lang||hljs.getLanguage(lang))){
+        hljs.highlightElement(code);
+      }else if(lang&&!hljs.getLanguage(lang)){
+        code.classList.add('no-highlight');
+      }
     });
   }
-  if(window.hljs){runHighlight();}
+  function loadScript(src,done,fail){
+    var js=document.createElement('script');
+    js.src=src;js.async=true;js.onload=done;
+    js.onerror=fail||function(){document.body.classList.add('org-museum-no-code-highlight');};
+    document.head.appendChild(js);
+  }
+  function runAfterLanguageModules(){
+    if(window.hljs&&hljs.getLanguage('lisp'))runHighlight();
+    else loadScript('%s',runHighlight,runHighlight);
+  }
+  if(window.hljs){runAfterLanguageModules();}
   else{
     var css=document.createElement('link');css.rel='stylesheet';
     css.href='%s';document.head.appendChild(css);
-    var js=document.createElement('script');js.src='%s';js.async=true;
-    js.onload=runHighlight;
-    js.onerror=function(){document.body.classList.add('org-museum-no-code-highlight');};
-    document.head.appendChild(js);
+    loadScript('%s',runAfterLanguageModules);
   }
 }
 
@@ -2649,8 +2686,10 @@ window.addEventListener('load',function(){
 
 })();
 </script>\n"
+   (org-museum--hljs-lisp-js-src out-file)
    (org-museum--hljs-css-src out-file)
-   (org-museum--hljs-js-src out-file)))
+   (org-museum--hljs-js-src out-file)
+   (org-museum--hljs-lisp-js-src out-file)))
 
 ;; ============================================================
 ;; §25  SCRIPT: BACKGROUND EFFECTS  [Fix-10]
