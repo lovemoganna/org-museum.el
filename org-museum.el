@@ -159,6 +159,34 @@ still trigger multiple flushes."
   :type 'number
   :group 'org-museum)
 
+(defcustom org-museum-code-highlight-method 'hljs
+  "Code highlighting method for HTML export.
+'hljs        — Use Highlight.js (client-side, recommended).
+               Code blocks are exported plain; hljs runs in the browser.
+               Provides broad language coverage (SQL, Python, Rust, etc.)
+               and a consistent look regardless of Emacs theme.
+'inline-css  — Use htmlize with inline CSS (server-side).
+               Emacs theme colours are baked into each <span style=\"...\">,
+               so SQL keywords match exactly what the Emacs buffer shows.
+'css-classes — Use htmlize with CSS class names.
+               Generates <span class=\"org-keyword\"> and an accompanying
+               <style> block.  Useful when you supply a custom stylesheet."
+  :type '(choice (const :tag "Highlight.js (推荐)" hljs)
+                 (const :tag "Emacs 内联样式" inline-css)
+                 (const :tag "CSS 类名 + 样式表" css-classes))
+  :group 'org-museum)
+
+(defcustom org-museum-latex-code-highlight 'minted
+  "Code highlighting method for LaTeX/PDF export.
+'minted   — Use the minted package (requires Python + Pygments).
+            Produces high-quality coloured output with many languages.
+'listings — Use the listings package (pure LaTeX, no external deps).
+nil       — No code highlighting in PDF exports."
+  :type '(choice (const :tag "minted (推荐)" minted)
+                 (const :tag "listings" listings)
+                 (const nil))
+  :group 'org-museum)
+
 ;; ============================================================
 ;; Graph noise control helpers
 ;; ============================================================
@@ -808,18 +836,27 @@ user Org settings remain untouched."
           (let ((export-buf (find-file-noselect tmp)))
             (unwind-protect
                 (with-current-buffer export-buf
-                  (let ((org-export-with-toc                 t)
-                        (org-html-doctype                    "html5")
-                        (org-html-head-include-default-style nil)
-                        (org-html-preamble                   nil)
-                        (org-html-postamble                  nil)
-                        (org-export-with-broken-links        'mark)
-                        (org-export-with-drawers             nil)
-                        (org-export-with-properties          nil)
-                        (org-export-with-sub-superscripts    nil)
-                        (org-html-htmlize-output-type
-                         (if (locate-library "htmlize") 'css nil))
-                        (coding-system-for-write             'utf-8))
+                  (let* ((use-htmlize-p (memq org-museum-code-highlight-method
+                                              '(inline-css css-classes)))
+                         (htmlize-type (pcase org-museum-code-highlight-method
+                                        ('inline-css  'inline-css)
+                                        ('css-classes 'css)
+                                        (_            nil)))
+                         (org-src-fontify-natively    use-htmlize-p)
+                         (org-export-with-toc                 t)
+                         (org-html-doctype                    "html5")
+                         (org-html-head-include-default-style nil)
+                         (org-html-preamble                   nil)
+                         (org-html-postamble                  nil)
+                         (org-export-with-broken-links        'mark)
+                         (org-export-with-drawers             nil)
+                         (org-export-with-properties          nil)
+                         (org-export-with-sub-superscripts    nil)
+                         (org-html-htmlize-output-type
+                          (if (and use-htmlize-p
+                                   (locate-library "htmlize"))
+                              htmlize-type nil))
+                         (coding-system-for-write             'utf-8))
                     (org-museum--with-cjk-emphasis-export
                       (org-export-to-file 'html out-file))))
               (when (buffer-live-p export-buf) (kill-buffer export-buf))))
@@ -853,6 +890,7 @@ malformed HTML."
   (with-temp-buffer
     (insert-file-contents out-file)
     (org-museum--pp-remove-inline-styles)
+    (org-museum--pp-inject-hljs-language-classes)
     (if (not (org-museum--pp-wrap-content-div out-file))
         (progn
           (message "Org Museum [Export]: aborting post-processing for %s \
@@ -864,12 +902,34 @@ malformed HTML."
       t)))
 
 (defun org-museum--pp-remove-inline-styles ()
-  "Strip <style>…</style> blocks from current buffer."
-  (goto-char (point-min))
-  (while (re-search-forward "<style[^>]*>" nil t)
-    (let ((beg (match-beginning 0)))
-      (when (re-search-forward "</style>" nil t)
-        (delete-region beg (point))))))
+  "Conditionally strip <style>…</style> blocks from current buffer.
+In 'hljs mode, removes all Org-generated <style> blocks to keep the HTML
+clean (hljs handles highlighting via its own CSS).  In 'inline-css and
+'css-classes modes, the <style> blocks are preserved because they contain
+the htmlize colour definitions that make code highlighting work."
+  (when (eq org-museum-code-highlight-method 'hljs)
+    (goto-char (point-min))
+    (while (re-search-forward "<style[^>]*>" nil t)
+      (let ((beg (match-beginning 0)))
+        (when (re-search-forward "</style>" nil t)
+          (delete-region beg (point)))))))
+
+(defun org-museum--pp-inject-hljs-language-classes ()
+  "Rewrite Org src blocks to add hljs-compatible language class attributes.
+Org exports code blocks as:
+  <pre class=\"src src-sql\"><code>...</code></pre>
+but Highlight.js requires:
+  <pre class=\"src src-sql\"><code class=\"language-sql\">...</code></pre>
+This function adds the missing language-xxx class to <code> elements inside
+src blocks, enabling reliable hljs auto-detection.
+Only runs when `org-museum-code-highlight-method' is 'hljs."
+  (when (eq org-museum-code-highlight-method 'hljs)
+    (goto-char (point-min))
+    (while (re-search-forward
+            "<pre class=\"src src-\\([a-zA-Z0-9_+-]+\\)\">" nil t)
+      (let ((lang (match-string 1)))
+        (when (re-search-forward "<code>" nil t)
+          (replace-match (format "<code class=\"language-%s\">" lang)))))))
 
 ;; Fix-05: now returns t on success, nil on failure.
 (defun org-museum--pp-wrap-content-div (out-file)
@@ -2905,6 +2965,51 @@ isolated pages, quick action links.
       (display-buffer (current-buffer)))))
 
 ;;;###autoload
+;; ============================================================
+;; §30  LATEX / PDF CODE HIGHLIGHTING
+;; ============================================================
+
+(defun org-museum--setup-latex-export ()
+  "Configure ox-latex for code highlighting based on user preference.
+Must be called after `org-museum-latex-code-highlight' is set.
+
+When 'minted:
+  - Sets `org-latex-listings' to 'minted
+  - Adds the minted package to `org-latex-packages-alist'
+  - Ensures -shell-escape is in the compilation command chain
+
+When 'listings:
+  - Sets `org-latex-listings' to t
+  - Adds the listings and color packages
+
+When nil:
+  - Sets `org-latex-listings' to nil (verbatim output)"
+  (require 'ox-latex)
+  (pcase org-museum-latex-code-highlight
+    ('minted
+     (setq org-latex-listings 'minted)
+     (cl-pushnew '("" "minted" t) org-latex-packages-alist :test #'equal)
+     ;; Ensure -shell-escape in every PDF compilation step
+     (setq org-latex-pdf-process
+           (mapcar (lambda (cmd)
+                     (if (string-match-p "-shell-escape" cmd)
+                         cmd
+                       (replace-regexp-in-string
+                        "%latex " "%latex -shell-escape " cmd)))
+                   (or org-latex-pdf-process
+                       '("%latex -interaction nonstopmode -output-directory %o %f"
+                         "%latex -interaction nonstopmode -output-directory %o %f"
+                         "%latex -interaction nonstopmode -output-directory %o %f"))))
+     (message "Org Museum [LaTeX]: minted highlighting configured"))
+    ('listings
+     (setq org-latex-listings t)
+     (cl-pushnew '("" "listings" nil) org-latex-packages-alist :test #'equal)
+     (cl-pushnew '("" "color" nil)    org-latex-packages-alist :test #'equal)
+     (message "Org Museum [LaTeX]: listings highlighting configured"))
+    (_
+     (setq org-latex-listings nil)
+     (message "Org Museum [LaTeX]: no code highlighting"))))
+
 (defun org-museum-init (root-dir)
   "Initialise an Org Museum workspace at ROOT-DIR."
   (interactive "DSelect Org Museum Root: ")
@@ -2913,6 +3018,7 @@ isolated pages, quick action links.
                      org-museum-pages-subdir))
     (make-directory (expand-file-name dir org-museum-root-dir) t))
   (org-museum--ensure-css-deployed)
+  (org-museum--setup-latex-export)
   (org-museum-index-build t)
   (message "Org Museum initialised: %s" org-museum-root-dir))
 
