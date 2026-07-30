@@ -35,6 +35,7 @@
 (require 'cl-lib)
 (require 'json)
 (require 'subr-x)
+(require 'url-util)
 
 ;; ============================================================
 ;; §1  CONSTANTS
@@ -253,7 +254,7 @@ Applicable scope: org-museum--on-save (Fix-02).")
                    (links    (expand-file-name "straight/links/org-museum/"
                                                user-emacs-directory))
                    (roam     (expand-file-name "org-roam/" user-emacs-directory))
-                   (dirs     (delq nil (list load-dir lib-dir roam links repos))))
+                   (dirs     (delq nil (list load-dir lib-dir links repos roam))))
               (or (cl-find-if
                    (lambda (dir)
                      (file-exists-p
@@ -391,6 +392,85 @@ Layout: <org-museum-root-dir>/<org-museum-pages-subdir>/"
   "Return <link> tag for CSS, relative to FROM-OUT-FILE."
   (format "<link rel=\"stylesheet\" href=\"%s\">"
           (org-museum--relative-path (org-museum--css-output-path) from-out-file)))
+
+(defun org-museum--html-escape (value &optional attribute)
+  "Return VALUE escaped for HTML text, or for an ATTRIBUTE when non-nil."
+  (let ((escaped (org-html-encode-plain-text (format "%s" (or value "")))))
+    (if attribute
+        (replace-regexp-in-string
+         "'" "&#39;"
+         (replace-regexp-in-string "\"" "&quot;" escaped t t)
+         t t)
+      escaped)))
+
+(defun org-museum--json-for-html (value)
+  "Encode VALUE as JSON safe to embed inside an HTML script element."
+  (let ((json-encoding-pretty-print nil)
+        (encoded (json-encode value)))
+    (dolist (pair '(("<" . "\\u003c")
+                    (">" . "\\u003e")
+                    ("&" . "\\u0026")
+                    ("\u2028" . "\\u2028")
+                    ("\u2029" . "\\u2029")))
+      (setq encoded
+            (replace-regexp-in-string
+             (regexp-quote (car pair)) (cdr pair) encoded t t)))
+    encoded))
+
+(defun org-museum--page-modified-number (page)
+  "Return PAGE modified time as a sortable number."
+  (let ((value (org-museum-page-modified page)))
+    (if (numberp value) value 0)))
+
+(defun org-museum--sort-pages-by-modified (pages)
+  "Return a fresh copy of PAGES sorted newest first."
+  (sort (copy-sequence pages)
+        (lambda (a b)
+          (> (org-museum--page-modified-number a)
+             (org-museum--page-modified-number b)))))
+
+(defun org-museum--format-page-date (page &optional dotted)
+  "Return PAGE modified date.
+When DOTTED is non-nil, use YYYY.MM.DD; otherwise use YYYY-MM-DD."
+  (format-time-string
+   (if dotted "%Y.%m.%d" "%Y-%m-%d")
+   (seconds-to-time (org-museum--page-modified-number page))))
+
+(defun org-museum--published-page-p (page)
+  "Return non-nil when PAGE should be visible in the exported index."
+  (not (string= (downcase (or (org-museum-page-status page) "published"))
+                "draft")))
+
+(defun org-museum--pages-from-categories (cats)
+  "Return unique visible pages collected from CATS."
+  (let ((seen (make-hash-table :test 'equal))
+        pages)
+    (dolist (entry cats)
+      (dolist (page (cdr entry))
+        (let ((id (org-museum-page-id page)))
+          (when (and (org-museum--published-page-p page)
+                     (not (gethash id seen)))
+            (puthash id t seen)
+            (push page pages)))))
+    (nreverse pages)))
+
+(defun org-museum--page-index-alist (page out-file)
+  "Return a browser-facing metadata alist for PAGE relative to OUT-FILE."
+  `((pageId . ,(org-museum-page-id page))
+    (title . ,(org-museum-page-title page))
+    (category . ,(org-museum-page-category page))
+    (tags . ,(vconcat (org-museum-page-tags page)))
+    (modified . ,(org-museum--page-modified-number page))
+    (modifiedDate . ,(org-museum--format-page-date page))
+    (href . ,(org-museum--page-href (org-museum-page-id page) out-file))))
+
+(defun org-museum--index-data-alist (pages out-file)
+  "Return embedded browser index data for PAGES relative to OUT-FILE."
+  `((generatedAt . ,(format-time-string "%Y-%m-%dT%H:%M:%S%z"))
+    (pages . ,(vconcat
+               (mapcar (lambda (page)
+                         (org-museum--page-index-alist page out-file))
+                       pages)))))
 
 ;; ============================================================
 ;; §6  CSS DEPLOYMENT
@@ -917,7 +997,8 @@ malformed HTML."
     (insert-file-contents out-file)
     (org-museum--pp-remove-inline-styles)
     (org-museum--pp-inject-hljs-language-classes)
-    (if (not (org-museum--pp-wrap-content-div out-file))
+    (org-museum--pp-inject-page-attributes org-file)
+    (if (not (org-museum--pp-wrap-content-div out-file org-file))
         (progn
           (message "Org Museum [Export]: aborting post-processing for %s \
 (#content div not found)" out-file)
@@ -926,6 +1007,73 @@ malformed HTML."
       (org-museum--pp-inject-sidebars-and-scripts out-file)
       (write-region (point-min) (point-max) out-file)
       t)))
+
+(defun org-museum--page-for-file (org-file)
+  "Return the indexed page matching ORG-FILE."
+  (when org-museum--index
+    (org-museum--find-page-by-path
+     org-file (org-museum-index-pages org-museum--index))))
+
+(defun org-museum--source-reading-minutes (org-file)
+  "Estimate compact reading time for ORG-FILE."
+  (if (not (file-readable-p org-file))
+      1
+    (with-temp-buffer
+      (insert-file-contents org-file)
+      (max 1 (ceiling (/ (float (buffer-size)) 500))))))
+
+(defun org-museum--article-meta-html (page out-file org-file)
+  "Return the article metadata rail for PAGE."
+  (let* ((shared-root (org-museum--shared-root))
+         (home-href (org-museum--relative-path
+                     (expand-file-name "index.html" shared-root) out-file))
+         (tags (org-museum-page-tags page)))
+    (format
+     (concat
+      "<aside class=\"museum-article-meta\" aria-label=\"文章元数据\">\n"
+      "  <a class=\"article-category\" href=\"%s?q=%s\">%s</a>\n"
+      "  <dl>\n"
+      "    <div><dt>修改日期</dt><dd><time datetime=\"%s\">%s</time></dd></div>\n"
+      "    <div><dt>阅读时间</dt><dd>约 %d 分钟</dd></div>\n"
+      "    <div><dt>标签</dt><dd>%s</dd></div>\n"
+      "  </dl>\n"
+      "  <nav class=\"article-back-nav\" aria-label=\"文章返回导航\">\n"
+      "    <a href=\"%s#recent-updates\">← 最近更新</a>\n"
+      "    <a href=\"%s\">返回索引</a>\n"
+      "  </nav>\n"
+      "</aside>\n")
+     (org-museum--html-escape home-href t)
+     (url-hexify-string (org-museum-page-category page))
+     (org-museum--html-escape (org-museum-page-category page))
+     (org-museum--format-page-date page)
+     (org-museum--format-page-date page)
+     (org-museum--source-reading-minutes org-file)
+     (if tags
+         (mapconcat #'org-museum--html-escape tags " · ")
+       "—")
+     (org-museum--html-escape home-href t)
+     (org-museum--html-escape home-href t))))
+
+(defun org-museum--pp-inject-page-attributes (org-file)
+  "Add stable page metadata attributes to the current HTML buffer."
+  (when-let ((page (org-museum--page-for-file org-file)))
+    (goto-char (point-min))
+    (when (re-search-forward "<body\\([^>]*\\)>" nil t)
+      (let ((existing (match-string 1)))
+        (replace-match
+         (format
+          (concat "<body%s class=\"org-museum-page\" data-page-kind=\"article\" "
+                  "data-page-id=\"%s\" data-page-title=\"%s\" "
+                  "data-page-category=\"%s\" data-page-tags=\"%s\" "
+                  "data-page-modified=\"%s\">")
+          existing
+          (org-museum--html-escape (org-museum-page-id page) t)
+          (org-museum--html-escape (org-museum-page-title page) t)
+          (org-museum--html-escape (org-museum-page-category page) t)
+          (org-museum--html-escape
+           (mapconcat #'identity (org-museum-page-tags page) ",") t)
+          (org-museum--format-page-date page))
+         t t)))))
 
 (defun org-museum--pp-remove-inline-styles ()
   "Conditionally strip <style>…</style> blocks from current buffer.
@@ -1020,16 +1168,32 @@ Only runs when `org-museum-code-highlight-method' is 'hljs."
               (insert (format "<code class=\"language-%s\">" hljs-lang)))))))))
 
 ;; Fix-05: now returns t on success, nil on failure.
-(defun org-museum--pp-wrap-content-div (out-file)
+(defun org-museum--pp-wrap-content-div (out-file org-file)
   "Wrap #content with scroll/article containers in current buffer.
 Returns t on success, nil when #content is not found.
 [Fix-05] Callers must check the return value and short-circuit on nil.
 Applicable scope: org-museum--postprocess-html."
   (goto-char (point-min))
   (if (re-search-forward "<div id=\"content\"[^>]*>" nil t)
-      (progn
+      (let* ((page (org-museum--page-for-file org-file))
+             (meta (if page
+                       (org-museum--article-meta-html page out-file org-file)
+                     "<aside class=\"museum-article-meta\"></aside>\n"))
+             (article-attrs
+              (if page
+                  (format
+                   (concat " data-page-id=\"%s\" data-page-title=\"%s\" "
+                           "data-page-category=\"%s\"")
+                   (org-museum--html-escape (org-museum-page-id page) t)
+                   (org-museum--html-escape (org-museum-page-title page) t)
+                   (org-museum--html-escape (org-museum-page-category page) t))
+                "")))
         (replace-match
-         "<div id=\"main-scroll\"><div id=\"content\"><div class=\"article-container\">")
+         (concat
+          "<main id=\"main-scroll\"><div id=\"content\" class=\"museum-article-layout\">"
+          meta
+          "<article class=\"article-container\"" article-attrs ">")
+         t t)
         t)
     (message "Org Museum [PostProcess]: #content not found in %s — \
 check org-export output for this file" out-file)
@@ -1050,13 +1214,26 @@ check org-export output for this file" out-file)
     (goto-char (point-max))
     (cond
      ((re-search-backward "</div>\\([\n\r\t ]*\\)</body>" nil t)
-      (replace-match (concat appended "\n</div></div></div>\\1</body>")))
+      (replace-match
+       (concat
+        appended
+        "\n</article>\n"
+        "<aside id=\"org-museum-right-sidebar\" aria-label=\"本文目录\">"
+        "<h4>本文目录</h4></aside>\n"
+        "</div></main>\\1</body>")))
      (t
       (when (re-search-backward "</div>" nil t)
-        (replace-match (concat appended "\n</div></div></div>")))))))
+        (replace-match
+         (concat
+          appended
+          "\n</article><aside id=\"org-museum-right-sidebar\" "
+          "aria-label=\"本文目录\"><h4>本文目录</h4></aside></div></main>")))))))
 
 (defun org-museum--pp-inject-sidebars-and-scripts (out-file)
   "Inject sidebar, TOC, and script HTML before </body>."
+  (goto-char (point-min))
+  (when (re-search-forward "<body[^>]*>" nil t)
+    (insert "\n" (org-museum--build-topbar out-file 'article)))
   (goto-char (point-max))
   (when (re-search-backward "</body>" nil t)
     (insert (org-museum--build-sidebar-injection out-file))
@@ -1133,7 +1310,7 @@ check org-export output for this file" out-file)
                (org-museum-index-categories org-museum--index)))
     (sort cats (lambda (a b) (string< (car a) (car b))))))
 
-(defun org-museum--build-index-html (cats graph-href out-file)
+(defun org-museum--build-index-html-legacy (cats graph-href out-file)
   "Return full index.html string for CATS, with GRAPH-HREF link."
   (concat
    "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
@@ -1164,6 +1341,314 @@ check org-export output for this file" out-file)
 ;; ============================================================
 ;; §15  KNOWLEDGE GRAPH EXPORT  [Fix-06]
 ;; ============================================================
+
+(defun org-museum--build-topbar (out-file &optional kind)
+  "Return the shared top navigation for OUT-FILE.
+KIND is one of `home', `article', or `graph'."
+  (let* ((shared-root (org-museum--shared-root))
+         (home-href (org-museum--relative-path
+                     (expand-file-name "index.html" shared-root) out-file))
+         (graph-href (org-museum--relative-path
+                      (expand-file-name "graph.html" shared-root) out-file))
+         (placeholder (pcase kind
+                        ('article "搜索此 Wiki…")
+                        ('graph "搜索节点…")
+                        (_ "搜索标题、标签或正文…"))))
+    (format
+     (concat
+      "<header class=\"museum-topbar\" data-home-href=\"%s\">\n"
+      "  <a class=\"museum-wordmark\" href=\"%s\">ORG MUSEUM</a>\n"
+      "  <time class=\"museum-today\" datetime=\"%s\">%s</time>\n"
+      "  <label class=\"museum-search-line\" for=\"org-museum-global-search\">\n"
+      "    <span class=\"sr-only\">全局搜索</span>\n"
+      "    <input id=\"org-museum-global-search\" type=\"search\" "
+      "placeholder=\"%s\" autocomplete=\"off\" spellcheck=\"false\">\n"
+      "    <kbd>/</kbd>\n"
+      "  </label>\n"
+      "  <nav class=\"museum-top-links\" aria-label=\"Wiki 导航\">\n"
+      "    <a href=\"%s\">%s</a>\n"
+      "    <a href=\"%s\">%s</a>\n"
+      "  </nav>\n"
+      "</header>\n")
+     (org-museum--html-escape home-href t)
+     (org-museum--html-escape home-href t)
+     (format-time-string "%Y-%m-%d")
+     (format-time-string "%Y.%m.%d")
+     placeholder
+     (if (eq kind 'home) "#recent-updates"
+       (org-museum--html-escape home-href t))
+     (if (eq kind 'home) "全部笔记" "首页")
+     (if (eq kind 'graph)
+         (concat (org-museum--html-escape home-href t) "#recent-updates")
+       (org-museum--html-escape graph-href t))
+     (if (eq kind 'graph) "全部笔记" "知识图谱"))))
+
+(defun org-museum--build-topic-index-html (cats)
+  "Return topic index controls for CATS."
+  (let ((visible
+         (cl-remove-if
+          (lambda (entry)
+            (= 0 (cl-count-if #'org-museum--published-page-p (cdr entry))))
+          cats)))
+    (if (null visible)
+        "<p class=\"museum-empty-copy\">当前还没有可展示的主题。</p>\n"
+      (mapconcat
+       (lambda (entry)
+         (let ((count (cl-count-if #'org-museum--published-page-p (cdr entry))))
+           (format
+            (concat "<button type=\"button\" class=\"topic-filter\" "
+                    "data-category=\"%s\"><span>%s</span><strong>%02d</strong></button>")
+            (org-museum--html-escape (car entry) t)
+            (org-museum--html-escape (car entry))
+            count)))
+       visible "\n"))))
+
+(defun org-museum--build-index-entry-html (page out-file index)
+  "Return one recent index entry for PAGE relative to OUT-FILE at INDEX."
+  (format
+   (concat
+    "<article class=\"museum-index-entry\" data-page-id=\"%s\" "
+    "data-category=\"%s\">\n"
+    "  <div class=\"museum-entry-meta\"><span>%02d</span><time datetime=\"%s\">%s</time></div>\n"
+    "  <h3><a href=\"%s\">%s</a></h3>\n"
+    "  <a class=\"museum-entry-category\" href=\"#\" data-category-link=\"%s\">%s</a>\n"
+    "</article>\n")
+   (org-museum--html-escape (org-museum-page-id page) t)
+   (org-museum--html-escape (org-museum-page-category page) t)
+   index
+   (org-museum--format-page-date page)
+   (org-museum--format-page-date page)
+   (org-museum--html-escape
+    (org-museum--page-href (org-museum-page-id page) out-file) t)
+   (org-museum--html-escape (org-museum-page-title page))
+   (org-museum--html-escape (org-museum-page-category page) t)
+   (org-museum--html-escape (org-museum-page-category page))))
+
+(defun org-museum--script-index ()
+  "Return homepage search and IndexedDB continuation behavior."
+  "<script>
+(function(){
+'use strict';
+var dataEl=document.getElementById('org-museum-index-data');
+var data={pages:[]};
+try{data=JSON.parse(dataEl?dataEl.textContent:'{\"pages\":[]}');}catch(_error){}
+var pages=Array.isArray(data.pages)?data.pages:[];
+var search=document.getElementById('org-museum-global-search');
+var results=document.getElementById('index-search-results');
+var resultList=document.getElementById('index-search-list');
+var recent=document.getElementById('recent-updates');
+var resume=document.getElementById('continue-reading');
+var resumeList=document.getElementById('continue-reading-list');
+var collator=new Intl.Collator('zh-CN',{sensitivity:'base'});
+
+function pageHaystack(page){
+  return [page.title,page.category].concat(page.tags||[]).join(' ').toLowerCase();
+}
+function makeResult(page){
+  var row=document.createElement('a');
+  row.className='museum-search-result';
+  row.href=page.href;
+  var title=document.createElement('span');title.textContent=page.title;
+  var meta=document.createElement('small');
+  meta.textContent=(page.modifiedDate||'')+' · '+(page.category||'未分类');
+  row.appendChild(title);row.appendChild(meta);
+  return row;
+}
+function showPages(matched,label){
+  if(!results||!resultList)return;
+  resultList.textContent='';
+  var heading=results.querySelector('h2 span');
+  if(heading)heading.textContent=label;
+  matched.forEach(function(page){resultList.appendChild(makeResult(page));});
+  var empty=results.querySelector('.museum-search-empty');
+  if(empty)empty.hidden=matched.length>0;
+  results.hidden=false;
+  if(recent)recent.hidden=true;
+}
+function clearResults(){
+  if(results)results.hidden=true;
+  if(recent)recent.hidden=false;
+}
+function runSearch(raw){
+  var q=(raw||'').trim().toLowerCase();
+  if(!q){clearResults();return;}
+  var matched=pages.filter(function(page){return pageHaystack(page).indexOf(q)>=0;})
+    .sort(function(a,b){return (b.modified||0)-(a.modified||0)||collator.compare(a.title,b.title);});
+  showPages(matched,'搜索结果 / '+String(matched.length).padStart(2,'0'));
+}
+if(search){
+  search.addEventListener('input',function(){runSearch(search.value);});
+  search.addEventListener('keydown',function(event){
+    if(event.key==='Escape'){search.value='';clearResults();search.blur();}
+  });
+}
+document.addEventListener('keydown',function(event){
+  if(event.key==='/'&&!event.metaKey&&!event.ctrlKey&&!event.altKey&&
+     !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)){
+    event.preventDefault();if(search)search.focus();
+  }
+});
+document.querySelectorAll('[data-category],[data-category-link]').forEach(function(control){
+  control.addEventListener('click',function(event){
+    event.preventDefault();
+    var category=control.getAttribute('data-category')||
+                 control.getAttribute('data-category-link');
+    var matched=pages.filter(function(page){return page.category===category;})
+      .sort(function(a,b){return (b.modified||0)-(a.modified||0);});
+    showPages(matched,category+' / '+String(matched.length).padStart(2,'0'));
+  });
+});
+
+function openReadingDb(){
+  return new Promise(function(resolve,reject){
+    if(!window.indexedDB){reject(new Error('IndexedDB unavailable'));return;}
+    var request=indexedDB.open('org-museum',1);
+    request.onupgradeneeded=function(){
+      var db=request.result;
+      var store=db.objectStoreNames.contains('readingState')
+        ?request.transaction.objectStore('readingState')
+        :db.createObjectStore('readingState',{keyPath:'pageId'});
+      if(!store.indexNames.contains('lastVisitedAt'))
+        store.createIndex('lastVisitedAt','lastVisitedAt',{unique:false});
+    };
+    request.onsuccess=function(){resolve(request.result);};
+    request.onerror=function(){reject(request.error||new Error('IndexedDB failed'));};
+    request.onblocked=function(){reject(new Error('IndexedDB blocked'));};
+  });
+}
+function loadRecentRecords(db){
+  return new Promise(function(resolve,reject){
+    var records=[];
+    var tx=db.transaction('readingState','readonly');
+    var index=tx.objectStore('readingState').index('lastVisitedAt');
+    var request=index.openCursor(null,'prev');
+    request.onsuccess=function(){
+      var cursor=request.result;
+      if(cursor&&records.length<6){records.push(cursor.value);cursor.continue();}
+      else resolve(records);
+    };
+    request.onerror=function(){reject(request.error);};
+  });
+}
+function resumeHref(record){
+  var href=record.href||record.url||'#';
+  if(record.lastHeadingId)href=href.split('#')[0]+'#'+encodeURIComponent(record.lastHeadingId);
+  return href;
+}
+function renderResume(records){
+  if(!resume||!resumeList)return;
+  resumeList.textContent='';
+  if(!records.length){
+    var emptyState=document.createElement('div');
+    emptyState.className='resume-empty-state';
+    var heading=document.createElement('strong');heading.textContent='还没有阅读轨迹';
+    var copy=document.createElement('small');
+    copy.textContent='打开任意文章后，这里会保存最近位置；正文不会写入数据库。';
+    emptyState.appendChild(heading);emptyState.appendChild(copy);
+    if(pages.length){
+      var start=document.createElement('a');
+      start.href=pages.slice().sort(function(a,b){return (b.modified||0)-(a.modified||0);})[0].href;
+      start.textContent='从最近更新开始 →';
+      emptyState.appendChild(start);
+    }
+    resumeList.appendChild(emptyState);
+    resume.hidden=false;
+    document.body.classList.add('has-reading-state','has-empty-reading-state');
+    return;
+  }
+  records.forEach(function(record,index){
+    var link=document.createElement('a');
+    link.className='resume-record'+(index===0?' resume-record-primary':'');
+    link.href=resumeHref(record);
+    var number=document.createElement('span');
+    number.className='resume-number';number.textContent=String(index+1).padStart(2,'0');
+    var body=document.createElement('span');body.className='resume-copy';
+    var title=document.createElement('strong');title.textContent=record.title||record.pageId;
+    var detail=document.createElement('small');
+    detail.textContent=(record.lastHeadingTitle||'上次阅读位置')+' · '+
+      Math.round((record.progress||record.scrollRatio||0)*100)+'%';
+    body.appendChild(title);body.appendChild(detail);
+    var meter=document.createElement('span');meter.className='resume-meter';
+    var fill=document.createElement('i');
+    fill.style.width=Math.round((record.progress||record.scrollRatio||0)*100)+'%';
+    meter.appendChild(fill);
+    link.appendChild(number);link.appendChild(body);link.appendChild(meter);
+    resumeList.appendChild(link);
+  });
+  resume.hidden=false;
+  document.body.classList.add('has-reading-state');
+}
+openReadingDb().then(function(db){
+  return loadRecentRecords(db).finally(function(){db.close();});
+}).then(renderResume).catch(function(){if(resume)resume.hidden=true;});
+
+var params=new URLSearchParams(location.search);
+if(params.has('q')&&search){search.value=params.get('q');runSearch(search.value);}
+})();
+</script>\n")
+
+(defun org-museum--build-index-html (cats graph-href out-file)
+  "Return the complete index.html for CATS and GRAPH-HREF."
+  (ignore graph-href)
+  (let* ((pages (org-museum--sort-pages-by-modified
+                 (org-museum--pages-from-categories cats)))
+         (recent (seq-take pages 6))
+         (index-data (org-museum--index-data-alist pages out-file))
+         (recent-html
+          (if recent
+              (let ((n 0))
+                (mapconcat
+                 (lambda (page)
+                   (setq n (1+ n))
+                   (org-museum--build-index-entry-html page out-file n))
+                 recent ""))
+            "<p class=\"museum-empty-copy\">索引为空。导出笔记后，最近更新会出现在这里。</p>")))
+    (concat
+     "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n"
+     "  <meta charset=\"utf-8\">\n"
+     "  <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
+     "  <meta name=\"color-scheme\" content=\"dark\">\n"
+     "  <title>Org Museum</title>\n"
+     (format "  %s\n" (org-museum--css-link-tag out-file))
+     "</head>\n<body class=\"org-museum-home\" data-page-kind=\"home\">\n"
+     (org-museum--build-topbar out-file 'home)
+     "<main class=\"museum-index-shell\">\n"
+     "  <section class=\"museum-home-upper\">\n"
+     "    <section id=\"continue-reading\" class=\"museum-resume\" hidden>\n"
+     "      <div class=\"museum-section-heading\"><h2>继续阅读</h2><span>/ 06</span></div>\n"
+     "      <div id=\"continue-reading-list\"></div>\n"
+     "    </section>\n"
+     "    <section class=\"museum-topic-index\">\n"
+     "      <div class=\"museum-section-heading\"><h2>主题索引</h2><span>/ "
+     (format "%02d" (length cats))
+     "</span></div>\n"
+     "      <div class=\"museum-topic-grid\">\n"
+     (org-museum--build-topic-index-html cats)
+     "\n      </div>\n"
+     "    </section>\n"
+     "  </section>\n"
+     "  <section id=\"recent-updates\" class=\"museum-recent\">\n"
+     "    <div class=\"museum-section-heading museum-section-rule\"><h2>最近更新</h2><span>/ "
+     (format "%02d" (length recent))
+     "</span></div>\n"
+     "    <div class=\"museum-index-matrix\">\n"
+     recent-html
+     "    </div>\n"
+     "  </section>\n"
+     "  <section id=\"index-search-results\" class=\"museum-search-results\" hidden>\n"
+     "    <div class=\"museum-section-heading museum-section-rule\"><h2><span>搜索结果 / 00</span></h2></div>\n"
+     "    <div id=\"index-search-list\"></div>\n"
+     "    <p class=\"museum-search-empty\" hidden>没有匹配的笔记。可以换一个标题、标签或分类词。</p>\n"
+     "  </section>\n"
+     "  <footer class=\"museum-index-footer\">"
+     (format "%d 篇索引 · 本地静态 Wiki" (length pages))
+     "</footer>\n"
+     "</main>\n"
+     "<script type=\"application/json\" id=\"org-museum-index-data\">"
+     (org-museum--json-for-html index-data)
+     "</script>\n"
+     (org-museum--script-index)
+     "</body>\n</html>\n")))
 
 (defun org-museum--graph-performance-tier (node-count)
   "Return a plist describing the rendering tier for NODE-COUNT nodes.
@@ -1862,25 +2347,174 @@ Applicable scope: org-museum-create-page (Fix-16)."
 ;; §19  SIDEBAR INJECTION
 ;; ============================================================
 
+(defun org-museum--script-shell ()
+  "Return shared drawer, mobile TOC, and global-search behavior."
+  "<script>
+(function(){
+'use strict';
+var drawer=document.getElementById('org-museum-sidebar');
+var backdrop=document.getElementById('museum-drawer-backdrop');
+var toc=document.getElementById('org-museum-right-sidebar');
+function setDrawer(open){
+  document.body.classList.toggle('museum-drawer-open',open);
+  if(drawer)drawer.setAttribute('aria-hidden',open?'false':'true');
+}
+function setToc(open){document.body.classList.toggle('museum-toc-open',open);}
+document.querySelectorAll('[data-drawer-toggle]').forEach(function(button){
+  button.addEventListener('click',function(){setDrawer(!document.body.classList.contains('museum-drawer-open'));});
+});
+document.querySelectorAll('[data-drawer-close]').forEach(function(button){
+  button.addEventListener('click',function(){setDrawer(false);});
+});
+document.querySelectorAll('[data-toc-toggle]').forEach(function(button){
+  button.addEventListener('click',function(){setToc(!document.body.classList.contains('museum-toc-open'));});
+});
+if(backdrop)backdrop.addEventListener('click',function(){setDrawer(false);setToc(false);});
+document.addEventListener('keydown',function(event){
+  if(event.key==='Escape'){setDrawer(false);setToc(false);}
+});
+var search=document.getElementById('org-museum-global-search');
+if(search&&document.body.dataset.pageKind==='article'){
+  search.addEventListener('keydown',function(event){
+    if(event.key==='Enter'&&search.value.trim()){
+      var top=document.querySelector('.museum-topbar');
+      var home=top?top.getAttribute('data-home-href'):'index.html';
+      location.href=home+'?q='+encodeURIComponent(search.value.trim());
+    }
+  });
+}
+document.addEventListener('keydown',function(event){
+  if(event.key==='/'&&!event.metaKey&&!event.ctrlKey&&!event.altKey&&
+     !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)){
+    event.preventDefault();if(search)search.focus();
+  }
+});
+if(!toc||!toc.querySelector('ul'))document.body.classList.add('museum-no-toc');
+})();
+</script>\n")
+
+(defun org-museum--script-reading-state ()
+  "Return article IndexedDB reading-state persistence behavior."
+  "<script>
+(function(){
+'use strict';
+if(document.body.dataset.pageKind!=='article')return;
+var pageId=document.body.dataset.pageId;
+if(!pageId)return;
+var scroller=document.getElementById('main-scroll')||document.scrollingElement;
+var article=document.querySelector('.article-container');
+var headings=article?Array.from(article.querySelectorAll('h2[id],h3[id],h4[id]')):[];
+var activeHeading=null;
+var dbPromise=null;
+var restored=false;
+var timer=null;
+
+function openDb(){
+  if(dbPromise)return dbPromise;
+  dbPromise=new Promise(function(resolve,reject){
+    if(!window.indexedDB){reject(new Error('IndexedDB unavailable'));return;}
+    var request=indexedDB.open('org-museum',1);
+    request.onupgradeneeded=function(){
+      var db=request.result;
+      var store=db.objectStoreNames.contains('readingState')
+        ?request.transaction.objectStore('readingState')
+        :db.createObjectStore('readingState',{keyPath:'pageId'});
+      if(!store.indexNames.contains('lastVisitedAt'))
+        store.createIndex('lastVisitedAt','lastVisitedAt',{unique:false});
+    };
+    request.onsuccess=function(){resolve(request.result);};
+    request.onerror=function(){reject(request.error||new Error('IndexedDB failed'));};
+    request.onblocked=function(){reject(new Error('IndexedDB blocked'));};
+  });
+  return dbPromise;
+}
+function metrics(){
+  var top=scroller===window?window.scrollY:scroller.scrollTop;
+  var height=scroller===window
+    ?document.documentElement.scrollHeight-window.innerHeight
+    :scroller.scrollHeight-scroller.clientHeight;
+  var ratio=height>0?Math.max(0,Math.min(1,top/height)):0;
+  return {top:top,height:height,ratio:ratio};
+}
+function updateActiveHeading(){
+  var current=null;
+  headings.forEach(function(heading){
+    if(heading.getBoundingClientRect().top<=150)current=heading;
+  });
+  activeHeading=current;
+}
+function record(){
+  updateActiveHeading();
+  var state=metrics();
+  return {
+    pageId:pageId,
+    href:location.pathname+location.search,
+    url:location.pathname+location.search,
+    title:document.body.dataset.pageTitle||document.title,
+    category:document.body.dataset.pageCategory||'未分类',
+    lastVisitedAt:Date.now(),
+    lastHeadingId:activeHeading?activeHeading.id:'',
+    lastHeadingTitle:activeHeading?activeHeading.textContent.trim():'',
+    scrollRatio:state.ratio,
+    progress:state.ratio
+  };
+}
+function save(){
+  openDb().then(function(db){
+    var tx=db.transaction('readingState','readwrite');
+    tx.objectStore('readingState').put(record());
+  }).catch(function(){});
+}
+function schedule(){
+  var state=metrics();
+  document.documentElement.style.setProperty('--reading-progress',(state.ratio*100)+'%');
+  if(timer)return;
+  timer=setTimeout(function(){timer=null;save();},800);
+}
+function restore(){
+  openDb().then(function(db){
+    return new Promise(function(resolve,reject){
+      var request=db.transaction('readingState','readonly')
+        .objectStore('readingState').get(pageId);
+      request.onsuccess=function(){resolve(request.result);};
+      request.onerror=function(){reject(request.error);};
+    });
+  }).then(function(saved){
+    if(restored||!saved)return;restored=true;
+    var hash=decodeURIComponent(location.hash.replace(/^#/,''));
+    var target=hash?document.getElementById(hash):null;
+    if(target){target.scrollIntoView({block:'start'});}
+    else if(saved.scrollRatio>0){
+      requestAnimationFrame(function(){
+        var state=metrics();
+        var top=saved.scrollRatio*state.height;
+        if(scroller===window)window.scrollTo(0,top);else scroller.scrollTop=top;
+      });
+    }
+  }).catch(function(){});
+}
+scroller.addEventListener('scroll',schedule,{passive:true});
+window.addEventListener('pagehide',function(){if(timer){clearTimeout(timer);timer=null;}save();});
+window.addEventListener('load',function(){restore();schedule();});
+})();
+</script>\n")
+
 (defun org-museum--build-sidebar-injection (out-file)
   "Return the full sidebar+script HTML string to inject before </body>."
   (concat
-   "<input type=\"checkbox\" id=\"mobile-sidebar-toggle\" class=\"mobile-toggle\">\n"
-   "<input type=\"checkbox\" id=\"mobile-toc-toggle\"     class=\"mobile-toggle\">\n"
-   "<div id=\"mobile-hud\">\n"
-   "  <label for=\"mobile-sidebar-toggle\" id=\"btn-sidebar\" class=\"hud-btn\" tabindex=\"0\" role=\"button\" aria-label=\"Toggle Menu\">"
-   "<span>≡</span> MENU</label>\n"
-   "  <label for=\"mobile-toc-toggle\" id=\"btn-toc\" class=\"hud-btn\" tabindex=\"0\" role=\"button\" aria-label=\"Toggle Table of Contents\">"
-   "TOC <span>≡</span></label>\n"
+   "<div id=\"mobile-hud\" aria-label=\"移动导航\">\n"
+   "  <button type=\"button\" class=\"hud-btn\" data-drawer-toggle>全部笔记</button>\n"
+   "  <button type=\"button\" class=\"hud-btn\" data-toc-toggle>本文目录</button>\n"
    "</div>\n"
+   "<button type=\"button\" id=\"museum-drawer-backdrop\" aria-label=\"关闭抽屉\"></button>\n"
    "<div id=\"zen-mask\"></div>\n"
    "<canvas id=\"org-museum-fx-canvas\" aria-hidden=\"true\"></canvas>\n"
    (org-museum--generate-sidebar-html out-file)
-   "<aside id=\"org-museum-right-sidebar\" class=\"glass-drawer\">"
-   "<h4>ON THIS PAGE</h4></aside>\n"
    (org-museum--script-ui-core out-file)
    (org-museum--script-effects)
-   (org-museum--script-toc-relocate)))
+   (org-museum--script-toc-relocate)
+   (org-museum--script-shell)
+   (org-museum--script-reading-state)))
 
 ;; ============================================================
 ;; §20  LEFT SIDEBAR HTML
@@ -1900,41 +2534,47 @@ Applicable scope: org-museum-create-page (Fix-16)."
                        (expand-file-name "graph.html" shared-root) out-file))
          (cats        (org-museum--sorted-categories)))
     (with-output-to-string
-      (princ "<div id=\"org-museum-sidebar\">\n")
-      (princ "  <div class=\"sidebar-brand\">📚 Org Museum</div>\n")
-      (princ (format "  <a class=\"sidebar-nav-btn\" href=\"%s\">🏠 Home</a>\n"
+      (princ "<aside id=\"org-museum-sidebar\" aria-hidden=\"true\" aria-label=\"全部笔记\">\n")
+      (princ "  <div class=\"sidebar-header\"><strong>全部笔记</strong>")
+      (princ "<button type=\"button\" data-drawer-close>关闭</button></div>\n")
+      (princ (format "  <a class=\"sidebar-nav-btn\" href=\"%s\">返回首页</a>\n"
                      (replace-regexp-in-string "\\\\" "/" home-href)))
-      (princ (format "  <a class=\"sidebar-nav-btn graph\" href=\"%s\">🕸 Graph</a>\n"
+      (princ (format "  <a class=\"sidebar-nav-btn graph\" href=\"%s\">知识图谱</a>\n"
                      (replace-regexp-in-string "\\\\" "/" graph-href)))
       (princ "  <div class=\"sidebar-search\">\n")
-      (princ "    <input type=\"text\" id=\"org-museum-search-input\" placeholder=\"Search…\" aria-label=\"Search pages\">\n")
+      (princ "    <input type=\"search\" id=\"org-museum-search-input\" placeholder=\"筛选标题…\" aria-label=\"筛选页面\">\n")
       (princ "  </div>\n")
       (princ (org-museum--sidebar-fx-controls))
       (if (null cats)
-          (princ "  <p class=\"sidebar-empty\">(Index empty — run org-museum-index-build)</p>\n")
+          (princ "  <p class=\"sidebar-empty\">索引为空。请先运行 org-museum-index-build。</p>\n")
         (dolist (cat-entry cats)
           (princ "  <div class=\"sidebar-category\">\n")
-          (princ (format "    <div class=\"sidebar-cat-label\">%s</div>\n" (car cat-entry)))
+          (princ (format "    <div class=\"sidebar-cat-label\">%s <span>%02d</span></div>\n"
+                         (org-museum--html-escape (car cat-entry))
+                         (length (cdr cat-entry))))
           (princ "    <ul>\n")
           (dolist (p (cdr cat-entry))
             (princ (format "      <li><a href=\"%s\">%s</a></li>\n"
-                           (org-museum--page-href (org-museum-page-id p) out-file)
-                           (org-museum-page-title p))))
+                           (org-museum--html-escape
+                            (org-museum--page-href
+                             (org-museum-page-id p) out-file) t)
+                           (org-museum--html-escape
+                            (org-museum-page-title p)))))
           (princ "    </ul>\n")
           (princ "  </div>\n")))
-      (princ "</div>\n")
+      (princ "</aside>\n")
       (princ (org-museum--script-sidebar-search)))))
 
 (defun org-museum--sidebar-fx-controls ()
   "Return HTML for the background-effects control panel."
   (concat
    "  <div class=\"sidebar-fx-controls\">\n"
-   "    <div class=\"fx-label\">✨ Effects</div>\n"
+   "    <div class=\"fx-label\">背景效果</div>\n"
    "    <div class=\"fx-buttons\">\n"
-   "      <button class=\"fx-btn\" data-fx=\"none\">Off</button>\n"
-   "      <button class=\"fx-btn\" data-fx=\"tubes\">Tubes</button>\n"
-   "      <button class=\"fx-btn\" data-fx=\"matrix\">Matrix</button>\n"
-   "      <button class=\"fx-btn\" data-fx=\"particles\">Particles</button>\n"
+   "      <button class=\"fx-btn\" data-fx=\"none\">关闭</button>\n"
+   "      <button class=\"fx-btn\" data-fx=\"tubes\">轨迹</button>\n"
+   "      <button class=\"fx-btn\" data-fx=\"matrix\">矩阵</button>\n"
+   "      <button class=\"fx-btn\" data-fx=\"particles\">微粒</button>\n"
    "    </div>\n"
    "  </div>\n"))
 
@@ -1945,28 +2585,36 @@ Applicable scope: org-museum-create-page (Fix-16)."
 (defun org-museum--build-nav-html (links backs out-file)
   "Generate nav HTML for LINKS (outgoing) and BACKS (incoming)."
   (concat
-   "<nav class=\"org-museum-nav\">\n"
+   "<nav class=\"org-museum-nav\" aria-label=\"文章关系\">\n"
    (when links
      (concat
       "<div class=\"org-museum-nav-links\">"
-      "<span class=\"org-museum-nav-label\">Outgoing:</span>"
+      "<span class=\"org-museum-nav-label\">链接到 / "
+      (format "%02d" (length links))
+      "</span>"
       (mapconcat (lambda (id)
                    (let* ((p (gethash id (org-museum-index-pages org-museum--index)))
                           (title (if p (org-museum-page-title p) id)))
                      (format "<a href=\"%s\" class=\"org-museum-link\">%s</a>"
-                             (org-museum--page-href id out-file) title)))
-                 links " ")
+                             (org-museum--html-escape
+                              (org-museum--page-href id out-file) t)
+                             (org-museum--html-escape title))))
+                 links "\n")
       "</div>\n"))
    (when backs
      (concat
       "<div class=\"org-museum-nav-backlinks\">"
-      "<span class=\"org-museum-nav-label\">Incoming:</span>"
+      "<span class=\"org-museum-nav-label\">反向链接 / "
+      (format "%02d" (length backs))
+      "</span>"
       (mapconcat (lambda (id)
                    (let* ((p (gethash id (org-museum-index-pages org-museum--index)))
                           (title (if p (org-museum-page-title p) id)))
                      (format "<a href=\"%s\" class=\"org-museum-link\">%s</a>"
-                             (org-museum--page-href id out-file) title)))
-                 backs " ")
+                             (org-museum--html-escape
+                              (org-museum--page-href id out-file) t)
+                             (org-museum--html-escape title))))
+                 backs "\n")
       "</div>\n"))
    "</nav>\n"))
 
@@ -2114,7 +2762,7 @@ Applicable scope: org-museum--generate-local-graph-html."
               nodes)
         (push `((source . ,center-id) (target . ,overflow-id)) links)))
     `((nodes . ,(vconcat nodes)) (links . ,(vconcat links)))))
-(defun org-museum--generate-local-graph-html (page &optional out-file)
+(defun org-museum--generate-local-graph-html-legacy (page &optional out-file)
   "Return HTML+JS for a local D3 graph around PAGE.
 [Fix-07] Passes :link-arrow t to the shared renderer.
 [Fix-08] Neighbour count is capped via generate-local-graph-data."
@@ -2172,7 +2820,41 @@ Applicable scope: org-museum--generate-local-graph-html."
   </script>
 </div>"
             related-html json render (org-museum--d3-js-src out-file))))
-(defun org-museum--build-graph-html (json-data css-href &optional d3-src)
+(defun org-museum--generate-local-graph-html (page &optional out-file)
+  "Return the compact local relationship section for PAGE."
+  (let* ((data (org-museum--generate-local-graph-data page out-file))
+         (nodes (append (cdr (assq 'nodes data)) nil))
+         (related
+          (cl-remove-if
+           (lambda (node)
+             (or (cdr (assq 'center node))
+                 (string= (or (cdr (assq 'id node)) "") "_overflow")))
+           nodes))
+         (graph-file (expand-file-name "graph.html" (org-museum--shared-root)))
+         (graph-href (org-museum--relative-path graph-file out-file)))
+    (concat
+     "<section id=\"local-graph-container\" aria-labelledby=\"local-graph-heading\">\n"
+     (format "<h3 id=\"local-graph-heading\">局部关系 / %02d</h3>\n" (length related))
+     (if related
+         (concat
+          "<ul class=\"org-museum-related-list\">\n"
+          (mapconcat
+           (lambda (node)
+             (format "<li><a href=\"%s\">%s</a></li>"
+                     (org-museum--html-escape
+                      (or (cdr (assq 'url node)) "#") t)
+                     (org-museum--html-escape
+                      (or (cdr (assq 'name node))
+                          (cdr (assq 'id node))
+                          "未命名"))))
+           related "\n")
+          "\n</ul>\n")
+       "<p class=\"org-museum-related-empty\">这篇笔记还没有可导出的关联页面。</p>\n")
+     (format "<a class=\"local-graph-link\" href=\"%s\">查看局部关系 →</a>\n"
+             (org-museum--html-escape graph-href t))
+     "</section>\n")))
+
+(defun org-museum--build-graph-html-legacy (json-data css-href &optional d3-src)
   "Return complete graph.html content with performance-tier awareness.
 [Fix-06] Reads meta.pre-ticks from JSON and silently pre-heats the
 D3 simulation before DOM rendering begins, preventing node pile-up
@@ -2351,6 +3033,266 @@ in large-tier graphs."
 ;; ============================================================
 ;; §24  SCRIPT: UI CORE  [Fix-09]
 ;; ============================================================
+
+(defun org-museum--build-graph-html (json-data css-href &optional d3-src)
+  "Return the unified Monokai graph page for JSON-DATA."
+  (let* ((graph-file (expand-file-name "graph.html" (org-museum--shared-root)))
+         (topbar (org-museum--build-topbar graph-file 'graph))
+         (safe-json json-data))
+    (dolist (pair '(("<" . "\\u003c")
+                    (">" . "\\u003e")
+                    ("&" . "\\u0026")))
+      (setq safe-json
+            (replace-regexp-in-string
+             (regexp-quote (car pair)) (cdr pair) safe-json t t)))
+    (format
+     "<!DOCTYPE html>
+<html lang=\"zh-CN\">
+<head>
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
+  <meta name=\"color-scheme\" content=\"dark\">
+  <title>Org Museum · 知识图谱</title>
+  <link rel=\"stylesheet\" href=\"%s\">
+  <script src=\"%s\"></script>
+</head>
+<body class=\"graph-page\" data-page-kind=\"graph\">
+%s
+<main class=\"museum-graph-shell\">
+  <aside class=\"museum-graph-rail\">
+    <div class=\"museum-section-heading\"><h1>知识图谱</h1><span id=\"graph-heading-count\">/ 00</span></div>
+    <dl class=\"graph-counts\">
+      <div><dt>笔记</dt><dd id=\"stat-nodes\">00</dd></div>
+      <div><dt>连线</dt><dd id=\"stat-links\">00</dd></div>
+      <div><dt>主题</dt><dd id=\"stat-cats\">00</dd></div>
+    </dl>
+    <div class=\"graph-filter-block\">
+      <h2>主题筛选</h2>
+      <div id=\"graph-category-filters\"></div>
+    </div>
+    <div class=\"graph-view-controls\">
+      <button type=\"button\" id=\"btn-reset\">重置视图</button>
+      <button type=\"button\" id=\"btn-freeze\">冻结布局</button>
+      <small>拖动画布 · 滚轮缩放</small>
+    </div>
+  </aside>
+  <section class=\"museum-graph-workspace\" aria-label=\"知识关系画布\">
+    <div id=\"graph-canvas\"></div>
+    <div id=\"graph-empty-state\" hidden>
+      <h2>尚未形成知识连线</h2>
+      <p>当前笔记没有可导出的 Org 链接。节点仍可搜索和打开；添加链接后，关系会在下次导出时出现。</p>
+      <a href=\"index.html#recent-updates\">返回文章查看链接方式 →</a>
+    </div>
+    <div id=\"graph-tooltip\" role=\"status\" aria-live=\"polite\">
+      <strong id=\"tt-title\"></strong><span id=\"tt-meta\"></span>
+    </div>
+    <div class=\"graph-workspace-footer\">
+      <div id=\"graph-selected-detail\"><span>—</span><a href=\"index.html\">打开笔记 →</a></div>
+      <div id=\"graph-legend\" aria-label=\"主题图例\"></div>
+    </div>
+  </section>
+</main>
+<script>
+(function(){
+'use strict';
+var raw=%s;
+var nodes=(raw.nodes||[]).map(function(node){return Object.assign({},node);});
+var links=(raw.links||[]).map(function(link){return Object.assign({},link);});
+var palette=%s;
+var search=document.getElementById('org-museum-global-search');
+var canvas=document.getElementById('graph-canvas');
+var empty=document.getElementById('graph-empty-state');
+var selectedDetail=document.getElementById('graph-selected-detail');
+var cats=Array.from(new Set(nodes.map(function(node){return node.group||'未分类';}))).sort();
+var category='*';
+var query='';
+var selected=nodes[0]||null;
+var simulation=null;
+var frozen=false;
+
+function count(value){return String(value).padStart(2,'0');}
+document.getElementById('stat-nodes').textContent=count(nodes.length);
+document.getElementById('stat-links').textContent=count(links.length);
+document.getElementById('stat-cats').textContent=count(cats.length);
+document.getElementById('graph-heading-count').textContent='/ '+count(nodes.length);
+if(empty)empty.hidden=links.length!==0;
+
+function color(group){
+  var index=Math.max(0,cats.indexOf(group));
+  return palette[index%%palette.length]||'#a29e8e';
+}
+function matches(node){
+  var catOk=category==='*'||node.group===category;
+  var hay=[node.name,node.group].concat(node.tags||[]).join(' ').toLowerCase();
+  return catOk&&(!query||hay.indexOf(query)>=0);
+}
+function renderFilters(){
+  var root=document.getElementById('graph-category-filters');
+  var items=[{name:'*',label:'全部',count:nodes.length}].concat(
+    cats.map(function(cat){return {
+      name:cat,label:cat,count:nodes.filter(function(node){return node.group===cat;}).length
+    };})
+  );
+  items.forEach(function(item){
+    var button=document.createElement('button');
+    button.type='button';button.dataset.category=item.name;
+    button.innerHTML='<span></span><b></b>';
+    button.querySelector('span').textContent=item.label;
+    button.querySelector('b').textContent=count(item.count);
+    if(item.name===category)button.classList.add('is-active');
+    button.addEventListener('click',function(){
+      category=item.name;
+      root.querySelectorAll('button').forEach(function(entry){
+        entry.classList.toggle('is-active',entry.dataset.category===category);
+      });
+      applyFilter();
+    });
+    root.appendChild(button);
+  });
+}
+function renderLegend(){
+  var root=document.getElementById('graph-legend');
+  cats.forEach(function(cat){
+    var item=document.createElement('span');
+    var dot=document.createElement('i');dot.style.background=color(cat);
+    item.appendChild(dot);item.appendChild(document.createTextNode(cat));
+    root.appendChild(item);
+  });
+}
+function selectNode(node){
+  selected=node;
+  nodeSelection.select('circle').classed('is-selected',function(entry){return entry.id===node.id;});
+  selectedDetail.querySelector('span').textContent=
+    String(nodes.indexOf(node)+1).padStart(2,'0')+' / '+(node.group||'未分类')+
+    ' / '+count(node.degree||0)+' 条关系';
+  selectedDetail.querySelector('a').href=node.url||'index.html';
+}
+
+if(typeof d3==='undefined'||!canvas){
+  canvas.innerHTML='<p class=\"museum-empty-copy\">图谱运行资源不可用，仍可通过首页索引打开笔记。</p>';
+  return;
+}
+var width=canvas.clientWidth||900;
+var height=canvas.clientHeight||760;
+var svg=d3.select(canvas).append('svg')
+  .attr('viewBox','0 0 '+width+' '+height)
+  .attr('role','img')
+  .attr('aria-label','Org Museum 知识图谱');
+var layer=svg.append('g');
+var zoom=d3.zoom().scaleExtent([0.35,5]).on('zoom',function(event){
+  layer.attr('transform',event.transform);
+});
+svg.call(zoom);
+var linkSelection=layer.append('g').attr('class','graph-links')
+  .selectAll('line').data(links).enter().append('line');
+var nodeSelection=layer.append('g').attr('class','graph-nodes')
+  .selectAll('g').data(nodes).enter().append('g')
+  .attr('tabindex',0).attr('role','link');
+nodeSelection.append('circle').attr('r',function(node){return node.degree?7:6;})
+  .attr('fill',function(node){return color(node.group);});
+nodeSelection.append('text').attr('x',14).attr('y',4)
+  .text(function(node){
+    var name=node.name||'未命名';
+    var limit=width<600?16:22;
+    return name.length>limit?name.slice(0,limit)+'…':name;
+  });
+
+function positionNodeLabels(){
+  nodeSelection.select('text')
+    .attr('x',function(node){return width<600?14:(node.x>width/2?-14:14);})
+    .attr('text-anchor',function(node){return width<600?'start':(node.x>width/2?'end':'start');});
+}
+function positionIsolated(){
+  if(width<600){
+    var split=Math.ceil(nodes.length/2);
+    nodes.forEach(function(node,index){
+      node.x=28;
+      node.y=index<split?60+index*70:height-60-(nodes.length-1-index)*70;
+    });
+    nodeSelection.attr('transform',function(node){return 'translate('+node.x+','+node.y+')';});
+    positionNodeLabels();
+    return;
+  }
+  var cols=2;
+  nodes.forEach(function(node,index){
+    var col=index%%cols,row=Math.floor(index/cols);
+    node.x=90+col*(width-220);
+    node.y=100+row*Math.max(150,(height-190)/Math.max(1,Math.ceil(nodes.length/cols)-1));
+  });
+  nodeSelection.attr('transform',function(node){return 'translate('+node.x+','+node.y+')';});
+  positionNodeLabels();
+}
+function renderTick(){
+  linkSelection
+    .attr('x1',function(link){return link.source.x;})
+    .attr('y1',function(link){return link.source.y;})
+    .attr('x2',function(link){return link.target.x;})
+    .attr('y2',function(link){return link.target.y;});
+  nodeSelection.attr('transform',function(node){return 'translate('+node.x+','+node.y+')';});
+  positionNodeLabels();
+}
+if(links.length){
+  simulation=d3.forceSimulation(nodes)
+    .force('link',d3.forceLink(links).id(function(node){return node.id;}).distance(130))
+    .force('charge',d3.forceManyBody().strength(-240))
+    .force('center',d3.forceCenter(width/2,height/2))
+    .force('collide',d3.forceCollide(58))
+    .on('tick',renderTick);
+  nodeSelection.call(d3.drag()
+    .on('start',function(event,node){if(!event.active)simulation.alphaTarget(.25).restart();node.fx=node.x;node.fy=node.y;})
+    .on('drag',function(event,node){node.fx=event.x;node.fy=event.y;})
+    .on('end',function(event,node){if(!event.active)simulation.alphaTarget(0);node.fx=null;node.fy=null;}));
+}else positionIsolated();
+
+function applyFilter(){
+  nodeSelection.classed('is-dimmed',function(node){return !matches(node);});
+  linkSelection.classed('is-dimmed',function(link){
+    var source=link.source.id?link.source:nodes.find(function(node){return node.id===link.source;});
+    var target=link.target.id?link.target:nodes.find(function(node){return node.id===link.target;});
+    return !source||!target||!matches(source)||!matches(target);
+  });
+}
+var tooltip=document.getElementById('graph-tooltip');
+nodeSelection
+  .on('mouseenter',function(event,node){
+    document.getElementById('tt-title').textContent=node.name;
+    document.getElementById('tt-meta').textContent=(node.group||'未分类')+' · '+count(node.degree||0)+' 条关系';
+    tooltip.classList.add('is-visible');
+  })
+  .on('mousemove',function(event){
+    tooltip.style.left=(event.clientX+16)+'px';tooltip.style.top=(event.clientY+16)+'px';
+  })
+  .on('mouseleave',function(){tooltip.classList.remove('is-visible');})
+  .on('click',function(_event,node){selectNode(node);})
+  .on('dblclick',function(_event,node){location.href=node.url||'index.html';})
+  .on('keydown',function(event,node){
+    if(event.key==='Enter'){event.preventDefault();location.href=node.url||'index.html';}
+  });
+
+document.getElementById('btn-reset').addEventListener('click',function(){
+  svg.transition().duration(350).call(zoom.transform,d3.zoomIdentity);
+});
+document.getElementById('btn-freeze').addEventListener('click',function(){
+  frozen=!frozen;this.textContent=frozen?'继续布局':'冻结布局';
+  if(simulation){if(frozen)simulation.stop();else simulation.alpha(.35).restart();}
+});
+if(search)search.addEventListener('input',function(){query=search.value.trim().toLowerCase();applyFilter();});
+document.addEventListener('keydown',function(event){
+  if(event.key==='/'&&!event.metaKey&&!event.ctrlKey&&!event.altKey&&
+     !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)){
+    event.preventDefault();if(search)search.focus();
+  }
+});
+renderFilters();renderLegend();applyFilter();if(selected)selectNode(selected);
+})();
+</script>
+</body>
+</html>"
+     css-href
+     (or d3-src org-museum--d3-cdn)
+     topbar
+     safe-json
+     (json-encode org-museum--graph-palette))))
 
 (defun org-museum--script-ui-core (out-file)
   "Return the main UI script block.
