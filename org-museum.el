@@ -284,30 +284,33 @@ Applicable scope: org-museum--on-save (Fix-02).")
                     (org-museum--shared-root)))
 
 (defun org-museum--ensure-url-resource (url dest label)
-  "Download URL to DEST if needed, returning DEST when it exists.
-LABEL is used only for diagnostic messages."
+  "Copy a bundled asset or download URL to DEST, returning DEST when it exists.
+The package-local resource with the same basename is preferred so a fresh
+export remains offline-capable.  LABEL is used only for diagnostics."
   (unless (file-exists-p dest)
-    (require 'url)
     (make-directory (file-name-directory dest) t)
-    (condition-case err
-        (url-copy-file url dest t)
-      (error
-       (message "Org Museum [Export]: failed to fetch %s: %s"
-                label (error-message-string err)))))
+    (let ((bundled (expand-file-name
+                    (concat "resources/" (file-name-nondirectory dest))
+                    (org-museum--plugin-dir))))
+      (cond
+       ((and (file-exists-p bundled)
+             (not (equal (expand-file-name bundled)
+                         (expand-file-name dest))))
+        (copy-file bundled dest t))
+       (t
+        (require 'url)
+        (condition-case err
+            (url-copy-file url dest t)
+          (error
+           (message "Org Museum [Export]: failed to fetch %s: %s"
+                    label (error-message-string err))))))))
   (when (file-exists-p dest)
     dest))
 
 (defun org-museum--ensure-d3-deployed ()
   "Ensure D3.js is available locally under shared export resources."
-  (let ((dest (org-museum--d3-resource-path)))
-    (unless (file-exists-p dest)
-      (require 'url)
-      (make-directory (file-name-directory dest) t)
-      (condition-case err
-          (url-copy-file org-museum--d3-cdn dest t)
-        (error
-         (message "Org Museum [Export]: failed to fetch D3.js: %s" (error-message-string err)))))
-    dest))
+  (org-museum--ensure-url-resource
+   org-museum--d3-cdn (org-museum--d3-resource-path) "D3.js"))
 
 (defun org-museum--ensure-hljs-deployed ()
   "Ensure Highlight.js assets are available locally when possible."
@@ -1353,7 +1356,7 @@ KIND is one of `home', `article', or `graph'."
          (placeholder (pcase kind
                         ('article "搜索此 Wiki…")
                         ('graph "搜索节点…")
-                        (_ "搜索标题、标签或正文…"))))
+                        (_ "搜索标题、分类或标签…"))))
     (format
      (concat
       "<header class=\"museum-topbar\" data-home-href=\"%s\">\n"
@@ -2831,7 +2834,10 @@ Applicable scope: org-museum--generate-local-graph-html."
                  (string= (or (cdr (assq 'id node)) "") "_overflow")))
            nodes))
          (graph-file (expand-file-name "graph.html" (org-museum--shared-root)))
-         (graph-href (org-museum--relative-path graph-file out-file)))
+         (graph-href
+          (concat (org-museum--relative-path graph-file out-file)
+                  "?focus="
+                  (url-hexify-string (org-museum-page-id page)))))
     (concat
      "<section id=\"local-graph-container\" aria-labelledby=\"local-graph-heading\">\n"
      (format "<h3 id=\"local-graph-heading\">局部关系 / %02d</h3>\n" (length related))
@@ -3098,17 +3104,33 @@ in large-tier graphs."
 var raw=%s;
 var nodes=(raw.nodes||[]).map(function(node){return Object.assign({},node);});
 var links=(raw.links||[]).map(function(link){return Object.assign({},link);});
+var meta=raw.meta||{};
 var palette=%s;
 var search=document.getElementById('org-museum-global-search');
 var canvas=document.getElementById('graph-canvas');
 var empty=document.getElementById('graph-empty-state');
 var selectedDetail=document.getElementById('graph-selected-detail');
 var cats=Array.from(new Set(nodes.map(function(node){return node.group||'未分类';}))).sort();
+var focusId=new URLSearchParams(location.search).get('focus')||'';
+var focusNeighbors=new Set(focusId?[focusId]:[]);
+links.forEach(function(link){
+  if(link.source===focusId)focusNeighbors.add(link.target);
+  if(link.target===focusId)focusNeighbors.add(link.source);
+});
 var category='*';
 var query='';
-var selected=nodes[0]||null;
+var selected=nodes.find(function(node){return node.id===focusId;})||nodes[0]||null;
 var simulation=null;
 var frozen=false;
+var charge=Number(meta.charge);
+var alphaDecay=Number(meta['alpha-decay']);
+var tickLimit=meta['tick-limit']===false?0:Number(meta['tick-limit']);
+var preTicks=meta['pre-ticks']===false?0:Number(meta['pre-ticks']);
+var tickCount=0;
+if(!Number.isFinite(charge))charge=-240;
+if(!Number.isFinite(alphaDecay)||alphaDecay<=0)alphaDecay=0.0228;
+if(!Number.isFinite(tickLimit)||tickLimit<0)tickLimit=0;
+if(!Number.isFinite(preTicks)||preTicks<0)preTicks=0;
 
 function count(value){return String(value).padStart(2,'0');}
 document.getElementById('stat-nodes').textContent=count(nodes.length);
@@ -3124,7 +3146,8 @@ function color(group){
 function matches(node){
   var catOk=category==='*'||node.group===category;
   var hay=[node.name,node.group].concat(node.tags||[]).join(' ').toLowerCase();
-  return catOk&&(!query||hay.indexOf(query)>=0);
+  var focusOk=!focusId||query||category!=='*'||focusNeighbors.has(node.id);
+  return catOk&&focusOk&&(!query||hay.indexOf(query)>=0);
 }
 function renderFilters(){
   var root=document.getElementById('graph-category-filters');
@@ -3234,10 +3257,17 @@ function renderTick(){
 if(links.length){
   simulation=d3.forceSimulation(nodes)
     .force('link',d3.forceLink(links).id(function(node){return node.id;}).distance(130))
-    .force('charge',d3.forceManyBody().strength(-240))
+    .force('charge',d3.forceManyBody().strength(charge))
     .force('center',d3.forceCenter(width/2,height/2))
     .force('collide',d3.forceCollide(58))
-    .on('tick',renderTick);
+    .alphaDecay(alphaDecay)
+    .stop();
+  for(var warmTick=0;warmTick<preTicks;warmTick+=1)simulation.tick();
+  renderTick();
+  simulation.on('tick',function(){
+    renderTick();tickCount+=1;
+    if(tickLimit&&tickCount>=tickLimit)simulation.stop();
+  }).restart();
   nodeSelection.call(d3.drag()
     .on('start',function(event,node){if(!event.active)simulation.alphaTarget(.25).restart();node.fx=node.x;node.fy=node.y;})
     .on('drag',function(event,node){node.fx=event.x;node.fy=event.y;})

@@ -64,6 +64,33 @@
             (should (equal (org-museum--css-source-path) repo-css))))
       (delete-directory root t))))
 
+(ert-deftest org-museum-bundled-resource-is-copied-before-network-fetch ()
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-bundled-resource-test-" t)))
+         (org-museum-root-dir root)
+         (org-museum--plugin-dir (expand-file-name "plugin/" root))
+         (bundled (expand-file-name "resources/d3.v7.min.js"
+                                    org-museum--plugin-dir))
+         (dest (expand-file-name "exports/html/resources/d3.v7.min.js" root))
+         (network-called nil))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory bundled) t)
+          (with-temp-file bundled (insert "/* bundled */"))
+          (cl-letf (((symbol-function 'url-copy-file)
+                     (lambda (&rest _args)
+                       (setq network-called t)
+                       (error "network should not be used"))))
+            (should
+             (equal (org-museum--ensure-url-resource
+                     "https://invalid.example/d3.js" dest "D3.js")
+                    dest)))
+          (should-not network-called)
+          (with-temp-buffer
+            (insert-file-contents dest)
+            (should (equal (buffer-string) "/* bundled */"))))
+      (delete-directory root t))))
+
 (ert-deftest org-museum-page-metadata-is-injected ()
   (let* ((page (org-museum-test--page
                 "page-中文" "标题 & 特殊" 100 "Emacs" '("org" "中文")))
@@ -101,6 +128,7 @@
           (should (string-match-p "org-museum-index-data" html))
           (should (string-match-p "\"pageId\":\"alpha\"" html))
           (should (string-match-p "\\\\u003cAlpha\\\\u003e" html))
+          (should (string-match-p "搜索标题、分类或标签" html))
           (should (string-match-p "最近更新" html))
           (should (string-match-p "索引为空" empty))
           (should (string-match-p "\"pages\":\\[\\]" empty)))
@@ -137,10 +165,9 @@
              "#+CATEGORY: Emacs\n\n"
              "* 内容\n"
              "[[wiki:alpha][返回 Alpha]]\n"))
-          (cl-letf (((symbol-function 'org-museum--ensure-d3-deployed)
-                     (lambda () nil))
-                    ((symbol-function 'org-museum--ensure-hljs-deployed)
-                     (lambda () nil))
+          (cl-letf (((symbol-function 'url-copy-file)
+                     (lambda (&rest _args)
+                       (error "fixture export must not use the network")))
                     ((symbol-function 'browse-url)
                      (lambda (&rest _args) nil)))
             (org-museum-export-all))
@@ -159,11 +186,29 @@
               (insert-file-contents alpha-file)
               (should (search-forward "data-page-id=\"alpha\"" nil t))
               (should (search-forward "museum-article-layout" nil t))
-              (should (search-forward "indexedDB.open('org-museum',1)" nil t)))
+              (should (search-forward "indexedDB.open('org-museum',1)" nil t))
+              (goto-char (point-min))
+              (should (search-forward "graph.html?focus=alpha" nil t))
+              (goto-char (point-min))
+              (should-not (search-forward "cdn.staticfile.net" nil t)))
             (with-temp-buffer
               (insert-file-contents graph-file)
               (should (search-forward "museum-graph-shell" nil t))
-              (should (search-forward "尚未形成知识连线" nil t)))))
+              (should (search-forward "var meta=raw.meta||{}" nil t))
+              (should (search-forward "new URLSearchParams(location.search)" nil t))
+              (should (search-forward ".alphaDecay(alphaDecay)" nil t))
+              (goto-char (point-min))
+              (should (search-forward "尚未形成知识连线" nil t))
+              (goto-char (point-min))
+              (should-not (search-forward "https://d3js.org" nil t)))
+            (dolist (asset '("d3.v7.min.js"
+                             "highlight.min.js"
+                             "highlight-lisp.min.js"
+                             "highlight.monokai.min.css"))
+              (should
+               (file-exists-p
+                (expand-file-name (concat "exports/html/resources/" asset)
+                                  root))))))
       (delete-directory root t))))
 
 (provide 'org-museum-test)
