@@ -77,6 +77,8 @@
         (progn
           (make-directory (file-name-directory bundled) t)
           (with-temp-file bundled (insert "/* bundled */"))
+          (make-directory (file-name-directory dest) t)
+          (with-temp-file dest (insert "/* stale */"))
           (cl-letf (((symbol-function 'url-copy-file)
                      (lambda (&rest _args)
                        (setq network-called t)
@@ -197,6 +199,8 @@
               (should (search-forward "var meta=raw.meta||{}" nil t))
               (should (search-forward "new URLSearchParams(location.search)" nil t))
               (should (search-forward ".alphaDecay(alphaDecay)" nil t))
+              (should (search-forward "tickCount=0;simulation.alphaTarget(.25)" nil t))
+              (should (search-forward "tickCount=0;simulation.alpha(.35)" nil t))
               (goto-char (point-min))
               (should (search-forward "尚未形成知识连线" nil t))
               (goto-char (point-min))

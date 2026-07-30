@@ -283,27 +283,42 @@ Applicable scope: org-museum--on-save (Fix-02).")
   (expand-file-name "resources/highlight-lisp.min.js"
                     (org-museum--shared-root)))
 
+(defun org-museum--files-have-same-content-p (left right)
+  "Return non-nil when existing files LEFT and RIGHT have identical contents."
+  (and (file-exists-p left)
+       (file-exists-p right)
+       (= (file-attribute-size (file-attributes left))
+          (file-attribute-size (file-attributes right)))
+       (cl-labels
+           ((digest
+             (file)
+             (with-temp-buffer
+               (set-buffer-multibyte nil)
+               (insert-file-contents-literally file)
+               (secure-hash 'sha256 (current-buffer)))))
+         (string= (digest left) (digest right)))))
+
 (defun org-museum--ensure-url-resource (url dest label)
   "Copy a bundled asset or download URL to DEST, returning DEST when it exists.
 The package-local resource with the same basename is preferred so a fresh
 export remains offline-capable.  LABEL is used only for diagnostics."
-  (unless (file-exists-p dest)
+  (let ((bundled (expand-file-name
+                  (concat "resources/" (file-name-nondirectory dest))
+                  (org-museum--plugin-dir))))
     (make-directory (file-name-directory dest) t)
-    (let ((bundled (expand-file-name
-                    (concat "resources/" (file-name-nondirectory dest))
-                    (org-museum--plugin-dir))))
-      (cond
-       ((and (file-exists-p bundled)
-             (not (equal (expand-file-name bundled)
-                         (expand-file-name dest))))
-        (copy-file bundled dest t))
-       (t
+    (cond
+     ((and (file-exists-p bundled)
+           (not (equal (expand-file-name bundled)
+                       (expand-file-name dest))))
+      (unless (org-museum--files-have-same-content-p bundled dest)
+        (copy-file bundled dest t)))
+     ((not (file-exists-p dest))
         (require 'url)
         (condition-case err
             (url-copy-file url dest t)
           (error
            (message "Org Museum [Export]: failed to fetch %s: %s"
-                    label (error-message-string err))))))))
+                    label (error-message-string err)))))))
   (when (file-exists-p dest)
     dest))
 
@@ -3269,7 +3284,7 @@ if(links.length){
     if(tickLimit&&tickCount>=tickLimit)simulation.stop();
   }).restart();
   nodeSelection.call(d3.drag()
-    .on('start',function(event,node){if(!event.active)simulation.alphaTarget(.25).restart();node.fx=node.x;node.fy=node.y;})
+    .on('start',function(event,node){if(!event.active){tickCount=0;simulation.alphaTarget(.25).restart();}node.fx=node.x;node.fy=node.y;})
     .on('drag',function(event,node){node.fx=event.x;node.fy=event.y;})
     .on('end',function(event,node){if(!event.active)simulation.alphaTarget(0);node.fx=null;node.fy=null;}));
 }else positionIsolated();
@@ -3304,7 +3319,7 @@ document.getElementById('btn-reset').addEventListener('click',function(){
 });
 document.getElementById('btn-freeze').addEventListener('click',function(){
   frozen=!frozen;this.textContent=frozen?'继续布局':'冻结布局';
-  if(simulation){if(frozen)simulation.stop();else simulation.alpha(.35).restart();}
+  if(simulation){if(frozen)simulation.stop();else {tickCount=0;simulation.alpha(.35).restart();}}
 });
 if(search)search.addEventListener('input',function(){query=search.value.trim().toLowerCase();applyFilter();});
 document.addEventListener('keydown',function(event){
