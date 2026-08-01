@@ -263,6 +263,9 @@ Applicable scope: org-museum--on-save (Fix-02).")
   categories   ; hash-table cat -> (id ...)
   graph)       ; hash-table (reserved)
 
+(define-error 'org-museum-duplicate-page-id
+  "Duplicate Org Museum page ID")
+
 ;; ============================================================
 ;; §5  PATH HELPERS
 ;; ============================================================
@@ -749,12 +752,30 @@ With prefix FORCE, always rebuild from scratch."
             (condition-case err
                 (when-let ((page (org-museum--parse-page-metadata file)))
                   (org-museum--index-register-page index page))
+              (org-museum-duplicate-page-id
+               (signal (car err) (cdr err)))
               (error (message "Org Museum: parse error in %s: %s"
                               file (error-message-string err))))))))))
 
 (defun org-museum--index-register-page (index page)
   "Add PAGE to INDEX, updating tag/category tables."
-  (puthash (org-museum-page-id page) page (org-museum-index-pages index))
+  (let* ((id (org-museum-page-id page))
+         (pages (org-museum-index-pages index))
+         (existing (gethash id pages)))
+    (when (and existing
+               (not (equal
+                     (org-museum--normalised-path
+                      (org-museum-page-path existing))
+                     (org-museum--normalised-path
+                      (org-museum-page-path page)))))
+      (signal
+       'org-museum-duplicate-page-id
+       (list
+        (format "ID '%s' is used by both %s and %s"
+                id
+                (org-museum-page-path existing)
+                (org-museum-page-path page)))))
+    (puthash id page pages))
   (dolist (tag (org-museum-page-tags page))
     (org-museum--adjoin-to-list (org-museum-index-tags index) tag
                                 (org-museum-page-id page)))
@@ -894,18 +915,43 @@ Known limitation: O(n) scan over all pages; acceptable for wikis ≤5000 pages."
                pages)
       (setf (org-museum-page-linked-from page) actual-inbound))))
 
+(defun org-museum--index-update-file-in-place (file)
+  "Update the dynamically bound index for FILE without saving it.
+Callers must provide rollback semantics around this mutating operation."
+  (let* ((pages      (org-museum-index-pages org-museum--index))
+         (old-pg     (org-museum--find-page-by-path file pages))
+         (old-id     (when old-pg (org-museum-page-id old-pg))))
+    (when old-id
+      (org-museum--index-remove-page old-id old-pg))
+    (when-let ((new-pg (org-museum--parse-page-metadata file)))
+      (org-museum--index-register-page org-museum--index new-pg)
+      (let* ((new-links  (org-museum--extract-links-from-file
+                          file (org-museum-index-pages org-museum--index)))
+             (new-id     (org-museum-page-id new-pg)))
+        (setf (org-museum-page-links-to new-pg) new-links)
+        ;; Removing the old page cleared its ID from every former target.
+        ;; Re-add the current ID to every current target, including links that
+        ;; stayed unchanged and links whose source page ID was renamed.
+        (dolist (target-id new-links)
+          (when-let ((target (gethash target-id pages)))
+            (cl-pushnew new-id (org-museum-page-linked-from target)
+                        :test #'equal)))
+        (org-museum--verify-linked-from-for-page new-id)))
+    org-museum--index))
+
 (defun org-museum--index-update-file (file)
-  "Incrementally update the index for FILE with precise bidirectional link repair.
+  "Transactionally update the index for FILE with link repair.
 Steps:
   1. Guard: skip out-of-project or non-.org files
-  2. Remove old page entry and clean its outgoing link targets' linked-from
-  3. Re-parse and register new page metadata
-  4. Compute removed/added outgoing link diff; update affected pages
-  5. [Fix-01] Rebuild linked-from for the new page via full inbound scan,
+  2. Clone the current index as a private working copy
+  3. Re-parse, register, and repair links only in the working copy
+  4. Persist the complete working copy
+  5. Commit it to `org-museum--index' only after every prior step succeeds
+  6. [Fix-01] Rebuild linked-from for the new page via full inbound scan,
      correcting stale entries left by third-party page edits
-  6. Persist to JSON cache
 Applicable scope: after-save-hook, single-file refresh.
-Known limitation: step 5 is O(n) over all pages; scales to ~5000 pages."
+Known limitation: cloning and inbound verification are O(n); acceptable for
+wikis up to roughly 5000 pages."
   (unless (org-museum--file-in-project-p file)
     (message "Org Museum [Index]: skipping out-of-project file %s" file)
     (cl-return-from org-museum--index-update-file nil))
@@ -917,47 +963,22 @@ Known limitation: step 5 is O(n) over all pages; scales to ~5000 pages."
        (message "Org Museum [Index]: build failed: %s" (error-message-string err))
        (cl-return-from org-museum--index-update-file nil))))
 
-  (let* ((pages      (org-museum-index-pages org-museum--index))
-         (old-pg     (org-museum--find-page-by-path file pages))
-         (old-id     (when old-pg (org-museum-page-id old-pg)))
-         (old-links  (if old-pg
-                         (copy-sequence (org-museum-page-links-to old-pg))
-                       '())))
-
-    (when old-id
-      (org-museum--index-remove-page old-id old-pg))
-
-    (condition-case err
-        (when-let ((new-pg (org-museum--parse-page-metadata file)))
-          (org-museum--index-register-page org-museum--index new-pg)
-
-          (let* ((new-links  (org-museum--extract-links-from-file
-                              file (org-museum-index-pages org-museum--index)))
-                 (new-id     (org-museum-page-id new-pg))
-                 (removed    (cl-set-difference old-links new-links :test #'equal))
-                 (added      (cl-set-difference new-links old-links :test #'equal)))
-
-            (setf (org-museum-page-links-to new-pg) new-links)
-
-            (dolist (target-id removed)
-              (when-let ((target (gethash target-id pages)))
-                (setf (org-museum-page-linked-from target)
-                      (delete old-id (org-museum-page-linked-from target)))))
-
-            (dolist (target-id added)
-              (when-let ((target (gethash target-id pages)))
-                (cl-pushnew new-id (org-museum-page-linked-from target)
-                            :test #'equal)))
-
-            ;; Fix-01: full inbound scan to repair stale linked-from
-            (org-museum--verify-linked-from-for-page new-id)))
-
-      (error
-       (message "Org Museum [Index]: incremental update failed for %s: %s"
-                file (error-message-string err))))
-
-    (org-museum--index-save org-museum--index
-                            (org-museum--index-file-path))))
+  (let ((working (org-museum--alist-to-index
+                  (org-museum--index-to-alist org-museum--index)))
+        committed)
+    (let ((org-museum--index working))
+      (condition-case err
+          (progn
+            (org-museum--index-update-file-in-place file)
+            (org-museum--index-save org-museum--index
+                                    (org-museum--index-file-path))
+            (setq committed org-museum--index))
+        (error
+         (message "Org Museum [Index]: incremental update failed for %s: %s"
+                  file (error-message-string err)))))
+    (when committed
+      (setq org-museum--index committed))
+    (and committed t)))
 
 ;; ============================================================
 ;; §10  SERIALISATION
@@ -1028,11 +1049,23 @@ When AS-LIST is non-nil, coerce vectors to lists."
     index))
 
 (defun org-museum--index-save (index path)
-  "Write INDEX to JSON at PATH."
-  (let ((coding-system-for-write 'utf-8))
-    (with-temp-file path
-      (let ((json-encoding-pretty-print nil))
-        (insert (json-encode (org-museum--index-to-alist index)))))))
+  "Atomically write INDEX as JSON at PATH.
+The previous cache remains intact when serialization or disk writing fails."
+  (let* ((target (expand-file-name path))
+         (directory (file-name-directory target))
+         (temporary (make-temp-file
+                     (expand-file-name ".org-museum-index-" directory)
+                     nil ".json"))
+         (coding-system-for-write 'utf-8))
+    (unwind-protect
+        (progn
+          (with-temp-file temporary
+            (let ((json-encoding-pretty-print nil))
+              (insert (json-encode (org-museum--index-to-alist index)))))
+          (rename-file temporary target t)
+          (setq temporary nil))
+      (when (and temporary (file-exists-p temporary))
+        (delete-file temporary)))))
 
 (defun org-museum--index-load (path)
   "Load index from JSON at PATH into `org-museum--index'."

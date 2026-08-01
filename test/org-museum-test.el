@@ -52,6 +52,194 @@
     (should (equal (mapcar #'org-museum-page-id sorted)
                    '("new" "middle" "old")))))
 
+(ert-deftest org-museum-index-scan-rejects-duplicate-page-ids ()
+  (let* ((root (make-temp-file "org-museum-duplicate-id-test-" t))
+         (pages-root (expand-file-name "pages" root))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages"))
+    (unwind-protect
+        (progn
+          (make-directory pages-root t)
+          (with-temp-file (expand-file-name "first.org" pages-root)
+            (insert "#+TITLE: First\n#+WIKI_ID: duplicate\n#+CATEGORY: Test\n"))
+          (with-temp-file (expand-file-name "second.org" pages-root)
+            (insert "#+TITLE: Second\n#+WIKI_ID: duplicate\n#+CATEGORY: Test\n"))
+          (let ((error-data
+                 (should-error (org-museum--index-scan)
+                               :type 'org-museum-duplicate-page-id)))
+            (should (string-match-p "first\\.org"
+                                    (error-message-string error-data)))
+            (should (string-match-p "second\\.org"
+                                    (error-message-string error-data)))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-incremental-update-rolls-back-after-late-failure ()
+  (let* ((root (make-temp-file "org-museum-index-rollback-test-" t))
+         (file (expand-file-name "pages/existing.org" root))
+         (org-museum-root-dir root)
+         (org-museum-index-file ".index.json")
+         (old-page (org-museum-test--page
+                    "existing" "Old title" 1 "Test" nil "published" file))
+         (new-page (org-museum-test--page
+                    "existing" "New title" 2 "Test" nil "published" file))
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal)))
+         (save-called nil))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory file) t)
+          (with-temp-file file (insert "#+TITLE: Existing\n"))
+          (org-museum--index-register-page org-museum--index old-page)
+          (cl-letf (((symbol-function 'org-museum--parse-page-metadata)
+                     (lambda (_file) new-page))
+                    ((symbol-function 'org-museum--extract-links-from-file)
+                     (lambda (&rest _args) (error "late fixture failure")))
+                    ((symbol-function 'org-museum--index-save)
+                     (lambda (&rest _args) (setq save-called t))))
+            (org-museum--index-update-file file))
+          (should (eq old-page (gethash "existing" pages)))
+          (should (equal (org-museum-page-title (gethash "existing" pages))
+                         "Old title"))
+          (should-not save-called))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-incremental-update-commits-complete-working-copy ()
+  (let* ((root (make-temp-file "org-museum-index-commit-test-" t))
+         (file (expand-file-name "pages/existing.org" root))
+         (target-file (expand-file-name "pages/target.org" root))
+         (org-museum-root-dir root)
+         (org-museum-index-file ".index.json")
+         (old-page (org-museum-test--page
+                    "existing" "Old title" 1 "Test" nil "published" file))
+         (new-page (org-museum-test--page
+                    "existing" "New title" 2 "Test" nil "published" file))
+         (target-page (org-museum-test--page
+                       "target" "Target" 1 "Test" nil "published" target-file))
+         (pages (make-hash-table :test 'equal))
+         (original-index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal)))
+         (org-museum--index original-index)
+         saved-index)
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory file) t)
+          (with-temp-file file (insert "#+TITLE: Existing\n"))
+          (with-temp-file target-file (insert "#+TITLE: Target\n"))
+          (org-museum--index-register-page org-museum--index old-page)
+          (org-museum--index-register-page org-museum--index target-page)
+          (cl-letf (((symbol-function 'org-museum--parse-page-metadata)
+                     (lambda (_file) new-page))
+                    ((symbol-function 'org-museum--extract-links-from-file)
+                     (lambda (&rest _args) '("target")))
+                    ((symbol-function 'org-museum--index-save)
+                     (lambda (index _path) (setq saved-index index))))
+            (should (org-museum--index-update-file file)))
+          (should-not (eq org-museum--index original-index))
+          (should (eq saved-index org-museum--index))
+          (should (equal
+                   (org-museum-page-title
+                    (gethash "existing"
+                             (org-museum-index-pages org-museum--index)))
+                   "New title"))
+          (should (member
+                   "existing"
+                   (org-museum-page-linked-from
+                    (gethash "target"
+                             (org-museum-index-pages org-museum--index))))))
+      (delete-directory root t))))
+
+(defun org-museum-test--run-unchanged-link-update (old-id new-id)
+  "Return index evidence after changing OLD-ID to NEW-ID with one stable link."
+  (let* ((root (make-temp-file "org-museum-stable-link-test-" t))
+         (file (expand-file-name "pages/source.org" root))
+         (target-file (expand-file-name "pages/target.org" root))
+         (org-museum-root-dir root)
+         (org-museum-index-file ".index.json")
+         (old-page (org-museum-test--page
+                    old-id "Old" 1 "Test" nil "published" file))
+         (new-page (org-museum-test--page
+                    new-id "New" 2 "Test" nil "published" file))
+         (target-page (org-museum-test--page
+                       "target" "Target" 1 "Test" nil "published" target-file))
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory file) t)
+          (with-temp-file file (insert "#+TITLE: Source\n"))
+          (with-temp-file target-file (insert "#+TITLE: Target\n"))
+          (setf (org-museum-page-links-to old-page) '("target")
+                (org-museum-page-linked-from target-page) (list old-id))
+          (org-museum--index-register-page org-museum--index old-page)
+          (org-museum--index-register-page org-museum--index target-page)
+          (cl-letf (((symbol-function 'org-museum--parse-page-metadata)
+                     (lambda (_file) new-page))
+                    ((symbol-function 'org-museum--extract-links-from-file)
+                     (lambda (&rest _args) '("target")))
+                    ((symbol-function 'org-museum--index-save)
+                     (lambda (&rest _args) nil)))
+            (should (org-museum--index-update-file file)))
+          (let* ((updated-pages (org-museum-index-pages org-museum--index))
+                 (updated-target (gethash "target" updated-pages)))
+            (list :ids (sort (hash-table-keys updated-pages) #'string<)
+                  :linked-from
+                  (copy-sequence (org-museum-page-linked-from updated-target)))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-incremental-update-keeps-unchanged-link-backreference ()
+  (let ((result (org-museum-test--run-unchanged-link-update
+                 "source" "source")))
+    (should (equal (plist-get result :ids) '("source" "target")))
+    (should (equal (plist-get result :linked-from) '("source")))))
+
+(ert-deftest org-museum-incremental-id-change-rewrites-stable-backreference ()
+  (let ((result (org-museum-test--run-unchanged-link-update
+                 "old-source" "new-source")))
+    (should (equal (plist-get result :ids) '("new-source" "target")))
+    (should (equal (plist-get result :linked-from) '("new-source")))))
+
+(ert-deftest org-museum-index-save-preserves-old-cache-on-write-failure ()
+  (let* ((root (make-temp-file "org-museum-index-atomic-test-" t))
+         (path (expand-file-name ".org-museum-index.json" root))
+         (page (org-museum-test--page
+                "current" "Current" 1 "Test" nil "published"
+                (expand-file-name "current.org" root)))
+         (pages (make-hash-table :test 'equal))
+         (index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (unwind-protect
+        (progn
+          (puthash "current" page pages)
+          (with-temp-file path (insert "stable-cache"))
+          (let ((real-write-region (symbol-function 'write-region)))
+            (cl-letf (((symbol-function 'write-region)
+                       (lambda (&rest args)
+                         (apply real-write-region args)
+                         (error "simulated disk failure"))))
+              (should-error (org-museum--index-save index path))))
+          (with-temp-buffer
+            (insert-file-contents path)
+            (should (equal (buffer-string) "stable-cache"))))
+      (delete-directory root t))))
+
 (ert-deftest org-museum-css-source-prefers-straight-repository-over-roam-copy ()
   (let* ((root (file-name-as-directory
                 (make-temp-file "org-museum-resource-test-" t)))

@@ -196,4 +196,30 @@
 - The real manifest contains 12 pages, independent HTML validation reports zero
   structural errors, and ERT completed 39/39 tests.
 
+## Round 9 index integrity and transactional-save verification (2026-08-01)
+
+- A two-file fixture with the same `WIKI_ID` previously completed silently
+  with one indexed page. Index construction now raises a dedicated duplicate-ID
+  error that names both source files, preventing invisible page replacement.
+- A late incremental-update failure previously replaced the old indexed page
+  before logging an error. Updates now run against a private working copy and
+  commit only after parsing, registration, link repair, and cache persistence
+  all succeed; the original index remains byte-for-byte usable on failure.
+- Successful incremental updates were separately verified to commit the new
+  page metadata and inbound-link state as one complete working copy.
+- Independent review found that unchanged outgoing links lost their target's
+  backreference after a normal save, because only newly added links were
+  restored. All current targets now receive the current page ID after the old
+  page is removed; both stable IDs and page-ID renames retain correct inbound
+  links.
+- An injected disk failure after writing JSON previously overwrote the stable
+  cache. Index persistence now writes a same-directory temporary file and only
+  replaces the cache after a complete write; failure preserves the old bytes
+  and removes the temporary artifact.
+- The real library exported 12 pages with 12 unique IDs, a 12-page manifest,
+  12 article HTML files, and zero leftover index temporary files. Independent
+  HTML validation reports zero structural errors.
+- ERT completed 45/45 tests, including duplicate IDs, late rollback,
+  successful commit, unchanged links, ID renames, and atomic cache failures.
+
 final result: passed
