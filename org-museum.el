@@ -386,6 +386,9 @@ export remains offline-capable.  LABEL is used only for diagnostics."
   (org-museum--ensure-url-resource
    org-museum--d3-cdn (org-museum--d3-resource-path) "D3.js"))
 
+(defvar org-museum--resource-deployment-cache nil
+  "Dynamically bound per-export cache for deployed static resources.")
+
 (defun org-museum--ensure-hljs-deployed ()
   "Ensure Highlight.js assets are available locally when possible."
   (list
@@ -399,26 +402,44 @@ export remains offline-capable.  LABEL is used only for diagnostics."
          "Highlight.js script")
    :lisp-js (org-museum--ensure-url-resource
              org-museum--hljs-lisp-js-cdn
-             (org-museum--hljs-lisp-js-resource-path)
-             "Highlight.js Lisp language module")))
+              (org-museum--hljs-lisp-js-resource-path)
+              "Highlight.js Lisp language module")))
+
+(defun org-museum--hljs-assets ()
+  "Return deployed Highlight.js assets, cached within a full export batch."
+  (if (not (hash-table-p org-museum--resource-deployment-cache))
+      (org-museum--ensure-hljs-deployed)
+    (let* ((missing (make-symbol "missing"))
+           (cached (gethash 'highlight-js
+                            org-museum--resource-deployment-cache missing)))
+      (if (not (eq cached missing))
+          cached
+        (let ((assets (org-museum--ensure-hljs-deployed)))
+          (puthash 'highlight-js assets org-museum--resource-deployment-cache)
+          assets)))))
+
+(defun org-museum--hljs-src-from-assets (assets key out-file)
+  "Return versioned KEY from deployed Highlight.js ASSETS for OUT-FILE."
+  (when-let ((path (plist-get assets key)))
+    (org-museum--versioned-resource-href path out-file)))
 
 (defun org-museum--hljs-css-src (out-file)
   "Return the deployed Highlight.js CSS path relative to OUT-FILE.
 Return nil instead of emitting a remote URL when deployment is unavailable."
-  (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :css)))
-    (org-museum--versioned-resource-href path out-file)))
+  (org-museum--hljs-src-from-assets
+   (org-museum--hljs-assets) :css out-file))
 
 (defun org-museum--hljs-js-src (out-file)
   "Return the deployed Highlight.js script path relative to OUT-FILE.
 Return nil instead of emitting a remote URL when deployment is unavailable."
-  (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :js)))
-    (org-museum--versioned-resource-href path out-file)))
+  (org-museum--hljs-src-from-assets
+   (org-museum--hljs-assets) :js out-file))
 
 (defun org-museum--hljs-lisp-js-src (out-file)
   "Return the deployed Highlight.js Lisp module path relative to OUT-FILE.
 Return nil instead of emitting a remote URL when deployment is unavailable."
-  (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :lisp-js)))
-    (org-museum--versioned-resource-href path out-file)))
+  (org-museum--hljs-src-from-assets
+   (org-museum--hljs-assets) :lisp-js out-file))
 
 (defun org-museum--d3-js-src (out-file)
   "Return the deployed D3.js path relative to OUT-FILE, or nil.
@@ -1198,6 +1219,7 @@ failed file to the export error report rather than producing
 malformed HTML."
   (with-temp-buffer
     (insert-file-contents out-file)
+    (org-museum--pp-fix-exported-entities)
     (org-museum--pp-remove-inline-styles)
     (org-museum--pp-inject-hljs-language-classes)
     (org-museum--pp-inject-page-attributes org-file)
@@ -1213,21 +1235,33 @@ malformed HTML."
       (write-region (point-min) (point-max) out-file)
       t)))
 
+(defun org-museum--pp-fix-exported-entities ()
+  "Repair malformed Org HTML tag separators in the current buffer.
+Org 9.8 emits the final non-breaking-space entity before a tag span without
+its semicolon.  Keep the workaround local to exported HTML."
+  (goto-char (point-min))
+  (while (search-forward "&nbsp;&nbsp;&nbsp<span class=\"tag\"" nil t)
+    (replace-match "&nbsp;&nbsp;&nbsp;<span class=\"tag\"" t t)))
+
 (defun org-museum--pp-wrap-tables ()
   "Wrap exported tables in an independently scrollable container."
   (goto-char (point-min))
-  (while (re-search-forward "<table\\(?:[[:space:]][^>]*\\)?>" nil t)
-    (let ((open-start (match-beginning 0)))
-      (unless (save-excursion
-                (goto-char open-start)
-                (looking-back
-                 "<div class=\"museum-table-scroll\">[[:space:]]*"
-                 (max (point-min) (- open-start 80))))
-        (goto-char open-start)
-        (insert "<div class=\"museum-table-scroll\" tabindex=\"0\" "
-                "role=\"region\" aria-label=\"可横向滚动的表格\">")
-        (when (re-search-forward "</table>" nil t)
-          (insert "</div>"))))))
+  (let ((table-index 0))
+    (while (re-search-forward "<table\\(?:[[:space:]][^>]*\\)?>" nil t)
+      (let ((open-start (match-beginning 0)))
+        (unless (save-excursion
+                  (goto-char open-start)
+                  (looking-back
+                   "<section class=\"museum-table-scroll\"[^>]*>[[:space:]]*"
+                   (max (point-min) (- open-start 180))))
+          (setq table-index (1+ table-index))
+          (goto-char open-start)
+          (insert (format
+                   (concat "<section class=\"museum-table-scroll\" tabindex=\"0\" "
+                           "aria-label=\"可横向滚动的表格 %d\">")
+                   table-index))
+          (when (re-search-forward "</table>" nil t)
+            (insert "</section>")))))))
 
 (defun org-museum--page-for-file (org-file)
   "Return the indexed page matching ORG-FILE."
@@ -1628,7 +1662,8 @@ export would remove."
   (interactive)
   (org-museum-index-build t)
   (org-museum--ensure-css-deployed)
-  (let ((total   (hash-table-count (org-museum-index-pages org-museum--index)))
+  (let ((org-museum--resource-deployment-cache (make-hash-table :test 'eq))
+        (total   (hash-table-count (org-museum-index-pages org-museum--index)))
         (success 0)
         (skipped 0)
         (failed  '()))
@@ -1746,8 +1781,8 @@ KIND is one of `home', `article', or `graph'."
       "<header class=\"museum-topbar\" data-home-href=\"%s\">\n"
       "  <a class=\"museum-skip-link\" href=\"#main-content\">跳到正文</a>\n"
       "  <a class=\"museum-wordmark\" href=\"%s\">ORG MUSEUM</a>\n"
-      "  <time class=\"museum-today\" datetime=\"%s\" title=\"导出于 %s\" aria-label=\"导出于 %s\">%s</time>\n"
-      "  <label class=\"museum-search-line\" for=\"org-museum-global-search\">\n"
+      "  <time class=\"museum-today\" datetime=\"%s\" title=\"导出于 %s\">%s</time>\n"
+      "  <label class=\"museum-search-line\">\n"
       "    <span class=\"sr-only\">全局搜索</span>\n"
       "    <input id=\"org-museum-global-search\" type=\"search\" "
       "placeholder=\"%s\" autocomplete=\"off\" spellcheck=\"false\" "
@@ -1763,7 +1798,6 @@ KIND is one of `home', `article', or `graph'."
      (org-museum--html-escape home-href t)
      (format-time-string "%Y-%m-%d")
      (format-time-string "%Y.%m.%d")
-     (format-time-string "%Y年%m月%d日")
      (format-time-string "%Y.%m.%d")
      placeholder
      (if (eq kind 'home) "#recent-updates"
@@ -3432,10 +3466,10 @@ window.addEventListener('load',function(){
 (defun org-museum--build-sidebar-injection (out-file)
   "Return the full sidebar+script HTML string to inject before </body>."
   (concat
-   "<div id=\"mobile-hud\" aria-label=\"移动导航\">\n"
+   "<nav id=\"mobile-hud\" aria-label=\"移动导航\">\n"
    "  <button type=\"button\" class=\"hud-btn\" data-drawer-toggle>全部笔记</button>\n"
    "  <button type=\"button\" class=\"hud-btn\" data-toc-toggle>本文目录</button>\n"
-   "</div>\n"
+   "</nav>\n"
    "<button type=\"button\" id=\"museum-drawer-backdrop\" aria-label=\"关闭抽屉\"></button>\n"
    "<p id=\"museum-article-live-status\" class=\"sr-only\" role=\"status\" aria-live=\"polite\"></p>\n"
    "<div id=\"zen-mask\"></div>\n"
@@ -3506,10 +3540,10 @@ window.addEventListener('load',function(){
      "  <details class=\"sidebar-fx-controls\">\n"
      "    <summary class=\"fx-label\">背景效果</summary>\n"
      "    <div class=\"fx-buttons\">\n"
-     "      <button class=\"fx-btn\" data-fx=\"none\">关闭</button>\n"
-     "      <button class=\"fx-btn\" data-fx=\"tubes\">轨迹</button>\n"
-     "      <button class=\"fx-btn\" data-fx=\"matrix\">矩阵</button>\n"
-     "      <button class=\"fx-btn\" data-fx=\"particles\">微粒</button>\n"
+     "      <button type=\"button\" class=\"fx-btn\" data-fx=\"none\">关闭</button>\n"
+     "      <button type=\"button\" class=\"fx-btn\" data-fx=\"tubes\">轨迹</button>\n"
+     "      <button type=\"button\" class=\"fx-btn\" data-fx=\"matrix\">矩阵</button>\n"
+     "      <button type=\"button\" class=\"fx-btn\" data-fx=\"particles\">微粒</button>\n"
      "    </div>\n"
      "  </details>\n")))
 
@@ -4035,7 +4069,7 @@ in large-tier graphs."
     </div>
     <div class=\"graph-workspace-footer\">
       <div id=\"graph-selected-detail\"><span>—</span><a href=\"index.html\">打开笔记 →</a></div>
-      <div id=\"graph-legend\" aria-label=\"主题图例\"></div>
+      <ul id=\"graph-legend\" aria-label=\"主题图例\"></ul>
     </div>
   </section>
 </main>
@@ -4180,7 +4214,7 @@ function renderFilters(){
 function renderLegend(){
   var root=document.getElementById('graph-legend');
   cats.forEach(function(cat){
-    var item=document.createElement('span');
+    var item=document.createElement('li');
     var dot=document.createElement('i');dot.style.background=color(cat);
     item.appendChild(dot);item.appendChild(document.createTextNode(cat));
     root.appendChild(item);
@@ -4352,7 +4386,11 @@ applyFilter();if(selected)selectNode(selected);
 [Fix-09] initScrollSpy now uses IntersectionObserver with #main-scroll
 as the root element, eliminating the offsetTop coordinate-system mismatch
 that caused TOC highlight to freeze on the first heading."
-  (format
+  (let* ((assets (org-museum--hljs-assets))
+         (lisp-src (org-museum--hljs-src-from-assets assets :lisp-js out-file))
+         (css-src (org-museum--hljs-src-from-assets assets :css out-file))
+         (js-src (org-museum--hljs-src-from-assets assets :js out-file)))
+    (format
    "<script>
 (function(){
 'use strict';
@@ -4742,10 +4780,10 @@ window.addEventListener('load',function(){
 
 })();
 </script>\n"
-   (or (org-museum--hljs-lisp-js-src out-file) "")
-   (or (org-museum--hljs-css-src out-file) "")
-   (or (org-museum--hljs-js-src out-file) "")
-   (or (org-museum--hljs-lisp-js-src out-file) "")))
+     (or lisp-src "")
+     (or css-src "")
+     (or js-src "")
+     (or lisp-src ""))))
 
 ;; ============================================================
 ;; §25  SCRIPT: BACKGROUND EFFECTS  [Fix-10]

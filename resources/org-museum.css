@@ -1811,11 +1811,14 @@ pre.org-museum-code-block.org-museum-code-expanded {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
   color: var(--text-muted);
   font: 400 9px/1 var(--font-mono);
 }
 
-#graph-legend span {
+#graph-legend li {
   display: flex;
   align-items: center;
   gap: 5px;

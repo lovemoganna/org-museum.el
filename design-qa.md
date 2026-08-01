@@ -152,4 +152,26 @@
   reaches the resume UI. ERT completed 35/35 tests, including full offline
   fixture export and version assertions for index, article, and graph pages.
 
+## Round 7 export efficiency and HTML conformance (2026-08-01)
+
+- A six-page fixture reproduced 24 Highlight.js deployment checks per export;
+  the full-export cache reduces this to one deployment check per batch while
+  preserving independent checks for single-page exports.
+- Independent HTML validation reduced 290 structural and semantic errors to
+  zero. The only excluded rule is trailing whitespace inside two user-authored
+  code examples, which is preserved as source content.
+- The real 12-page export repairs Org 9.8's malformed tag separator, gives each
+  scrollable table a unique native landmark, and uses valid navigation, button,
+  time, search-label, and graph-legend semantics.
+- Browser lifecycle verification found one lightbox overlay and one background
+  canvas before and after history navigation, with no duplicate controls and
+  zero console errors. The long SQL article has 13 code toggles and 19 table
+  containers with no global horizontal overflow.
+- The first long code block changes from 320px collapsed to 425.75px expanded,
+  with `COLLAPSE`, `aria-expanded=true`, and the expanded CSS state synchronized.
+- The real zero-link graph renders 12 nodes, zero inferred edges, six native
+  legend items, a visible canvas, and no global horizontal overflow.
+- ERT completed 38/38 tests, including batch resource caching and the repaired
+  exported HTML semantics.
+
 final result: passed

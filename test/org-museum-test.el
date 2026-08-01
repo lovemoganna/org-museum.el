@@ -9,6 +9,15 @@
    (directory-file-name (file-name-directory load-file-name)))
   "Repository root used by fixture tests.")
 
+(defun org-museum-test--count-occurrences (needle haystack)
+  "Return the number of non-overlapping NEEDLE occurrences in HAYSTACK."
+  (let ((start 0)
+        (count 0))
+    (while (string-match (regexp-quote needle) haystack start)
+      (setq count (1+ count)
+            start (match-end 0)))
+    count))
+
 (defun org-museum-test--page (id title modified &optional category tags status path)
   "Build a test page with ID, TITLE, and MODIFIED."
   (make-org-museum-page
@@ -102,6 +111,20 @@
                     (org-museum--versioned-resource-href asset out-file)))))
       (delete-directory root t))))
 
+(ert-deftest org-museum-full-export-caches-highlight-deployment-per-batch ()
+  (let ((calls 0))
+    (cl-letf (((symbol-function 'org-museum--ensure-hljs-deployed)
+               (lambda ()
+                 (setq calls (1+ calls))
+                 (list :css nil :js nil :lisp-js nil))))
+      (let ((org-museum--resource-deployment-cache
+             (make-hash-table :test 'eq)))
+        (org-museum--script-ui-core "first.html")
+        (org-museum--script-ui-core "second.html")
+        (should (= calls 1)))
+      (org-museum--script-ui-core "single.html")
+      (should (= calls 2)))))
+
 (ert-deftest org-museum-reading-state-normalizes-corrupt-browser-values ()
   (let ((index-script (org-museum--script-index))
         (reading-script (org-museum--script-reading-state)))
@@ -115,6 +138,44 @@
     (should (string-match-p
              (regexp-quote "try{return decodeURIComponent(raw);}catch(_error){return raw;}")
              reading-script))))
+
+(ert-deftest org-museum-exported-html-uses-valid-shared-semantics ()
+  (let ((topbar (org-museum--build-topbar "article.html" 'article))
+        (sidebar (org-museum--build-sidebar-injection "article.html"))
+        (graph (org-museum--build-graph-html
+                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                "resources/org-museum.css" nil)))
+    (should (string-match-p "<time class=\"museum-today\"" topbar))
+    (should-not (string-match-p
+                 "museum-today[^>]*aria-label" topbar))
+    (should-not (string-match-p
+                 "museum-search-line\" for=" topbar))
+    (should (string-match-p "<nav id=\"mobile-hud\"" sidebar))
+    (should (string-match-p
+             "<button type=\"button\" class=\"fx-btn\"" sidebar))
+    (should (string-match-p
+             "<ul id=\"graph-legend\" aria-label=" graph))
+    (should (string-match-p
+             "document.createElement('li')" graph))))
+
+(ert-deftest org-museum-postprocess-repairs-org-tag-entities-and-table-landmarks ()
+  (with-temp-buffer
+    (insert "<h2>Tagged&nbsp;&nbsp;&nbsp<span class=\"tag\">P1</span></h2>")
+    (org-museum--pp-fix-exported-entities)
+    (should (equal (buffer-string)
+                   "<h2>Tagged&nbsp;&nbsp;&nbsp;<span class=\"tag\">P1</span></h2>")))
+  (with-temp-buffer
+    (insert "<table><tr><td>A</td></tr></table>\n"
+            "<table><tr><td>B</td></tr></table>")
+    (org-museum--pp-wrap-tables)
+    (let ((html (buffer-string)))
+      (should (string-match-p
+               "<section class=\"museum-table-scroll\"[^>]*aria-label=\"[^\"]* 1\""
+               html))
+      (should (string-match-p
+               "<section class=\"museum-table-scroll\"[^>]*aria-label=\"[^\"]* 2\""
+               html))
+      (should (= (org-museum-test--count-occurrences "</section>" html) 2)))))
 
 (ert-deftest org-museum-css-deployment-prefers-content-over-mtime ()
   (let* ((root (file-name-as-directory
