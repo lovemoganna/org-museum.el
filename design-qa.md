@@ -174,4 +174,26 @@
 - ERT completed 38/38 tests, including batch resource caching and the repaired
   exported HTML semantics.
 
+## Round 8 persistence and failure-atomicity verification (2026-08-01)
+
+- Reproduced an existing IndexedDB v1 database with a valid `readingState`
+  record but no `lastVisitedAt` index. Before the fix, the record remained in
+  storage while the entire continue-reading section was hidden.
+- The homepage now falls back to the object-store cursor when the optional
+  index is absent, normalizes and sorts records by `lastVisitedAt`, and keeps
+  the most recent six. The database remains `org-museum` version 1 and no
+  migration or destructive reset is performed.
+- Reproduced a failed article export that still regenerated index.html and
+  graph.html. Full exports now preserve the previous entry pages whenever any
+  article fails; manifest writing and stale cleanup remain success-only.
+- Direct `file:///` verification passed for the homepage, graph, and long SQL
+  article: 12 indexed pages, three DuckDB search results, one loaded stylesheet,
+  12 D3 nodes, 13 working code toggles, 19 table containers, no horizontal
+  overflow, and zero browser errors.
+- The real HTTP export passed 17 desktop/mobile page cases, 643 internal-link
+  instances, 32 unique targets, all fragment targets, duplicate-ID checks,
+  ARIA reference checks, offline-resource checks, and console monitoring.
+- The real manifest contains 12 pages, independent HTML validation reports zero
+  structural errors, and ERT completed 39/39 tests.
+
 final result: passed

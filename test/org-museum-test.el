@@ -139,6 +139,20 @@
              (regexp-quote "try{return decodeURIComponent(raw);}catch(_error){return raw;}")
              reading-script))))
 
+(ert-deftest org-museum-reading-state-falls-back-when-v1-index-is-missing ()
+  (let ((script (org-museum--script-index)))
+    (should (string-match-p
+             (regexp-quote "store.indexNames.contains('lastVisitedAt')")
+             script))
+    (should (string-match-p
+             (regexp-quote ":store.openCursor()")
+             script))
+    (should (string-match-p
+             (regexp-quote
+              "records.sort(function(a,b){return (b.lastVisitedAt||0)-(a.lastVisitedAt||0);})")
+             script))
+    (should (string-match-p (regexp-quote "records.slice(0,6)") script))))
+
 (ert-deftest org-museum-exported-html-uses-valid-shared-semantics ()
   (let ((topbar (org-museum--build-topbar "article.html" 'article))
         (sidebar (org-museum--build-sidebar-injection "article.html"))
@@ -778,7 +792,9 @@
            :categories (make-hash-table :test 'equal)
            :graph (make-hash-table :test 'equal)))
          (clean-called nil)
-         (manifest-called nil))
+         (manifest-called nil)
+         (index-called nil)
+         (graph-called nil))
     (unwind-protect
         (progn
           (puthash "broken" page pages)
@@ -789,9 +805,11 @@
                     ((symbol-function 'org-museum-export-page)
                      (lambda (&rest _args) (error "fixture failure")))
                     ((symbol-function 'org-museum--generate-index-page)
-                     (lambda () nil))
+                     (lambda () (setq index-called t)))
                     ((symbol-function 'org-museum-export-graph)
-                     (lambda (&rest _args) "graph.html"))
+                     (lambda (&rest _args)
+                       (setq graph-called t)
+                       "graph.html"))
                     ((symbol-function 'org-museum--report-failures)
                      (lambda (_failures) nil))
                     ((symbol-function 'org-museum--write-export-manifest)
@@ -800,7 +818,9 @@
                      (lambda () (setq clean-called t))))
             (org-museum-export-all))
           (should-not manifest-called)
-          (should-not clean-called))
+          (should-not clean-called)
+          (should-not index-called)
+          (should-not graph-called))
       (delete-directory root t))))
 
 (ert-deftest org-museum-stale-cleanup-refuses-empty-index ()

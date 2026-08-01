@@ -1675,13 +1675,16 @@ export would remove."
          (error (push (list (org-museum-page-id page) (error-message-string err))
                       failed))))
      (org-museum-index-pages org-museum--index))
-    (org-museum--generate-index-page)
-    (let ((graph-file (org-museum-export-graph :silent t))
-          (cleaned 0))
-      (when (and (null failed) (= success total) (> total 0))
-        (org-museum--write-export-manifest)
-        (when org-museum-clean-stale-html-on-full-export
-          (setq cleaned (org-museum--clean-stale-exports))))
+    (let ((graph-file nil)
+          (cleaned 0)
+          (complete (and (null failed) (= success total))))
+      (when complete
+        (org-museum--generate-index-page)
+        (setq graph-file (org-museum-export-graph :silent t))
+        (when (> total 0)
+          (org-museum--write-export-manifest)
+          (when org-museum-clean-stale-html-on-full-export
+            (setq cleaned (org-museum--clean-stale-exports)))))
       (message "Export complete: %d/%d pages, %d failed"
                success total (length failed))
       (when (> cleaned 0)
@@ -2239,9 +2242,15 @@ function loadRecentRecords(db){
   return new Promise(function(resolve,reject){
     var records=[];var tx=db.transaction('readingState','readwrite');
     var store=tx.objectStore('readingState');
-    var request=store.index('lastVisitedAt').openCursor(null,'prev');
+    var request=store.indexNames.contains('lastVisitedAt')
+      ?store.index('lastVisitedAt').openCursor(null,'prev')
+      :store.openCursor();
     request.onsuccess=function(){
-      var cursor=request.result;if(!cursor){resolve(records);return;}
+      var cursor=request.result;
+      if(!cursor){
+        records.sort(function(a,b){return (b.lastVisitedAt||0)-(a.lastVisitedAt||0);});
+        resolve(records.slice(0,6));return;
+      }
       var record=cursor.value;
       var page=pages.find(function(item){return item.pageId===record.pageId;});
       var parsed=Number(record.progress||record.scrollRatio||0);
@@ -2249,7 +2258,7 @@ function loadRecentRecords(db){
       record.progress=progress;record.scrollRatio=progress;
       var qualified=Boolean(record.qualifiedAt)||Number(record.engagedMs||0)>=30000||progress>=0.03;
       if(!page||!qualified)cursor.delete();
-      else if(records.length<6){
+      else {
         record.href=page.href;record.title=page.title;
         record.category=page.categoryLabel||page.category;
         if(record.lastHeadingId&&!(page.headings||[]).some(function(item){
