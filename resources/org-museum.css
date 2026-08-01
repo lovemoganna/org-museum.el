@@ -6,7 +6,7 @@
   --mono-selection: #49483e;
   --mono-comment: #95907c;
   --mono-white: #f8f8f2;
-  --mono-pink: #f92672;
+  --mono-pink: #ff4f8b;
   --mono-green: #a6e22e;
   --mono-orange: #fd971f;
   --mono-blue: #66d9ef;
@@ -525,8 +525,12 @@ button {
 }
 
 .museum-entry-category {
+  padding: 0;
+  border: 0;
   color: var(--text-muted);
+  background: transparent;
   font: 400 10px/1 var(--font-mono);
+  cursor: pointer;
 }
 
 .museum-search-results {
@@ -2055,6 +2059,7 @@ body.zen-mode .article-container {
   #graph-isolated-fallback > summary,
   .museum-status-filters button,
   .museum-filter-summary button,
+  .museum-entry-category,
   .topic-filter {
     min-height: var(--museum-touch-target);
   }

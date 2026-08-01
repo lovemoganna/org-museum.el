@@ -1784,8 +1784,8 @@ KIND is one of `home', `article', or `graph'."
     "data-category=\"%s\" data-status=\"%s\">\n"
     "  <div class=\"museum-entry-meta\"><span>%02d</span><time datetime=\"%s\">%s</time></div>\n"
     "  <h3><a href=\"%s\">%s</a>%s</h3>\n"
-    "  <a class=\"museum-entry-category\" href=\"?category=%s#recent-updates\" "
-    "data-category-link=\"%s\" aria-pressed=\"false\">%s</a>\n"
+    "  <button type=\"button\" class=\"museum-entry-category\" "
+    "data-category-link=\"%s\" aria-pressed=\"false\">%s</button>\n"
    "</article>\n")
    (org-museum--html-escape (org-museum-page-id page) t)
    (org-museum--html-escape (org-museum-page-category page) t)
@@ -1800,7 +1800,6 @@ KIND is one of `home', `article', or `graph'."
    (if (org-museum--published-page-p page)
        ""
      "<span class=\"museum-status-badge\">草稿</span>")
-   (url-hexify-string (org-museum-page-category page))
    (org-museum--html-escape (org-museum-page-category page) t)
    (org-museum--html-escape
     (org-museum--category-label (org-museum-page-category page)))))
@@ -1885,7 +1884,7 @@ document.addEventListener('keydown',function(event){
     event.preventDefault();if(search)search.focus();
   }
 });
-document.querySelectorAll('[data-category],[data-category-link]').forEach(function(control){
+document.querySelectorAll('.topic-filter[data-category],[data-category-link]').forEach(function(control){
   control.addEventListener('click',function(event){
     event.preventDefault();
     var category=control.getAttribute('data-category')||
@@ -2087,7 +2086,7 @@ function syncControls(){
     button.classList.toggle('is-active',active);
     button.setAttribute('aria-pressed',active?'true':'false');
   });
-  document.querySelectorAll('[data-category],[data-category-link]').forEach(function(control){
+  document.querySelectorAll('.topic-filter[data-category],[data-category-link]').forEach(function(control){
     var value=control.getAttribute('data-category')||control.getAttribute('data-category-link');
     var active=Boolean(state.category)&&value===state.category;
     control.classList.toggle('is-active',active);
@@ -2152,7 +2151,7 @@ document.addEventListener('keydown',function(event){
     event.preventDefault();if(search)search.focus();
   }
 });
-document.querySelectorAll('[data-category],[data-category-link]').forEach(function(control){
+document.querySelectorAll('.topic-filter[data-category],[data-category-link]').forEach(function(control){
   control.addEventListener('click',function(event){
     event.preventDefault();var value=control.getAttribute('data-category')||
       control.getAttribute('data-category-link');
@@ -3158,6 +3157,12 @@ function controls(selector,open){
     button.setAttribute('aria-expanded',open?'true':'false');
   });
 }
+function setPanelAvailable(panel,available){
+  if(!panel)return;
+  panel.inert=!available;
+  if(available)panel.removeAttribute('aria-hidden');
+  else panel.setAttribute('aria-hidden','true');
+}
 function focusFirst(container){
   var item=container&&container.querySelector(
     'button:not([disabled]),a[href],input:not([disabled]),[tabindex=\"0\"]');
@@ -3165,8 +3170,8 @@ function focusFirst(container){
 }
 function closeAll(restore){
   document.body.classList.remove('museum-drawer-open','museum-toc-open');
-  if(drawer)drawer.setAttribute('aria-hidden','true');
-  if(toc&&tocDrawerMedia.matches)toc.setAttribute('aria-hidden','true');
+  setPanelAvailable(drawer,false);
+  setPanelAvailable(toc,!tocDrawerMedia.matches);
   controls('[data-drawer-toggle]',false);controls('[data-toc-toggle]',false);
   if(restore&&lastFocus&&document.contains(lastFocus))lastFocus.focus();
   lastFocus=null;
@@ -3176,7 +3181,7 @@ function openPanel(kind,trigger){
   var isDrawer=kind==='drawer';
   document.body.classList.add(isDrawer?'museum-drawer-open':'museum-toc-open');
   var panel=isDrawer?drawer:toc;
-  if(panel)panel.setAttribute('aria-hidden','false');
+  setPanelAvailable(panel,true);
   controls(isDrawer?'[data-drawer-toggle]':'[data-toc-toggle]',true);
   focusFirst(panel);
 }
@@ -3237,7 +3242,8 @@ document.querySelectorAll('[data-toc-toggle]').forEach(function(button){
   button.setAttribute('aria-controls','org-museum-right-sidebar');
   button.setAttribute('aria-expanded','false');
 });
-if(toc&&tocDrawerMedia.matches)toc.setAttribute('aria-hidden','true');
+setPanelAvailable(drawer,false);
+setPanelAvailable(toc,!tocDrawerMedia.matches);
 if(!toc||!toc.querySelector('ul'))document.body.classList.add('museum-no-toc');
 var onTocDrawerChange=function(){closeAll(false);placeToc();};
 if(tocDrawerMedia.addEventListener)tocDrawerMedia.addEventListener('change',onTocDrawerChange);
@@ -3443,7 +3449,7 @@ window.addEventListener('load',function(){
                        (expand-file-name "graph.html" shared-root) out-file))
          (cats        (org-museum--sorted-categories)))
     (with-output-to-string
-      (princ "<aside id=\"org-museum-sidebar\" aria-hidden=\"true\" aria-label=\"全部笔记\">\n")
+      (princ "<aside id=\"org-museum-sidebar\" aria-hidden=\"true\" inert aria-label=\"全部笔记\">\n")
       (princ "  <div class=\"sidebar-header\"><strong>全部笔记</strong>")
       (princ "<button type=\"button\" data-drawer-close>关闭</button></div>\n")
       (princ (format "  <a class=\"sidebar-nav-btn\" href=\"%s\">返回首页</a>\n"
@@ -4196,7 +4202,7 @@ var width=canvas.clientWidth||900;
 var height=canvas.clientHeight||760;
 var svg=d3.select(canvas).append('svg')
   .attr('viewBox','0 0 '+width+' '+height)
-  .attr('role','img')
+  .attr('role','group')
   .attr('aria-label','Org Museum 知识图谱');
 var layer=svg.append('g');
 var zoom=d3.zoom().scaleExtent([0.35,5]).on('zoom',function(event){
@@ -4415,6 +4421,7 @@ function initCodeBlocks(){
     \"conf\":\"ini\",\"text\":\"plaintext\",\"example\":\"plaintext\"
   };
   var codes=[];
+  var codeBlocks=[];
   function detectLang(pre){
     if(pre.classList.contains('example'))return 'plaintext';
     var m=pre.className.match(/(?:^|\\s)src-([^\\s]+)/);
@@ -4451,6 +4458,7 @@ function initCodeBlocks(){
     }
     code.classList.add('org-museum-code','language-'+lang);
     code.setAttribute('data-language',lang);
+    codeBlocks.push(pre);
     if(lang!=='plaintext')codes.push(code);
     var lineCount=(code.textContent||'').replace(/\\r?\\n$/,'').split(/\\r?\\n/).length;
     var isLong=lineCount>18||code.getBoundingClientRect().height>320;
@@ -4475,13 +4483,30 @@ function initCodeBlocks(){
       toggle.onclick=function(){
         var expanded=pre.classList.toggle('org-museum-code-expanded');
         pre.classList.toggle('org-museum-code-collapsed',!expanded);
-        toggle.textContent=expanded?'COLLAPSE':'EXPAND';
-        toggle.setAttribute('aria-expanded',expanded?'true':'false');
+      toggle.textContent=expanded?'COLLAPSE':'EXPAND';
+      toggle.setAttribute('aria-expanded',expanded?'true':'false');
+      scheduleCodeScrollAccess();
       };
       pre.insertBefore(toggle,lbl.nextSibling);
       pre.insertBefore(btn,toggle.nextSibling);
     }else pre.insertBefore(btn,lbl.nextSibling);
   });
+  var codeAccessFrame=0;
+  function syncCodeScrollAccess(){
+    codeAccessFrame=0;
+    codeBlocks.forEach(function(pre){
+      var overflow=getComputedStyle(pre).overflowX;
+      var scrollable=overflow!=='hidden'&&overflow!=='clip'&&
+        pre.scrollWidth>pre.clientWidth+1;
+      if(scrollable)pre.tabIndex=0;
+      else pre.removeAttribute('tabindex');
+    });
+  }
+  function scheduleCodeScrollAccess(){
+    if(!codeAccessFrame)codeAccessFrame=requestAnimationFrame(syncCodeScrollAccess);
+  }
+  scheduleCodeScrollAccess();
+  window.addEventListener('resize',scheduleCodeScrollAccess,{passive:true});
   function runHighlight(){
     if(!window.hljs)return;
     codes.forEach(function(code){
@@ -4492,6 +4517,7 @@ function initCodeBlocks(){
         code.classList.add('no-highlight');
       }
     });
+    scheduleCodeScrollAccess();
   }
   function loadScript(src,done,fail){
     if(!src){(fail||function(){})();return;}

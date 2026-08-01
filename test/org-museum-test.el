@@ -223,6 +223,21 @@
     (should (search-forward "max-height: 320px" nil t))
     (should (search-forward ".org-museum-code-expanded" nil t))))
 
+(ert-deftest org-museum-scrollable-code-is-keyboard-focusable ()
+  (let ((script
+         (cl-letf (((symbol-function 'org-museum--hljs-lisp-js-src)
+                    (lambda (_out-file) "resources/highlight-lisp.min.js"))
+                   ((symbol-function 'org-museum--hljs-css-src)
+                    (lambda (_out-file) "resources/highlight.monokai.min.css"))
+                   ((symbol-function 'org-museum--hljs-js-src)
+                    (lambda (_out-file) "resources/highlight.min.js")))
+           (org-museum--script-ui-core "article.html"))))
+    (should (string-match-p
+             (regexp-quote "pre.scrollWidth>pre.clientWidth+1") script))
+    (should (string-match-p (regexp-quote "pre.tabIndex=0") script))
+    (should (string-match-p
+             (regexp-quote "scheduleCodeScrollAccess();") script))))
+
 (ert-deftest org-museum-cjk-spacing-preserves-code-and-literal-content ()
   (let ((script
          (cl-letf (((symbol-function 'org-museum--hljs-lisp-js-src)
@@ -299,6 +314,16 @@
     (should (search-forward ".museum-filter-summary button" nil t))
     (should (search-forward ".topic-filter" nil t))))
 
+(ert-deftest org-museum-closed-drawers-are-not-keyboard-focusable ()
+  (let ((script (org-museum--script-shell)))
+    (should (string-match-p
+             (regexp-quote "panel.inert=!available") script))
+    (should (string-match-p
+             (regexp-quote "setPanelAvailable(drawer,false)") script))
+    (should (string-match-p
+             (regexp-quote "setPanelAvailable(toc,!tocDrawerMedia.matches)")
+             script))))
+
 (ert-deftest org-museum-offline-assets-never-fall-back-to-cdns ()
   (cl-letf (((symbol-function 'org-museum--ensure-hljs-deployed)
              (lambda () (list :css nil :js nil :lisp-js nil)))
@@ -344,7 +369,18 @@
                         ".hljs-string"
                         ".hljs-number"))
       (goto-char (point-min))
-      (should (search-forward selector nil t)))))
+      (should (search-forward selector nil t)))
+    (goto-char (point-min))
+    (should (search-forward "--mono-pink: #ff4f8b" nil t)))
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/highlight.monokai.min.css"
+                       org-museum-test--repo-root))
+    (should (search-forward "color:#ff4f8b" nil t))
+    (should (search-forward "color:#95907c" nil t))
+    (goto-char (point-min))
+    (should (search-forward "pre code.hljs{display:block;overflow:visible;padding:0}" nil t))
+    (should-not (search-forward "color:#f92672" nil t))))
 
 (ert-deftest org-museum-index-data-and-empty-state-are-stable ()
   (let* ((root (make-temp-file "org-museum-index-test-" t))
@@ -382,6 +418,9 @@
           (should (string-match-p "data-index-reset" html))
           (should (string-match-p "data-clear-index-filters" html))
           (should (string-match-p "id=\"index-filter-summary\"" html))
+          (should (string-match-p
+                   "<button type=\"button\" class=\"museum-entry-category\""
+                   html))
           (should (string-match-p "aria-live=\"polite\"" html))
           (should (string-match-p
                    "var state={query:'',category:'',status:'all'}" html))
@@ -389,7 +428,15 @@
           (should (string-match-p "addEventListener('popstate'" html))
           (should (string-match-p "params.get('category')" html))
           (should (string-match-p "params.get('status')" html))
-          (should (string-match-p "setAttribute('aria-pressed'" html)))
+          (should (string-match-p "setAttribute('aria-pressed'" html))
+          (should (string-match-p
+                   (regexp-quote
+                    "'.topic-filter[data-category],[data-category-link]'")
+                   html))
+          (should-not (string-match-p
+                       (regexp-quote
+                        "querySelectorAll('[data-category],[data-category-link]')")
+                       html)))
       (delete-directory root t))))
 
 (ert-deftest org-museum-index-includes-drafts-headings-and-status-filters ()
@@ -721,6 +768,10 @@
             (should (string-match-p "document.execCommand('copy')" html))
             (should (string-match-p "复制失败，请手动复制" html))
             (should (string-match-p "forceSimulation(nodes)" html))
+            (should (string-match-p
+                     (regexp-quote ".attr('role','group')") html))
+            (should-not (string-match-p
+                         (regexp-quote ".attr('role','img')") html))
             (should (string-match-p "forceX(width/2)" html))
             (should (string-match-p "graph-node-neighbour" html))
             (should (string-match-p "isolatedFallback.hidden=false" html))
