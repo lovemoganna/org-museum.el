@@ -110,6 +110,22 @@ Link between pages using standard Org Mode links:
 [[id:UNIQUE-ID][Link by ID]]
 ```
 
+Relative `file:` links are resolved from the source Org file. Links to indexed
+Org pages become Wiki page URLs. Links to existing files outside the Wiki stay
+local and are exported with a **Local file** badge plus a copy-path fallback;
+external files are never copied into the export directory.
+
+### Optional Page Metadata
+
+```org
+#+WIKI_STATUS: draft
+#+DESCRIPTION: A short maintenance summary for the health report.
+```
+
+Drafts remain searchable and receive a visible badge. `DESCRIPTION` is optional;
+missing values are reported by `M-x org-museum-status` but never written back to
+the Org source automatically.
+
 ### Backlinks (Linked From)
 
 `org-museum.el` automatically tracks which pages link to which. Every page displays a **Linked From** section showing its incoming links.
@@ -137,6 +153,13 @@ The main index (`index.html`) includes a small local graph for each page's immed
 | `org-museum-css-file` | `"resources/org-museum.css"` | CSS file path |
 | `org-museum-open-browser-after-export` | `t` | Auto-open browser after export |
 | `org-museum-local-graph-neighbour-limit` | `12` | Max neighbors in local graph |
+| `org-museum-clean-stale-html-on-full-export` | `nil` | Delete stale page HTML only after a successful full export |
+| `org-museum-category-label-alist` | `nil` | Display-only category labels, such as `Sql` → `SQL` |
+
+Run `M-x org-museum-preview-stale-exports` to inspect stale page HTML before
+enabling automatic cleanup. Cleanup is limited to ordinary `.html` files under
+the configured page export directory and is refused for empty indexes or
+symbolic links.
 
 ### Example Configuration
 
@@ -149,12 +172,28 @@ The main index (`index.html`) includes a small local graph for each page's immed
   (org-museum-shared-export-dir "output")
   (org-museum-css-file "themes/custom.css")
   (org-museum-open-browser-after-export t)
+  (org-museum-clean-stale-html-on-full-export t)
+  (org-museum-category-label-alist '(("Sql" . "SQL") ("lisp" . "Lisp")))
   :config
   ;; Add your custom key binding
   (define-key org-mode-map (kbd "C-c w") #'org-museum--build-wiki))
 ```
 
 ## Exported HTML Features
+
+### Unified Index Filters
+
+Search, topic, and publication status share one filter state. Static URLs can
+restore that state using `q`, `category`, and `status` query parameters, for
+example `index.html?category=Sql&status=draft`. Search includes exported H2-H4
+headings and links directly to the best matching section.
+
+### Local Reading State
+
+Qualified visits are stored locally in IndexedDB (`org-museum`, version `1`). A
+visit qualifies after 30 seconds of focused reading or 3% progress. No article
+body is stored or uploaded, and the continue-reading section is hidden when
+IndexedDB is unavailable.
 
 ### Monokai Theme
 
