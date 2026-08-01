@@ -132,4 +132,24 @@
 - Axe 对首页、长文桌面、长文移动端和移动图谱的 WCAG 2 A/AA 与 2.1 AA 扫描均为 0 violations。
 - 14 页结构遍历、首页历史筛选、移动抽屉、代码展开和图谱流程均无失败，控制台 0 error；ERT 32/32 通过。
 
+## Round 6 cache and recovery verification (2026-08-01)
+
+- Reproduced the stale-export symptom in one browser session: an unversioned CSS
+  URL remained cached after its bytes changed, while a content-versioned URL
+  loaded the new bytes immediately.
+- Main CSS, Highlight.js CSS and scripts, and D3 now use stable 12-character
+  SHA-256 content versions. The real export emitted 12 manifest pages with
+  `org-museum.css?v=1a608ec1a416`,
+  `highlight.min.js?v=471ef9ae90c4`, and
+  `d3.v7.min.js?v=f2094bbf6141`.
+- CSS deployment now compares bytes instead of trusting timestamps, preventing
+  a newer stale destination from masking a changed source file.
+- HTTP browser verification loaded both versioned stylesheets, rendered 13 long
+  code controls and 12 graph nodes, reported zero horizontal overflow, and
+  produced zero console errors. A malformed percent-encoded article hash also
+  remained operational.
+- Corrupt legacy reading progress is clamped to the finite 0-1 range before it
+  reaches the resume UI. ERT completed 35/35 tests, including full offline
+  fixture export and version assertions for index, article, and graph pages.
+
 final result: passed

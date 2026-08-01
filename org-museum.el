@@ -309,20 +309,31 @@ Applicable scope: org-museum--on-save (Fix-02).")
   (expand-file-name "resources/highlight-lisp.min.js"
                     (org-museum--shared-root)))
 
+(defun org-museum--file-content-hash (file)
+  "Return the SHA-256 digest of regular FILE, or nil when unavailable."
+  (when (file-regular-p file)
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (insert-file-contents-literally file)
+      (secure-hash 'sha256 (current-buffer)))))
+
 (defun org-museum--files-have-same-content-p (left right)
   "Return non-nil when existing files LEFT and RIGHT have identical contents."
   (and (file-exists-p left)
        (file-exists-p right)
        (= (file-attribute-size (file-attributes left))
           (file-attribute-size (file-attributes right)))
-       (cl-labels
-           ((digest
-             (file)
-             (with-temp-buffer
-               (set-buffer-multibyte nil)
-               (insert-file-contents-literally file)
-               (secure-hash 'sha256 (current-buffer)))))
-         (string= (digest left) (digest right)))))
+       (string= (org-museum--file-content-hash left)
+                (org-museum--file-content-hash right))))
+
+(defun org-museum--versioned-resource-href (path out-file)
+  "Return PATH relative to OUT-FILE with a content-version query.
+The stable digest makes refreshed exports visible in an already-open browser
+without sacrificing file:// or offline operation."
+  (when-let ((digest (and path (org-museum--file-content-hash path))))
+    (format "%s?v=%s"
+            (org-museum--relative-path path out-file)
+            (substring digest 0 12))))
 
 (defun org-museum--resolve-resource-source (path)
   "Resolve PATH through a Windows Straight plain-text link placeholder.
@@ -395,26 +406,26 @@ export remains offline-capable.  LABEL is used only for diagnostics."
   "Return the deployed Highlight.js CSS path relative to OUT-FILE.
 Return nil instead of emitting a remote URL when deployment is unavailable."
   (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :css)))
-    (org-museum--relative-path path out-file)))
+    (org-museum--versioned-resource-href path out-file)))
 
 (defun org-museum--hljs-js-src (out-file)
   "Return the deployed Highlight.js script path relative to OUT-FILE.
 Return nil instead of emitting a remote URL when deployment is unavailable."
   (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :js)))
-    (org-museum--relative-path path out-file)))
+    (org-museum--versioned-resource-href path out-file)))
 
 (defun org-museum--hljs-lisp-js-src (out-file)
   "Return the deployed Highlight.js Lisp module path relative to OUT-FILE.
 Return nil instead of emitting a remote URL when deployment is unavailable."
   (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :lisp-js)))
-    (org-museum--relative-path path out-file)))
+    (org-museum--versioned-resource-href path out-file)))
 
 (defun org-museum--d3-js-src (out-file)
   "Return the deployed D3.js path relative to OUT-FILE, or nil.
 Exported pages never fall back to a remote resource."
   (let ((local (org-museum--ensure-d3-deployed)))
     (when (and out-file local (file-exists-p local))
-      (org-museum--relative-path local out-file))))
+      (org-museum--versioned-resource-href local out-file))))
 
 (defun org-museum--shared-root ()
   "Absolute path to shared export root."
@@ -457,8 +468,10 @@ Layout: <org-museum-root-dir>/<org-museum-pages-subdir>/"
 
 (defun org-museum--css-link-tag (from-out-file)
   "Return <link> tag for CSS, relative to FROM-OUT-FILE."
-  (format "<link rel=\"stylesheet\" href=\"%s\">"
-          (org-museum--relative-path (org-museum--css-output-path) from-out-file)))
+  (let ((path (org-museum--css-output-path)))
+    (format "<link rel=\"stylesheet\" href=\"%s\">"
+            (or (org-museum--versioned-resource-href path from-out-file)
+                (org-museum--relative-path path from-out-file)))))
 
 (defconst org-museum--favicon-link-tag
   "<link rel=\"icon\" href=\"data:,\">"
@@ -658,13 +671,13 @@ When DOTTED is non-nil, use YYYY.MM.DD; otherwise use YYYY-MM-DD."
 ;; ============================================================
 
 (defun org-museum--ensure-css-deployed ()
-  "Copy the source CSS to the export directory when stale."
+  "Copy source CSS to the export directory when its content differs."
   (let ((src (org-museum--css-source-path))
         (dst (org-museum--css-output-path)))
     (when (file-exists-p src)
       (make-directory (file-name-directory dst) t)
       (when (or (not (file-exists-p dst))
-                (> (org-museum--file-mtime src) (org-museum--file-mtime dst)))
+                (not (org-museum--files-have-same-content-p src dst)))
         (copy-file src dst t)
         (message "Org Museum CSS updated: %s" dst)))))
 
@@ -2197,7 +2210,9 @@ function loadRecentRecords(db){
       var cursor=request.result;if(!cursor){resolve(records);return;}
       var record=cursor.value;
       var page=pages.find(function(item){return item.pageId===record.pageId;});
-      var progress=Number(record.progress||record.scrollRatio||0);
+      var parsed=Number(record.progress||record.scrollRatio||0);
+      var progress=Number.isFinite(parsed)?Math.min(1,Math.max(0,parsed)):0;
+      record.progress=progress;record.scrollRatio=progress;
       var qualified=Boolean(record.qualifiedAt)||Number(record.engagedMs||0)>=30000||progress>=0.03;
       if(!page||!qualified)cursor.delete();
       else if(records.length<6){
@@ -2371,8 +2386,9 @@ Applicable scope: graph.html generation."
   (org-museum--ensure-css-deployed)
   (let* ((shared-root (org-museum--shared-root))
          (graph-html  (expand-file-name "graph.html" shared-root))
-         (css-href    (org-museum--relative-path
-                       (org-museum--css-output-path) graph-html))
+         (css-path    (org-museum--css-output-path))
+         (css-href    (or (org-museum--versioned-resource-href css-path graph-html)
+                          (org-museum--relative-path css-path graph-html)))
          (data-json   (org-museum--generate-graph-json))
          (d3-src      (org-museum--d3-js-src graph-html)))
     (make-directory shared-root t)
@@ -3390,7 +3406,8 @@ function restore(){
     request.onerror=function(){reject(request.error);};
   });}).then(function(saved){
     if(restored||!saved)return;restored=true;
-    var hash=decodeURIComponent(location.hash.replace(/^#/,''));
+    var raw=location.hash.replace(/^#/,'');
+    var hash=(function(){try{return decodeURIComponent(raw);}catch(_error){return raw;}})();
     var target=hash?document.getElementById(hash):null;
     if(!target&&saved.lastHeadingId)target=document.getElementById(saved.lastHeadingId);
     if(target)target.scrollIntoView({block:'start'});

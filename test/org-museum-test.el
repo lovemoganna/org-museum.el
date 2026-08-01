@@ -82,6 +82,61 @@
           (should (equal (org-museum--css-source-path) actual)))
       (delete-directory root t))))
 
+(ert-deftest org-museum-resource-urls-use-stable-content-versions ()
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-versioned-resource-test-" t)))
+         (out-file (expand-file-name "index.html" root))
+         (asset (expand-file-name "resources/theme.css" root)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory asset) t)
+          (with-temp-file asset (insert "first"))
+          (let ((first (org-museum--versioned-resource-href asset out-file)))
+            (should (string-match-p
+                     "\\`resources/theme\\.css\\?v=[0-9a-f]\\{12\\}\\'" first))
+            (should (equal first
+                           (org-museum--versioned-resource-href asset out-file)))
+            (with-temp-file asset (insert "second"))
+            (should-not
+             (equal first
+                    (org-museum--versioned-resource-href asset out-file)))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-reading-state-normalizes-corrupt-browser-values ()
+  (let ((index-script (org-museum--script-index))
+        (reading-script (org-museum--script-reading-state)))
+    (should (string-match-p
+             (regexp-quote
+              "Number.isFinite(parsed)?Math.min(1,Math.max(0,parsed)):0")
+             index-script))
+    (should (string-match-p
+             (regexp-quote "record.progress=progress;record.scrollRatio=progress")
+             index-script))
+    (should (string-match-p
+             (regexp-quote "try{return decodeURIComponent(raw);}catch(_error){return raw;}")
+             reading-script))))
+
+(ert-deftest org-museum-css-deployment-prefers-content-over-mtime ()
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-css-content-test-" t)))
+         (src (expand-file-name "source.css" root))
+         (dst (expand-file-name "export/resources/theme.css" root)))
+    (unwind-protect
+        (progn
+          (with-temp-file src (insert "current"))
+          (make-directory (file-name-directory dst) t)
+          (with-temp-file dst (insert "stale"))
+          (set-file-times dst (time-add (current-time) 3600))
+          (cl-letf (((symbol-function 'org-museum--css-source-path)
+                     (lambda () src))
+                    ((symbol-function 'org-museum--css-output-path)
+                     (lambda () dst)))
+            (org-museum--ensure-css-deployed))
+          (with-temp-buffer
+            (insert-file-contents dst)
+            (should (equal (buffer-string) "current"))))
+      (delete-directory root t))))
+
 (ert-deftest org-museum-bundled-resource-is-copied-before-network-fetch ()
   (let* ((root (file-name-as-directory
                 (make-temp-file "org-museum-bundled-resource-test-" t)))
@@ -838,10 +893,17 @@
             (with-temp-buffer
               (insert-file-contents index-file)
               (should (search-forward "museum-index-matrix" nil t))
-              (should (search-forward "org-museum-index-data" nil t)))
+              (should (search-forward "org-museum-index-data" nil t))
+              (goto-char (point-min))
+              (should (re-search-forward
+                       "resources/org-museum\\.css\\?v=[0-9a-f]\\{12\\}" nil t)))
             (with-temp-buffer
               (insert-file-contents alpha-file)
               (should (search-forward "data-page-id=\"alpha\"" nil t))
+              (goto-char (point-min))
+              (should (re-search-forward
+                       "highlight\\.min\\.js\\?v=[0-9a-f]\\{12\\}" nil t))
+              (goto-char (point-min))
               (should (search-forward "museum-article-layout" nil t))
               (should (search-forward "museum-article-identity" nil t))
               (should (search-forward "data-current-section" nil t))
@@ -870,6 +932,9 @@
             (with-temp-buffer
               (insert-file-contents graph-file)
               (should (search-forward "museum-graph-shell" nil t))
+              (goto-char (point-min))
+              (should (re-search-forward
+                       "d3\\.v7\\.min\\.js\\?v=[0-9a-f]\\{12\\}" nil t))
               (should (search-forward "var meta=raw.meta||{}" nil t))
               (should (search-forward "new URLSearchParams(location.search)" nil t))
               (should (search-forward ".alphaDecay(alphaDecay)" nil t))
