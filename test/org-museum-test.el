@@ -167,6 +167,108 @@
              ".article-container h2,\n.article-container h3,\n.article-container h4" nil t))
     (should (search-forward "scroll-margin-top: 48px" nil t))))
 
+(ert-deftest org-museum-article-width-is-configurable-and-exported ()
+  (should (= org-museum-article-max-width 960))
+  (let ((org-museum-article-max-width 912)
+        (org-museum--index nil))
+    (with-temp-buffer
+      (insert "<html><body><div id=\"content\"><h1>Article</h1></div></body></html>")
+      (should (org-museum--pp-wrap-content-div "article.html" "article.org"))
+      (goto-char (point-min))
+      (should (search-forward
+               "style=\"--museum-article-max-width: 912px\"" nil t))))
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    (should (search-forward "var(--museum-article-max-width, 960px)" nil t))))
+
+(ert-deftest org-museum-background-effects-are-opt-in-and-motion-safe ()
+  (should org-museum-background-effects-enabled)
+  (let ((org-museum-background-effects-enabled nil))
+    (should (equal (org-museum--sidebar-fx-controls) ""))
+    (should (equal (org-museum--script-effects) "")))
+  (let* ((org-museum-background-effects-enabled t)
+         (controls (org-museum--sidebar-fx-controls))
+         (script (org-museum--script-effects)))
+    (should (string-match-p "<details class=\"sidebar-fx-controls\"" controls))
+    (should (string-match-p "org-museum-bg-fx-v2" script))
+    (should-not (string-match-p "org-museum-bg-fx'" script))
+    (should (string-match-p "prefers-reduced-motion: reduce" script))
+    (should (string-match-p "zen-mode" script))
+    (should (string-match-p "MutationObserver" script))
+    (should (string-match-p "removeEventListener" script))
+    (should (string-match-p "visibilitychange" script))
+    (should (string-match-p "pagehide" script))))
+
+(ert-deftest org-museum-long-code-blocks-have-a-real-collapse-state ()
+  (let ((script
+         (cl-letf (((symbol-function 'org-museum--hljs-lisp-js-src)
+                    (lambda (_out-file) "resources/highlight-lisp.min.js"))
+                   ((symbol-function 'org-museum--hljs-css-src)
+                    (lambda (_out-file) "resources/highlight.monokai.min.css"))
+                   ((symbol-function 'org-museum--hljs-js-src)
+                    (lambda (_out-file) "resources/highlight.min.js")))
+           (org-museum--script-ui-core "article.html"))))
+    (should (string-match-p
+             (regexp-quote "replace(/\\r?\\n$/,'')") script))
+    (should (string-match-p "lineCount>18||pre.scrollHeight>320" script))
+    (should (string-match-p "if(isLong)" script))
+    (should (string-match-p "org-museum-code-collapsed" script))
+    (should (string-match-p "aria-expanded" script)))
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    (should (search-forward ".org-museum-code-collapsed" nil t))
+    (should (search-forward "max-height: 320px" nil t))
+    (should (search-forward ".org-museum-code-expanded" nil t))))
+
+(ert-deftest org-museum-offline-assets-never-fall-back-to-cdns ()
+  (cl-letf (((symbol-function 'org-museum--ensure-hljs-deployed)
+             (lambda () (list :css nil :js nil :lisp-js nil)))
+            ((symbol-function 'org-museum--ensure-d3-deployed)
+             (lambda () nil)))
+    (should-not (org-museum--hljs-css-src "article.html"))
+    (should-not (org-museum--hljs-js-src "article.html"))
+    (should-not (org-museum--hljs-lisp-js-src "article.html"))
+    (should-not (org-museum--d3-js-src "graph.html"))
+    (let ((script (org-museum--script-ui-core "article.html"))
+          (graph (org-museum--build-graph-html
+                  "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                  "resources/org-museum.css" nil)))
+      (should-not (string-match-p "https?://" script))
+      (should-not (string-match-p "https?://" graph)))))
+
+(ert-deftest org-museum-graph-emits-one-valid-local-d3-script-tag ()
+  (let ((graph (org-museum--build-graph-html
+                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                "resources/org-museum.css" "resources/d3.v7.min.js")))
+    (should (string-match-p
+             (regexp-quote "<script src=\"resources/d3.v7.min.js\"></script>")
+             graph))
+    (should-not (string-match-p "src=\"<script" graph))))
+
+(ert-deftest org-museum-org-html-has-complete-monokai-semantic-colors ()
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    (dolist (selector '(".article-container strong"
+                        ".article-container em"
+                        ".article-container li::marker"
+                        ".article-container code:not(.org-museum-code)"
+                        ".article-container .todo"
+                        ".article-container .timestamp"
+                        ".org-keyword"
+                        ".org-string"
+                        ".org-function-name"
+                        ".org-type"
+                        ".org-constant"
+                        ".org-comment"
+                        ".hljs-keyword"
+                        ".hljs-string"
+                        ".hljs-number"))
+      (goto-char (point-min))
+      (should (search-forward selector nil t)))))
+
 (ert-deftest org-museum-index-data-and-empty-state-are-stable ()
   (let* ((root (make-temp-file "org-museum-index-test-" t))
          (org-museum-root-dir root)
@@ -504,7 +606,7 @@
           (should-error (org-museum-preview-stale-exports) :type 'user-error))
       (delete-directory root t))))
 
-(ert-deftest org-museum-zero-link-graph-exposes-clusters-status-and-copy-link ()
+(ert-deftest org-museum-zero-link-graph-keeps-the-obsidian-style-canvas ()
   (let* ((root (make-temp-file "org-museum-zero-graph-test-" t))
          (org-museum-root-dir root)
          (org-museum-export-dir "exports/html/pages")
@@ -530,18 +632,25 @@
                         json "resources/org-museum.css" "resources/d3.v7.min.js")))
             (should (string-match-p "\"status\":\"draft\"" json))
             (should (string-match-p "\"group\":\"SQL\"" json))
-            (should (string-match-p "graph-zero-clusters" html))
+            (should (string-match-p "graph-zero-notice" html))
+            (should (string-match-p "graph-isolated-fallback" html))
             (should (string-match-p "graph-isolated-list" html))
             (should (string-search "copy.textContent='复制链接'" html))
             (should (string-match-p "graph-wiki-literal" html))
-            (should (string-match-p "graph-cluster-filter" html))
              (should (string-match-p "graph-copy-status" html))
              (should (string-match-p "rel=\\\"icon\\\" href=\\\"data:,\\\"" html))
              (should (string-match-p "setAttribute('aria-pressed'" html))
             (should (string-match-p "navigator.clipboard" html))
             (should (string-match-p "document.execCommand('copy')" html))
             (should (string-match-p "复制失败，请手动复制" html))
-            (should (string-match-p "links.length===0" html))))
+            (should (string-match-p "forceSimulation(nodes)" html))
+            (should (string-match-p "forceX(width/2)" html))
+            (should (string-match-p "graph-node-neighbour" html))
+            (should (string-match-p "isolatedFallback.hidden=false" html))
+            (should (string-match-p "renderFallbackList" html))
+            (should-not
+             (string-match-p
+              "if(links.length===0)[[:space:]]*{[^}]*return;" html))))
       (delete-directory root t))))
 
 (ert-deftest org-museum-full-export-fixture ()

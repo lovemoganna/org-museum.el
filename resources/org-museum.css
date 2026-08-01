@@ -571,17 +571,17 @@ button {
   inset: var(--topbar-height) 0 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 34px var(--page-padding) 80px;
+  padding: 34px clamp(24px, 2.8vw, 40px) 80px;
   scroll-padding-top: 28px;
 }
 
 .museum-article-layout {
   display: grid;
-  grid-template-columns: minmax(110px, 145px) minmax(520px, 700px) minmax(190px, 250px);
+  grid-template-columns: minmax(96px, 112px) minmax(640px, var(--museum-article-max-width, 960px)) minmax(180px, 210px);
   justify-content: center;
-  gap: clamp(38px, 5vw, 86px);
+  gap: clamp(24px, 2.25vw, 32px);
   width: 100%;
-  max-width: 1320px;
+  max-width: calc(var(--museum-article-max-width, 960px) + 386px);
   margin: 0 auto;
 }
 
@@ -725,7 +725,7 @@ button {
 .article-container h2 {
   position: relative;
   margin: 36px 0 14px;
-  color: var(--mono-white);
+  color: var(--mono-green);
   font-size: 14px;
   font-weight: 500;
   line-height: 1.55;
@@ -733,7 +733,7 @@ button {
 
 .article-container h3 {
   margin: 28px 0 10px;
-  color: var(--mono-white);
+  color: var(--mono-blue);
   font-size: 13px;
   font-weight: 500;
 }
@@ -742,13 +742,41 @@ button {
 .article-container h5,
 .article-container h6 {
   margin: 22px 0 8px;
-  color: var(--text-main);
+  color: var(--mono-purple);
   font-size: 12px;
   font-weight: 500;
 }
 
 .article-container p {
   margin: 0 0 15px;
+}
+
+.article-container h5 {
+  color: var(--mono-orange);
+}
+
+.article-container h6 {
+  color: var(--mono-yellow);
+}
+
+.article-container strong {
+  color: var(--mono-yellow);
+  font-weight: 600;
+}
+
+.article-container em {
+  color: var(--mono-pink);
+}
+
+.article-container del,
+.article-container s {
+  color: var(--mono-comment);
+}
+
+.article-container mark {
+  padding: 0 0.2em;
+  color: var(--mono-white);
+  background: var(--mono-selection);
 }
 
 .article-container a {
@@ -768,11 +796,131 @@ button {
   margin: 5px 0;
 }
 
+.article-container li::marker {
+  color: var(--mono-green);
+  font-family: var(--font-mono);
+}
+
+.article-container dt {
+  color: var(--mono-blue);
+  font-weight: 500;
+}
+
+.article-container code:not(.org-museum-code),
+.article-container kbd,
+.article-container samp {
+  padding: 0.08em 0.35em;
+  border: 1px solid var(--rule-soft);
+  color: var(--mono-orange);
+  background: var(--mono-deep);
+  font-family: var(--font-mono);
+  font-size: 0.94em;
+}
+
+.article-container pre code:not(.org-museum-code) {
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+}
+
 .article-container blockquote {
   margin: 22px 0;
   padding: 2px 0 2px 18px;
   border-left: 2px solid var(--mono-yellow);
   color: var(--text-muted);
+}
+
+.article-container blockquote strong,
+.article-container cite {
+  color: var(--mono-yellow);
+}
+
+.article-container .todo,
+.article-container .org-warning {
+  color: var(--mono-pink);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.article-container .done {
+  color: var(--mono-green);
+  font-family: var(--font-mono);
+}
+
+.article-container .timestamp,
+.article-container .timestamp-kwd,
+.article-container .tag {
+  color: var(--mono-purple);
+  font-family: var(--font-mono);
+}
+
+.article-container .tag {
+  color: var(--mono-orange);
+}
+
+.article-container .footref,
+.article-container .footnum {
+  color: var(--mono-blue);
+  font-family: var(--font-mono);
+}
+
+.article-container figcaption,
+.article-container .org-src-name,
+.article-container .example-label {
+  color: var(--mono-comment);
+  font: 400 10px/1.6 var(--font-mono);
+}
+
+/* Monokai semantic map for htmlize and Highlight.js output. */
+.org-keyword,
+.org-builtin,
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-meta .hljs-keyword {
+  color: var(--mono-pink);
+}
+
+.org-string,
+.org-doc,
+.hljs-string,
+.hljs-regexp,
+.hljs-attribute {
+  color: var(--mono-yellow);
+}
+
+.org-function-name,
+.hljs-title,
+.hljs-title.function_ {
+  color: var(--mono-green);
+}
+
+.org-type,
+.hljs-type,
+.hljs-built_in,
+.hljs-class .hljs-title {
+  color: var(--mono-blue);
+}
+
+.org-constant,
+.org-variable-name,
+.hljs-variable,
+.hljs-literal {
+  color: var(--mono-purple);
+}
+
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet {
+  color: var(--mono-orange);
+}
+
+.org-comment,
+.org-comment-delimiter,
+.hljs-comment,
+.hljs-quote {
+  color: var(--mono-comment);
+  font-style: italic;
 }
 
 .article-container hr {
@@ -838,6 +986,16 @@ pre.org-museum-code-block {
   color: var(--mono-white);
   font: 400 11px/1.7 var(--font-mono);
   white-space: pre;
+}
+
+pre.org-museum-code-block.org-museum-code-collapsed {
+  max-height: 320px;
+  overflow: hidden;
+}
+
+pre.org-museum-code-block.org-museum-code-expanded {
+  max-height: none;
+  overflow: auto;
 }
 
 .code-lang-label,
@@ -1173,6 +1331,25 @@ pre.org-museum-code-block {
   border-bottom: 1px solid var(--rule-soft);
 }
 
+.sidebar-fx-controls > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.sidebar-fx-controls > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sidebar-fx-controls > summary::after {
+  content: "+";
+  float: right;
+  color: var(--mono-green);
+}
+
+.sidebar-fx-controls[open] > summary::after {
+  content: "−";
+}
+
 .fx-label,
 .sidebar-cat-label {
   margin-bottom: 10px;
@@ -1183,6 +1360,12 @@ pre.org-museum-code-block {
 .fx-buttons {
   display: flex;
   gap: 15px;
+  padding-top: 4px;
+}
+
+.fx-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
 }
 
 .fx-btn.active {
@@ -1389,6 +1572,12 @@ pre.org-museum-code-block {
   transition: opacity 120ms ease, stroke 120ms ease;
 }
 
+.graph-nodes circle.is-draft {
+  stroke: var(--mono-orange);
+  stroke-dasharray: 2 2;
+  fill-opacity: 0.72;
+}
+
 .graph-nodes circle.is-selected {
   stroke: var(--mono-pink);
   fill: var(--mono-deep) !important;
@@ -1397,7 +1586,19 @@ pre.org-museum-code-block {
 .graph-nodes text {
   fill: var(--text-main);
   font: 400 11px var(--font-sans);
+  opacity: 0;
   pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.graph-labels-dense .graph-nodes text,
+.graph-nodes g:hover text,
+.graph-nodes g.graph-node-neighbour text {
+  opacity: 0.82;
+}
+
+.graph-nodes g.graph-node-neighbour circle {
+  stroke: var(--mono-pink);
 }
 
 .graph-nodes g.is-dimmed,
@@ -1405,95 +1606,71 @@ pre.org-museum-code-block {
   opacity: 0.12;
 }
 
-#graph-empty-state {
+#graph-zero-notice {
   position: absolute;
-  z-index: 2;
-  inset: 0 0 92px;
-  width: auto;
-  padding: 22px 18px 40px;
-  overflow: auto;
-  text-align: left;
+  z-index: 3;
+  top: 16px;
+  left: 18px;
+  display: grid;
+  gap: 3px;
+  padding: 9px 11px;
+  border: 1px solid var(--rule-soft);
+  background: rgba(30, 31, 28, 0.88);
+  pointer-events: none;
 }
 
-.graph-zero-mode #graph-empty-state {
-  inset-bottom: 0;
-}
-
-.graph-zero-mode .graph-workspace-footer {
-  display: none;
-}
-
-#graph-empty-state h2 {
-  margin: 0 0 12px;
+#graph-zero-notice strong {
   color: var(--mono-white);
-  font-size: 14px;
+  font-size: 11px;
   font-weight: 500;
 }
 
-#graph-empty-state p {
-  max-width: 680px;
-  margin: 0 0 24px;
+#graph-zero-notice span {
   color: var(--text-muted);
-  line-height: 1.9;
+  font: 400 9px/1.5 var(--font-mono);
 }
 
-.graph-zero-clusters {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(120px, 1fr));
-  gap: 10px;
-  margin-bottom: 30px;
-}
-
-.graph-zero-clusters .graph-cluster-filter,
-.graph-isolated-list article {
+#graph-isolated-fallback {
+  position: absolute;
+  z-index: 4;
+  right: 0;
+  bottom: 92px;
+  width: min(720px, 78%);
+  max-height: 42%;
+  overflow: auto;
   border: 1px solid var(--rule-soft);
-  background: rgba(30, 31, 28, 0.34);
+  background: rgba(30, 31, 28, 0.96);
 }
 
-.graph-zero-clusters .graph-cluster-filter {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  width: 100%;
-  min-width: 0;
-  padding: 12px 14px;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.graph-zero-clusters .graph-cluster-filter:hover,
-.graph-zero-clusters .graph-cluster-filter.is-active {
-  border-color: var(--mono-green);
-}
-
-.graph-zero-clusters h3,
-.graph-isolated-heading h3 {
-  margin: 0;
+#graph-isolated-fallback > summary {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--rule-soft);
   color: var(--text-main);
   font-size: 11px;
   font-weight: 500;
-  overflow-wrap: anywhere;
+  background: var(--mono-deep);
+  cursor: pointer;
 }
 
-.graph-zero-clusters span,
-.graph-isolated-heading span {
+#graph-isolated-fallback > summary span {
+  float: right;
   color: var(--text-muted);
   font: 400 10px/1.6 var(--font-mono);
 }
 
-.graph-isolated-heading {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  padding-bottom: 9px;
-  border-bottom: 1px solid var(--rule);
+.graph-isolated-list article {
+  border: 1px solid var(--rule-soft);
+  background: rgba(30, 31, 28, 0.34);
 }
 
 .graph-isolated-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+  padding: 10px;
 }
 
 .graph-isolated-list article {
@@ -1636,7 +1813,7 @@ body.zen-mode .museum-topbar {
 }
 
 body.zen-mode .museum-article-layout {
-  grid-template-columns: minmax(0, 700px);
+  grid-template-columns: minmax(0, var(--museum-article-max-width, 960px));
 }
 
 body.zen-mode .article-container {
@@ -1645,7 +1822,7 @@ body.zen-mode .article-container {
 
 /* Responsive */
 
-@media (max-width: 1120px) {
+@media (max-width: 1360px) {
   .museum-topbar {
     grid-template-columns: max-content minmax(240px, 1fr) max-content;
     gap: 22px;
@@ -1656,7 +1833,8 @@ body.zen-mode .article-container {
   }
 
   .museum-article-layout {
-    grid-template-columns: 115px minmax(0, 680px);
+    grid-template-columns: 112px minmax(0, var(--museum-article-max-width, 960px));
+    max-width: calc(var(--museum-article-max-width, 960px) + 144px);
   }
 
   #org-museum-right-sidebar {
@@ -1908,24 +2086,24 @@ body.zen-mode .article-container {
   }
 
   .graph-zero-mode .museum-graph-workspace {
-    height: auto;
-    min-height: 0;
+    height: 650px;
+    min-height: 650px;
     margin-top: 18px;
-    overflow: visible;
+    overflow: hidden;
   }
 
-  .graph-zero-mode #graph-empty-state {
-    position: static;
-    inset: auto;
-    overflow: visible;
+  #graph-zero-notice {
+    right: 0;
+    left: 0;
   }
 
-  #graph-empty-state {
-    width: auto;
-    padding-inline: 0;
+  #graph-isolated-fallback {
+    right: 0;
+    bottom: 78px;
+    width: 100%;
+    max-height: 48%;
   }
 
-  .graph-zero-clusters,
   .graph-isolated-list {
     grid-template-columns: 1fr;
   }

@@ -89,12 +89,17 @@
              "2026-07-26：完成本轮筛选与行动建议。\n")
           (insert
            "* 概览\n"
-           (format "%s 的工作笔记，用于验证中英文长标题、表格与关系索引。\n\n" title)
+           (format "%s 的工作笔记，用于验证 *粗体*、/强调/、~行内代码~、中英文长标题、表格与关系索引。\n\n" title)
            "* 内容\n"
            "这里保留一段简洁正文，确保导出布局使用真实 Org 层级。\n"
            (if (and linked (string= id "ontology-mvp"))
                "\n[[wiki:emacs-observer][回到 Emacs 插件高价值增量观察]]\n"
-             ""))))
+             ""))
+          (when (string= id "duckdb-emacs-package")
+            (insert "\n* 长代码块\n#+begin_src sql\n")
+            (dotimes (line 24)
+              (insert (format "SELECT %d AS lesson_step;\n" (1+ line))))
+            (insert "#+end_src\n"))))
       (let* ((parts (mapcar #'string-to-number (split-string date "-")))
              (time (encode-time 0 0 12
                                 (nth 2 parts) (nth 1 parts) (nth 0 parts))))

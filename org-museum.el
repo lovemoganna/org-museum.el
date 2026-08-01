@@ -130,6 +130,19 @@ Each entry is (RAW . DISPLAY), for example ((\"Sql\" . \"SQL\"))."
   :type '(alist :key-type string :value-type string)
   :group 'org-museum)
 
+(defcustom org-museum-article-max-width 960
+  "Maximum desktop article width in CSS pixels.
+The exporter writes this value as a page-local CSS custom property so the
+bundled responsive layout can preserve the configured reading measure."
+  :type 'integer
+  :group 'org-museum)
+
+(defcustom org-museum-background-effects-enabled t
+  "When non-nil, export the optional background-effects controls.
+Effects still start disabled and must be enabled explicitly by the reader."
+  :type 'boolean
+  :group 'org-museum)
+
 (defcustom org-museum-local-graph-neighbour-limit 12
   "Maximum neighbours shown in local per-page graph.
 Nodes beyond this limit are folded into a virtual _overflow node.
@@ -379,29 +392,29 @@ export remains offline-capable.  LABEL is used only for diagnostics."
              "Highlight.js Lisp language module")))
 
 (defun org-museum--hljs-css-src (out-file)
-  "Return Highlight.js CSS URL relative to OUT-FILE, falling back to CDN."
-  (or (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :css)))
-        (org-museum--relative-path path out-file))
-      org-museum--hljs-css-cdn))
+  "Return the deployed Highlight.js CSS path relative to OUT-FILE.
+Return nil instead of emitting a remote URL when deployment is unavailable."
+  (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :css)))
+    (org-museum--relative-path path out-file)))
 
 (defun org-museum--hljs-js-src (out-file)
-  "Return Highlight.js script URL relative to OUT-FILE, falling back to CDN."
-  (or (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :js)))
-        (org-museum--relative-path path out-file))
-      org-museum--hljs-js-cdn))
+  "Return the deployed Highlight.js script path relative to OUT-FILE.
+Return nil instead of emitting a remote URL when deployment is unavailable."
+  (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :js)))
+    (org-museum--relative-path path out-file)))
 
 (defun org-museum--hljs-lisp-js-src (out-file)
-  "Return Highlight.js Lisp module URL relative to OUT-FILE, falling back to CDN."
-  (or (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :lisp-js)))
-        (org-museum--relative-path path out-file))
-      org-museum--hljs-lisp-js-cdn))
+  "Return the deployed Highlight.js Lisp module path relative to OUT-FILE.
+Return nil instead of emitting a remote URL when deployment is unavailable."
+  (when-let ((path (plist-get (org-museum--ensure-hljs-deployed) :lisp-js)))
+    (org-museum--relative-path path out-file)))
 
 (defun org-museum--d3-js-src (out-file)
-  "Return a URL (usually relative) to D3.js suitable for OUT-FILE HTML."
+  "Return the deployed D3.js path relative to OUT-FILE, or nil.
+Exported pages never fall back to a remote resource."
   (let ((local (org-museum--ensure-d3-deployed)))
-    (if (and out-file local (file-exists-p local))
-        (org-museum--relative-path local out-file)
-      org-museum--d3-cdn)))
+    (when (and out-file local (file-exists-p local))
+      (org-museum--relative-path local out-file))))
 
 (defun org-museum--shared-root ()
   "Absolute path to shared export root."
@@ -1415,7 +1428,9 @@ Applicable scope: org-museum--postprocess-html."
         (replace-match
          (concat
           "<main id=\"main-scroll\">" identity
-          "<div id=\"content\" class=\"museum-article-layout\">"
+          (format
+           "<div id=\"content\" class=\"museum-article-layout\" style=\"--museum-article-max-width: %dpx\">"
+           (max 640 org-museum-article-max-width))
           meta
           "<article class=\"article-container\"" article-attrs ">")
          t t)
@@ -3121,7 +3136,7 @@ Applicable scope: org-museum-create-page (Fix-16)."
 var drawer=document.getElementById('org-museum-sidebar');
 var toc=document.getElementById('org-museum-right-sidebar');
 var backdrop=document.getElementById('museum-drawer-backdrop');
-var tocDrawerMedia=matchMedia('(max-width:1120px)');
+var tocDrawerMedia=matchMedia('(max-width:1360px)');
 var tocAnchor=null;
 var lastFocus=null;
 if(toc&&toc.parentNode){
@@ -3150,7 +3165,7 @@ function focusFirst(container){
 function closeAll(restore){
   document.body.classList.remove('museum-drawer-open','museum-toc-open');
   if(drawer)drawer.setAttribute('aria-hidden','true');
-  if(toc&&matchMedia('(max-width:1120px)').matches)toc.setAttribute('aria-hidden','true');
+  if(toc&&tocDrawerMedia.matches)toc.setAttribute('aria-hidden','true');
   controls('[data-drawer-toggle]',false);controls('[data-toc-toggle]',false);
   if(restore&&lastFocus&&document.contains(lastFocus))lastFocus.focus();
   lastFocus=null;
@@ -3400,7 +3415,8 @@ window.addEventListener('load',function(){
    "<button type=\"button\" id=\"museum-drawer-backdrop\" aria-label=\"关闭抽屉\"></button>\n"
    "<p id=\"museum-article-live-status\" class=\"sr-only\" role=\"status\" aria-live=\"polite\"></p>\n"
    "<div id=\"zen-mask\"></div>\n"
-   "<canvas id=\"org-museum-fx-canvas\" aria-hidden=\"true\"></canvas>\n"
+   (when org-museum-background-effects-enabled
+     "<canvas id=\"org-museum-fx-canvas\" aria-hidden=\"true\"></canvas>\n")
    (org-museum--generate-sidebar-html out-file)
    (org-museum--script-ui-core out-file)
    (org-museum--script-effects)
@@ -3460,16 +3476,18 @@ window.addEventListener('load',function(){
 
 (defun org-museum--sidebar-fx-controls ()
   "Return HTML for the background-effects control panel."
-  (concat
-   "  <div class=\"sidebar-fx-controls\">\n"
-   "    <div class=\"fx-label\">背景效果</div>\n"
-   "    <div class=\"fx-buttons\">\n"
-   "      <button class=\"fx-btn\" data-fx=\"none\">关闭</button>\n"
-   "      <button class=\"fx-btn\" data-fx=\"tubes\">轨迹</button>\n"
-   "      <button class=\"fx-btn\" data-fx=\"matrix\">矩阵</button>\n"
-   "      <button class=\"fx-btn\" data-fx=\"particles\">微粒</button>\n"
-   "    </div>\n"
-   "  </div>\n"))
+  (if (not org-museum-background-effects-enabled)
+      ""
+    (concat
+     "  <details class=\"sidebar-fx-controls\">\n"
+     "    <summary class=\"fx-label\">背景效果</summary>\n"
+     "    <div class=\"fx-buttons\">\n"
+     "      <button class=\"fx-btn\" data-fx=\"none\">关闭</button>\n"
+     "      <button class=\"fx-btn\" data-fx=\"tubes\">轨迹</button>\n"
+     "      <button class=\"fx-btn\" data-fx=\"matrix\">矩阵</button>\n"
+     "      <button class=\"fx-btn\" data-fx=\"particles\">微粒</button>\n"
+     "    </div>\n"
+     "  </details>\n")))
 
 ;; ============================================================
 ;; §21  WIKI NAVIGATION
@@ -3763,7 +3781,7 @@ in large-tier graphs."
   <title>Org Museum — Knowledge Graph</title>
   <link rel=\"stylesheet\" href=\"%s\">
   <link rel=\"icon\" href=\"data:,\">
-  <script src=\"%s\"></script>
+  %s
 </head>
 <body class=\"graph-page\">
   <div id=\"graph-controls\">
@@ -3923,7 +3941,7 @@ in large-tier graphs."
 </body>
 </html>"
           css-href
-          (or d3-src org-museum--d3-cdn)
+          (if d3-src (format "<script src=\"%s\"></script>" d3-src) "")
           json-data
           (json-encode org-museum--graph-palette)))
 
@@ -3952,7 +3970,7 @@ in large-tier graphs."
   <title>Org Museum · 知识图谱</title>
   <link rel=\"stylesheet\" href=\"%s\">
   <link rel=\"icon\" href=\"data:,\">
-  <script src=\"%s\"></script>
+  %s
 </head>
 <body class=\"graph-page\" data-page-kind=\"graph\">
 %s
@@ -3979,14 +3997,15 @@ in large-tier graphs."
   </aside>
   <section class=\"museum-graph-workspace\" aria-label=\"知识关系画布\">
     <div id=\"graph-canvas\"></div>
-    <div id=\"graph-empty-state\" hidden>
-      <h2>尚未形成知识连线</h2>
-      <p>不推断关系。当前按主题整理孤立笔记；复制链接写回 Org 后，下次导出会恢复真实关系图。</p>
-      <div id=\"graph-zero-clusters\" class=\"graph-zero-clusters\"></div>
-      <div class=\"graph-isolated-heading\"><h3>孤立笔记</h3><span id=\"graph-isolated-count\">00</span></div>
+    <div id=\"graph-zero-notice\" hidden>
+      <strong>尚未形成知识连线</strong>
+      <span>当前显示真实孤立节点，不推断关系。</span>
+    </div>
+    <details id=\"graph-isolated-fallback\" hidden>
+      <summary>孤立笔记 <span id=\"graph-isolated-count\">00</span></summary>
       <div id=\"graph-isolated-list\" class=\"graph-isolated-list\"></div>
       <p id=\"graph-copy-status\" class=\"sr-only\" role=\"status\" aria-live=\"polite\"></p>
-    </div>
+    </details>
     <div id=\"graph-tooltip\" role=\"status\" aria-live=\"polite\">
       <strong id=\"tt-title\"></strong><span id=\"tt-meta\"></span>
     </div>
@@ -4006,7 +4025,8 @@ var meta=raw.meta||{};
 var palette=%s;
 var search=document.getElementById('org-museum-global-search');
 var canvas=document.getElementById('graph-canvas');
-var empty=document.getElementById('graph-empty-state');
+var zeroNotice=document.getElementById('graph-zero-notice');
+var isolatedFallback=document.getElementById('graph-isolated-fallback');
 var selectedDetail=document.getElementById('graph-selected-detail');
 var cats=Array.from(new Set(nodes.map(function(node){return node.group||'未分类';}))).sort();
 var focusId=new URLSearchParams(location.search).get('focus')||'';
@@ -4017,9 +4037,11 @@ links.forEach(function(link){
 });
 var category='*';
 var query='';
-var selected=nodes.find(function(node){return node.id===focusId;})||nodes[0]||null;
+var selected=nodes.find(function(node){return node.id===focusId;})||null;
 var simulation=null;
 var frozen=false;
+var graphReady=false;
+var isZeroLinkGraph=links.length===0;
 var charge=Number(meta.charge);
 var alphaDecay=Number(meta['alpha-decay']);
 var tickLimit=meta['tick-limit']===false?0:Number(meta['tick-limit']);
@@ -4035,13 +4057,14 @@ document.getElementById('stat-nodes').textContent=count(nodes.length);
 document.getElementById('stat-links').textContent=count(links.length);
 document.getElementById('stat-cats').textContent=count(cats.length);
 document.getElementById('graph-heading-count').textContent='/ '+count(nodes.length);
-if(empty)empty.hidden=links.length!==0;
-if(canvas)canvas.hidden=links.length===0;
-document.body.classList.toggle('graph-zero-mode',links.length===0);
+if(zeroNotice)zeroNotice.hidden=!isZeroLinkGraph;
+if(isolatedFallback)isolatedFallback.hidden=!isZeroLinkGraph;
+if(canvas)canvas.hidden=false;
+document.body.classList.toggle('graph-zero-mode',isZeroLinkGraph);
 var viewControls=document.querySelector('.graph-view-controls');
-if(viewControls)viewControls.hidden=links.length===0;
+if(viewControls)viewControls.hidden=false;
 var filterSummary=document.querySelector('.graph-filter-summary');
-if(filterSummary&&links.length===0&&matchMedia('(max-width:620px)').matches)
+if(filterSummary&&isZeroLinkGraph&&matchMedia('(max-width:620px)').matches)
   filterSummary.open=false;
 
 function color(group){
@@ -4074,25 +4097,9 @@ function copyWikiLink(value,button){
     navigator.clipboard.writeText(value).then(done,fallback);
   else fallback();
 }
-function renderZeroState(){
-  if(links.length!==0)return;
-  var clusterRoot=document.getElementById('graph-zero-clusters');
+function renderFallbackList(){
   var listRoot=document.getElementById('graph-isolated-list');
   var visible=nodes.filter(matches);
-  if(clusterRoot){
-    clusterRoot.textContent='';
-    cats.forEach(function(cat){
-      var catNodes=visible.filter(function(node){return node.group===cat;});
-      if(!catNodes.length)return;
-      var group=document.createElement('button');group.type='button';
-      group.className='graph-cluster-filter';group.dataset.graphCategory=cat;
-      group.setAttribute('aria-pressed',category===cat?'true':'false');
-      var heading=document.createElement('h3');heading.textContent=cat;
-      var total=document.createElement('span');total.textContent=count(catNodes.length);
-      group.addEventListener('click',function(){setCategory(category===cat?'*':cat);});
-      group.appendChild(heading);group.appendChild(total);clusterRoot.appendChild(group);
-    });
-  }
   if(listRoot){
     listRoot.textContent='';
     visible.forEach(function(node){
@@ -4124,7 +4131,8 @@ function syncGraphCategoryControls(){
 }
 function setCategory(value){
   category=value||'*';syncGraphCategoryControls();
-  if(links.length===0)renderZeroState();else applyFilter();
+  if(graphReady)applyFilter();
+  if(isZeroLinkGraph||!graphReady)renderFallbackList();
 }
 function renderFilters(){
   var root=document.getElementById('graph-category-filters');
@@ -4156,6 +4164,7 @@ function renderLegend(){
 }
 function selectNode(node){
   selected=node;
+  activeNeighborhood=neighborhood(node);applyFilter();
   nodeSelection.select('circle').classed('is-selected',function(entry){return entry.id===node.id;});
   selectedDetail.querySelector('span').textContent=
     String(nodes.indexOf(node)+1).padStart(2,'0')+' / '+(node.group||'未分类')+
@@ -4170,17 +4179,18 @@ document.addEventListener('keydown',function(event){
     event.preventDefault();if(search)search.focus();
   }
 });
-if(links.length===0){
-  renderZeroState();
+if(typeof d3==='undefined'||!canvas){
+  if(canvas)canvas.innerHTML='<p class=\"museum-empty-copy\">图谱运行资源不可用，仍可通过首页索引打开笔记。</p>';
+  if(isolatedFallback){isolatedFallback.hidden=false;isolatedFallback.open=true;}
+  if(zeroNotice)zeroNotice.hidden=true;
+  if(viewControls)viewControls.hidden=true;
+  renderFallbackList();
   if(search)search.addEventListener('input',function(){
-    query=search.value.trim().toLowerCase();renderZeroState();
+    query=search.value.trim().toLowerCase();renderFallbackList();
   });
   return;
 }
-if(typeof d3==='undefined'||!canvas){
-  canvas.innerHTML='<p class=\"museum-empty-copy\">图谱运行资源不可用，仍可通过首页索引打开笔记。</p>';
-  return;
-}
+if(isZeroLinkGraph)renderFallbackList();
 var width=canvas.clientWidth||900;
 var height=canvas.clientHeight||760;
 var svg=d3.select(canvas).append('svg')
@@ -4190,14 +4200,19 @@ var svg=d3.select(canvas).append('svg')
 var layer=svg.append('g');
 var zoom=d3.zoom().scaleExtent([0.35,5]).on('zoom',function(event){
   layer.attr('transform',event.transform);
+  layer.classed('graph-labels-dense',event.transform.k>=0.9);
 });
 svg.call(zoom);
+layer.classed('graph-labels-dense',true);
 var linkSelection=layer.append('g').attr('class','graph-links')
   .selectAll('line').data(links).enter().append('line');
 var nodeSelection=layer.append('g').attr('class','graph-nodes')
   .selectAll('g').data(nodes).enter().append('g')
   .attr('tabindex',0).attr('role','link');
-nodeSelection.append('circle').attr('r',function(node){return node.degree?7:6;})
+graphReady=true;
+nodeSelection.append('circle')
+  .attr('class',function(node){return node.status==='draft'?'is-draft':null;})
+  .attr('r',function(node){return 6+Math.min(8,Math.sqrt(node.degree||0)*2);})
   .attr('fill',function(node){return color(node.group);});
 nodeSelection.append('text').attr('x',14).attr('y',4)
   .text(function(node){
@@ -4211,26 +4226,6 @@ function positionNodeLabels(){
     .attr('x',function(node){return width<600?14:(node.x>width/2?-14:14);})
     .attr('text-anchor',function(node){return width<600?'start':(node.x>width/2?'end':'start');});
 }
-function positionIsolated(){
-  if(width<600){
-    var split=Math.ceil(nodes.length/2);
-    nodes.forEach(function(node,index){
-      node.x=28;
-      node.y=index<split?60+index*70:height-60-(nodes.length-1-index)*70;
-    });
-    nodeSelection.attr('transform',function(node){return 'translate('+node.x+','+node.y+')';});
-    positionNodeLabels();
-    return;
-  }
-  var cols=2;
-  nodes.forEach(function(node,index){
-    var col=index%%cols,row=Math.floor(index/cols);
-    node.x=90+col*(width-220);
-    node.y=100+row*Math.max(150,(height-190)/Math.max(1,Math.ceil(nodes.length/cols)-1));
-  });
-  nodeSelection.attr('transform',function(node){return 'translate('+node.x+','+node.y+')';});
-  positionNodeLabels();
-}
 function renderTick(){
   linkSelection
     .attr('x1',function(link){return link.source.x;})
@@ -4240,14 +4235,16 @@ function renderTick(){
   nodeSelection.attr('transform',function(node){return 'translate('+node.x+','+node.y+')';});
   positionNodeLabels();
 }
-if(links.length){
-  simulation=d3.forceSimulation(nodes)
-    .force('link',d3.forceLink(links).id(function(node){return node.id;}).distance(130))
+simulation=d3.forceSimulation(nodes)
     .force('charge',d3.forceManyBody().strength(charge))
     .force('center',d3.forceCenter(width/2,height/2))
-    .force('collide',d3.forceCollide(58))
+    .force('x',d3.forceX(width/2).strength(0.035))
+    .force('y',d3.forceY(height/2).strength(0.035))
+    .force('collide',d3.forceCollide(links.length?58:42))
     .alphaDecay(alphaDecay)
     .stop();
+if(links.length)
+  simulation.force('link',d3.forceLink(links).id(function(node){return node.id;}).distance(130));
   for(var warmTick=0;warmTick<preTicks;warmTick+=1)simulation.tick();
   renderTick();
   simulation.on('tick',function(){
@@ -4258,10 +4255,25 @@ if(links.length){
     .on('start',function(event,node){if(!event.active){tickCount=0;simulation.alphaTarget(.25).restart();}node.fx=node.x;node.fy=node.y;})
     .on('drag',function(event,node){node.fx=event.x;node.fy=event.y;})
     .on('end',function(event,node){if(!event.active)simulation.alphaTarget(0);node.fx=null;node.fy=null;}));
-}else positionIsolated();
 
+var activeNeighborhood=null;
+function neighborhood(node){
+  var ids=new Set([node.id]);
+  links.forEach(function(link){
+    var source=link.source.id||link.source,target=link.target.id||link.target;
+    if(source===node.id)ids.add(target);
+    if(target===node.id)ids.add(source);
+  });
+  return ids;
+}
 function applyFilter(){
-  nodeSelection.classed('is-dimmed',function(node){return !matches(node);});
+  nodeSelection
+    .classed('graph-node-neighbour',function(node){
+      return !!activeNeighborhood&&activeNeighborhood.has(node.id);
+    })
+    .classed('is-dimmed',function(node){
+      return !matches(node)||(activeNeighborhood&&!activeNeighborhood.has(node.id));
+    });
   linkSelection.classed('is-dimmed',function(link){
     var source=link.source.id?link.source:nodes.find(function(node){return node.id===link.source;});
     var target=link.target.id?link.target:nodes.find(function(node){return node.id===link.target;});
@@ -4271,6 +4283,7 @@ function applyFilter(){
 var tooltip=document.getElementById('graph-tooltip');
 nodeSelection
   .on('mouseenter',function(event,node){
+    activeNeighborhood=neighborhood(node);applyFilter();
     document.getElementById('tt-title').textContent=node.name;
     document.getElementById('tt-meta').textContent=(node.group||'未分类')+' · '+count(node.degree||0)+' 条关系';
     tooltip.classList.add('is-visible');
@@ -4278,7 +4291,10 @@ nodeSelection
   .on('mousemove',function(event){
     tooltip.style.left=(event.clientX+16)+'px';tooltip.style.top=(event.clientY+16)+'px';
   })
-  .on('mouseleave',function(){tooltip.classList.remove('is-visible');})
+  .on('mouseleave',function(){
+    tooltip.classList.remove('is-visible');
+    activeNeighborhood=selected?neighborhood(selected):null;applyFilter();
+  })
   .on('click',function(_event,node){selectNode(node);})
   .on('dblclick',function(_event,node){location.href=node.url||'index.html';})
   .on('keydown',function(event,node){
@@ -4292,14 +4308,17 @@ document.getElementById('btn-freeze').addEventListener('click',function(){
   frozen=!frozen;this.textContent=frozen?'继续布局':'冻结布局';
   if(simulation){if(frozen)simulation.stop();else {tickCount=0;simulation.alpha(.35).restart();}}
 });
-if(search)search.addEventListener('input',function(){query=search.value.trim().toLowerCase();applyFilter();});
+if(search)search.addEventListener('input',function(){
+  query=search.value.trim().toLowerCase();applyFilter();
+  if(isZeroLinkGraph)renderFallbackList();
+});
 applyFilter();if(selected)selectNode(selected);
 })();
 </script>
 </body>
 </html>"
      css-href
-     (or d3-src org-museum--d3-cdn)
+     (if d3-src (format "<script src=\"%s\"></script>" d3-src) "")
      topbar
      safe-json
      (json-encode org-museum--graph-palette))))
@@ -4416,7 +4435,7 @@ function initCodeBlocks(){
   blocks.forEach(function(pre){
     if(pre.dataset.orgMuseumCodeReady==='1')return;
     pre.dataset.orgMuseumCodeReady='1';
-    pre.classList.add('org-museum-code-block','org-museum-code-collapsed');
+    pre.classList.add('org-museum-code-block');
     var lang=detectLang(pre);
     var code=null;
     Array.prototype.some.call(pre.children,function(el){
@@ -4432,19 +4451,10 @@ function initCodeBlocks(){
     code.classList.add('org-museum-code','language-'+lang);
     code.setAttribute('data-language',lang);
     if(lang!=='plaintext')codes.push(code);
+    var lineCount=(code.textContent||'').replace(/\\r?\\n$/,'').split(/\\r?\\n/).length;
+    var isLong=lineCount>18||pre.scrollHeight>320;
     var lbl=document.createElement('span');lbl.className='code-lang-label';
     lbl.textContent=(lang==='plaintext'?'TEXT':lang).toUpperCase();
-    var toggle=document.createElement('button');
-    toggle.className='code-copy-btn code-toggle-btn';
-    toggle.type='button';
-    toggle.textContent='EXPAND';
-    toggle.setAttribute('aria-expanded','false');
-    toggle.onclick=function(){
-      var expanded=pre.classList.toggle('org-museum-code-expanded');
-      pre.classList.toggle('org-museum-code-collapsed',!expanded);
-      toggle.textContent=expanded?'COLLAPSE':'EXPAND';
-      toggle.setAttribute('aria-expanded',expanded?'true':'false');
-    };
     var btn=document.createElement('button');btn.className='code-copy-btn';btn.textContent='COPY';
     btn.type='button';
     btn.onclick=function(){
@@ -4454,8 +4464,22 @@ function initCodeBlocks(){
       });
     };
     pre.insertBefore(lbl,pre.firstChild);
-    pre.insertBefore(toggle,lbl.nextSibling);
-    pre.insertBefore(btn,toggle.nextSibling);
+    if(isLong){
+      pre.classList.add('org-museum-code-collapsed');
+      var toggle=document.createElement('button');
+      toggle.className='code-copy-btn code-toggle-btn';
+      toggle.type='button';
+      toggle.textContent='EXPAND';
+      toggle.setAttribute('aria-expanded','false');
+      toggle.onclick=function(){
+        var expanded=pre.classList.toggle('org-museum-code-expanded');
+        pre.classList.toggle('org-museum-code-collapsed',!expanded);
+        toggle.textContent=expanded?'COLLAPSE':'EXPAND';
+        toggle.setAttribute('aria-expanded',expanded?'true':'false');
+      };
+      pre.insertBefore(toggle,lbl.nextSibling);
+      pre.insertBefore(btn,toggle.nextSibling);
+    }else pre.insertBefore(btn,lbl.nextSibling);
   });
   function runHighlight(){
     if(!window.hljs)return;
@@ -4469,6 +4493,7 @@ function initCodeBlocks(){
     });
   }
   function loadScript(src,done,fail){
+    if(!src){(fail||function(){})();return;}
     var js=document.createElement('script');
     js.src=src;js.async=true;js.onload=done;
     js.onerror=fail||function(){document.body.classList.add('org-museum-no-code-highlight');};
@@ -4480,8 +4505,9 @@ function initCodeBlocks(){
   }
   if(window.hljs){runAfterLanguageModules();}
   else{
-    var css=document.createElement('link');css.rel='stylesheet';
-    css.href='%s';document.head.appendChild(css);
+    var cssSrc='%s';
+    if(cssSrc){var css=document.createElement('link');css.rel='stylesheet';
+      css.href=cssSrc;document.head.appendChild(css);}
     loadScript('%s',runAfterLanguageModules);
   }
 }
@@ -4643,10 +4669,10 @@ window.addEventListener('load',function(){
 
 })();
 </script>\n"
-   (org-museum--hljs-lisp-js-src out-file)
-   (org-museum--hljs-css-src out-file)
-   (org-museum--hljs-js-src out-file)
-   (org-museum--hljs-lisp-js-src out-file)))
+   (or (org-museum--hljs-lisp-js-src out-file) "")
+   (or (org-museum--hljs-css-src out-file) "")
+   (or (org-museum--hljs-js-src out-file) "")
+   (or (org-museum--hljs-lisp-js-src out-file) "")))
 
 ;; ============================================================
 ;; §25  SCRIPT: BACKGROUND EFFECTS  [Fix-10]
@@ -4661,14 +4687,21 @@ This prevents listener leak when the user switches effects faster than
 the Tubes animation initialises.
 Applicable scope: sidebar effects switcher.
 Known limitation: module-level var is scoped to the IIFE; safe from collision."
-  "<script>
+  (if (not org-museum-background-effects-enabled)
+      ""
+    "<script>
 (function(){
 function lsGet(k,d){try{return localStorage.getItem(k)||d;}catch(e){return d;}}
 function lsSet(k,v){try{localStorage.setItem(k,v);}catch(e){}}
 
 var fxc=document.getElementById('org-museum-fx-canvas');
-var cfx=lsGet('org-museum-bg-fx','none');
+var motionQuery=window.matchMedia('(prefers-reduced-motion: reduce)');
+var allowedFx=['none','matrix','particles','tubes'];
+var cfx=lsGet('org-museum-bg-fx-v2','none');
+if(!allowedFx.includes(cfx))cfx='none';
 var aid=null,tc=null;
+var fxButtons=[];
+var zenObserver=null;
 
 /* [Fix-10] Named handler reference — allows unconditional removeEventListener */
 var orgMuseumTubesMoveHandler=null;
@@ -4759,34 +4792,56 @@ function startTubes(){
   tc={destroy:function(){}};
 }
 
-function applyFx(fx){
+function applyFx(fx,persist){
   stp();
-  var usesCanvas=['matrix','particles','tubes'].includes(fx);
+  var readingMode=document.body.classList.contains('zen-mode');
+  var effectiveFx=(motionQuery.matches||document.hidden||readingMode)?'none':fx;
+  var usesCanvas=['matrix','particles','tubes'].includes(effectiveFx);
   if(fxc)fxc.style.display=usesCanvas?'block':'none';
   if(usesCanvas)rsz();
   document.querySelectorAll('.fx-btn').forEach(function(b){
-    b.classList.toggle('active',b.getAttribute('data-fx')===fx);
+    b.disabled=motionQuery.matches&&b.getAttribute('data-fx')!=='none';
+    b.classList.toggle('active',b.getAttribute('data-fx')===effectiveFx);
   });
-  lsSet('org-museum-bg-fx',fx);
-  if(fx==='matrix')        startMatrix();
-  else if(fx==='particles')startParticles();
-  else if(fx==='tubes')    startTubes();
+  if(persist)lsSet('org-museum-bg-fx-v2',fx);
+  if(effectiveFx==='matrix')        startMatrix();
+  else if(effectiveFx==='particles')startParticles();
+  else if(effectiveFx==='tubes')    startTubes();
 }
 
 function initFx(){
-  var btns=document.querySelectorAll('.fx-btn');if(!btns.length)return;
-  btns.forEach(function(b){
-    b.addEventListener('click',function(){
-      var fx=this.getAttribute('data-fx');if(fx)applyFx(fx);
-    });
+  fxButtons=Array.from(document.querySelectorAll('.fx-btn'));if(!fxButtons.length)return;
+  fxButtons.forEach(function(b){
+    b.orgMuseumFxClick=function(){
+      var fx=this.getAttribute('data-fx');
+      if(fx&&allowedFx.includes(fx)&&!this.disabled){cfx=fx;applyFx(fx,true);}
+    };
+    b.addEventListener('click',b.orgMuseumFxClick);
   });
-  applyFx(cfx);
+  zenObserver=new MutationObserver(function(){applyFx(cfx,false);});
+  zenObserver.observe(document.body,{attributes:true,attributeFilter:['class']});
+  applyFx(cfx,false);
 }
+function onVisibilityChange(){applyFx(cfx,false);}
+function onMotionChange(){applyFx(cfx,false);}
+function onPageHide(){
+  stp();window.removeEventListener('resize',rsz);
+  document.removeEventListener('visibilitychange',onVisibilityChange);
+  if(motionQuery.removeEventListener)motionQuery.removeEventListener('change',onMotionChange);
+  else if(motionQuery.removeListener)motionQuery.removeListener(onMotionChange);
+  if(zenObserver){zenObserver.disconnect();zenObserver=null;}
+  fxButtons.forEach(function(b){b.removeEventListener('click',b.orgMuseumFxClick);});
+  fxButtons=[];
+}
+document.addEventListener('visibilitychange',onVisibilityChange);
+if(motionQuery.addEventListener)motionQuery.addEventListener('change',onMotionChange);
+else if(motionQuery.addListener)motionQuery.addListener(onMotionChange);
+window.addEventListener('pagehide',onPageHide,{once:true});
 if(document.readyState==='loading')
   document.addEventListener('DOMContentLoaded',initFx);
 else initFx();
 })();
-</script>\n")
+</script>\n"))
 
 ;; ============================================================
 ;; §26  SCRIPT: TOC RELOCATION
