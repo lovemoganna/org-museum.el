@@ -211,7 +211,8 @@
            (org-museum--script-ui-core "article.html"))))
     (should (string-match-p
              (regexp-quote "replace(/\\r?\\n$/,'')") script))
-    (should (string-match-p "lineCount>18||pre.scrollHeight>320" script))
+    (should (string-match-p
+             (regexp-quote "code.getBoundingClientRect().height>320") script))
     (should (string-match-p "if(isLong)" script))
     (should (string-match-p "org-museum-code-collapsed" script))
     (should (string-match-p "aria-expanded" script)))
@@ -221,6 +222,82 @@
     (should (search-forward ".org-museum-code-collapsed" nil t))
     (should (search-forward "max-height: 320px" nil t))
     (should (search-forward ".org-museum-code-expanded" nil t))))
+
+(ert-deftest org-museum-cjk-spacing-preserves-code-and-literal-content ()
+  (let ((script
+         (cl-letf (((symbol-function 'org-museum--hljs-lisp-js-src)
+                    (lambda (_out-file) "resources/highlight-lisp.min.js"))
+                   ((symbol-function 'org-museum--hljs-css-src)
+                    (lambda (_out-file) "resources/highlight.monokai.min.css"))
+                   ((symbol-function 'org-museum--hljs-js-src)
+                    (lambda (_out-file) "resources/highlight.min.js")))
+           (org-museum--script-ui-core "article.html"))))
+    (should (string-match-p "parentElement\\.closest" script))
+    (should (string-match-p
+             (regexp-quote
+              "pre,code,kbd,samp,script,style,textarea,[contenteditable]")
+             script))))
+
+(ert-deftest org-museum-search-and-tooltip-render-untrusted-text-safely ()
+  (let ((ui-script
+         (cl-letf (((symbol-function 'org-museum--hljs-lisp-js-src)
+                    (lambda (_out-file) "resources/highlight-lisp.min.js"))
+                   ((symbol-function 'org-museum--hljs-css-src)
+                    (lambda (_out-file) "resources/highlight.monokai.min.css"))
+                   ((symbol-function 'org-museum--hljs-js-src)
+                    (lambda (_out-file) "resources/highlight.min.js")))
+           (org-museum--script-ui-core "article.html")))
+        (search-script (org-museum--script-sidebar-search)))
+    (should-not (string-match-p
+                 (regexp-quote "tt.innerHTML='<strong>'+l.textContent") ui-script))
+    (should (string-match-p "tt.replaceChildren" ui-script))
+    (should-not (string-match-p
+                 (regexp-quote "a.innerHTML = pre +") search-script))
+    (should (string-match-p "a.replaceChildren" search-script))))
+
+(ert-deftest org-museum-pages-have-keyboard-skip-navigation ()
+  (let* ((root (make-temp-file "org-museum-a11y-test-" t))
+         (org-museum-root-dir root)
+         (topbar (org-museum--build-topbar
+                  (expand-file-name "exports/html/index.html" root) 'home)))
+    (should (string-match-p
+             (regexp-quote "class=\"museum-skip-link\" href=\"#main-content\"")
+             topbar)))
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    (should (search-forward ".museum-skip-link:focus" nil t))))
+
+(ert-deftest org-museum-lightbox-is-keyboard-accessible ()
+  (let ((script
+         (cl-letf (((symbol-function 'org-museum--hljs-lisp-js-src)
+                    (lambda (_out-file) "resources/highlight-lisp.min.js"))
+                   ((symbol-function 'org-museum--hljs-css-src)
+                    (lambda (_out-file) "resources/highlight.monokai.min.css"))
+                   ((symbol-function 'org-museum--hljs-js-src)
+                    (lambda (_out-file) "resources/highlight.min.js")))
+           (org-museum--script-ui-core "article.html"))))
+    (should (string-match-p "aria-modal" script))
+    (should (string-match-p "event.key==='Escape'" script))
+    (should (string-match-p "event.key==='Tab'" script))
+    (should (string-match-p "lastFocus.focus" script))
+    (should (string-match-p "oli.alt=img.alt" script)))
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    (should (search-forward "#image-lightbox-overlay.visible" nil t))))
+
+(ert-deftest org-museum-mobile-primary-controls-have-touch-sized-hit-areas ()
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    (should (search-forward "--museum-touch-target: 44px" nil t))
+    (should (search-forward "min-height: var(--museum-touch-target)" nil t))
+    (should (search-forward ".code-copy-btn" nil t))
+    (should (search-forward "#graph-category-filters button" nil t))
+    (should (search-forward ".museum-status-filters button" nil t))
+    (should (search-forward ".museum-filter-summary button" nil t))
+    (should (search-forward ".topic-filter" nil t))))
 
 (ert-deftest org-museum-offline-assets-never-fall-back-to-cdns ()
   (cl-letf (((symbol-function 'org-museum--ensure-hljs-deployed)

@@ -1427,7 +1427,7 @@ Applicable scope: org-museum--postprocess-html."
                 "")))
         (replace-match
          (concat
-          "<main id=\"main-scroll\">" identity
+          "<main id=\"main-scroll\"><span id=\"main-content\" class=\"museum-main-anchor\" tabindex=\"-1\"></span>" identity
           (format
            "<div id=\"content\" class=\"museum-article-layout\" style=\"--museum-article-max-width: %dpx\">"
            (max 640 org-museum-article-max-width))
@@ -1731,6 +1731,7 @@ KIND is one of `home', `article', or `graph'."
     (format
      (concat
       "<header class=\"museum-topbar\" data-home-href=\"%s\">\n"
+      "  <a class=\"museum-skip-link\" href=\"#main-content\">跳到正文</a>\n"
       "  <a class=\"museum-wordmark\" href=\"%s\">ORG MUSEUM</a>\n"
       "  <time class=\"museum-today\" datetime=\"%s\" title=\"导出于 %s\" aria-label=\"导出于 %s\">%s</time>\n"
       "  <label class=\"museum-search-line\" for=\"org-museum-global-search\">\n"
@@ -2285,7 +2286,7 @@ openReadingDb().then(function(db){
      (format "  %s\n" org-museum--favicon-link-tag)
      "</head>\n<body class=\"org-museum-home\" data-page-kind=\"home\">\n"
      (org-museum--build-topbar out-file 'home)
-     "<main class=\"museum-index-shell\">\n"
+     "<main id=\"main-content\" class=\"museum-index-shell\" tabindex=\"-1\">\n"
      "  <section class=\"museum-home-upper\">\n"
      "    <section id=\"continue-reading\" class=\"museum-resume\" hidden>\n"
      "      <div class=\"museum-section-heading\"><h2>继续阅读</h2><span id=\"continue-reading-count\">/ 00</span></div>\n"
@@ -3974,7 +3975,7 @@ in large-tier graphs."
 </head>
 <body class=\"graph-page\" data-page-kind=\"graph\">
 %s
-<main class=\"museum-graph-shell\">
+<main id=\"main-content\" class=\"museum-graph-shell\" tabindex=\"-1\">
   <aside class=\"museum-graph-rail\">
     <div class=\"museum-section-heading\"><h1>知识图谱</h1><span id=\"graph-heading-count\">/ 00</span></div>
     <details class=\"graph-filter-summary\" open>
@@ -4452,7 +4453,7 @@ function initCodeBlocks(){
     code.setAttribute('data-language',lang);
     if(lang!=='plaintext')codes.push(code);
     var lineCount=(code.textContent||'').replace(/\\r?\\n$/,'').split(/\\r?\\n/).length;
-    var isLong=lineCount>18||pre.scrollHeight>320;
+    var isLong=lineCount>18||code.getBoundingClientRect().height>320;
     var lbl=document.createElement('span');lbl.className='code-lang-label';
     lbl.textContent=(lang==='plaintext'?'TEXT':lang).toUpperCase();
     var btn=document.createElement('button');btn.className='code-copy-btn';btn.textContent='COPY';
@@ -4565,7 +4566,9 @@ function initLinkTooltip(){
       var hr=l.getAttribute('href')||'';
       if(hr.startsWith('#'))return;
       var r=l.getBoundingClientRect();
-      tt.innerHTML='<strong>'+l.textContent+'</strong><span>'+hr+'</span>';
+      var title=document.createElement('strong');title.textContent=l.textContent;
+      var address=document.createElement('span');address.textContent=hr;
+      tt.replaceChildren(title,address);
       tt.style.left=r.left+'px';tt.style.top=(r.bottom+10)+'px';
       tt.classList.add('visible');
     });
@@ -4576,10 +4579,35 @@ function initLinkTooltip(){
 /* ── 7. Image lightbox ── */
 function initLightbox(){
   var ol=document.createElement('div');ol.id='image-lightbox-overlay';
-  var oli=document.createElement('img');ol.appendChild(oli);document.body.appendChild(ol);
-  ol.addEventListener('click',function(){ol.classList.remove('visible');});
+  ol.setAttribute('role','dialog');ol.setAttribute('aria-modal','true');
+  ol.setAttribute('aria-label','图片预览');ol.hidden=true;
+  var oli=document.createElement('img');oli.alt='';
+  var close=document.createElement('button');close.type='button';
+  close.className='image-lightbox-close';close.textContent='关闭图片预览';
+  var lastFocus=null;
+  ol.appendChild(oli);ol.appendChild(close);document.body.appendChild(ol);
+  function hideLightbox(){
+    ol.classList.remove('visible');ol.hidden=true;
+    if(lastFocus&&document.contains(lastFocus))lastFocus.focus();
+  }
+  function showLightbox(img){
+    lastFocus=img;oli.src=img.currentSrc||img.src;oli.alt=img.alt||'';
+    ol.hidden=false;ol.classList.add('visible');close.focus();
+  }
+  close.addEventListener('click',hideLightbox);
+  ol.addEventListener('click',function(event){if(event.target===ol)hideLightbox();});
+  ol.addEventListener('keydown',function(event){
+    if(event.key==='Escape'){event.preventDefault();hideLightbox();}
+    else if(event.key==='Tab'){event.preventDefault();close.focus();}
+  });
   document.querySelectorAll('.article-container img').forEach(function(img){
-    img.addEventListener('click',function(){oli.src=img.src;ol.classList.add('visible');});
+    if(img.closest('a'))return;
+    img.tabIndex=0;img.setAttribute('role','button');
+    img.setAttribute('aria-label',(img.alt||'图片')+'，打开预览');
+    img.addEventListener('click',function(){showLightbox(img);});
+    img.addEventListener('keydown',function(event){
+      if(event.key==='Enter'||event.key===' '){event.preventDefault();showLightbox(img);}
+    });
   });
 }
 
@@ -4602,6 +4630,8 @@ function initCJKSpacing(){
   var cn=document.getElementById('content');if(!cn)return;
   var w=document.createTreeWalker(cn,NodeFilter.SHOW_TEXT,null,false),n;
   while((n=w.nextNode())){
+    if(n.parentElement&&n.parentElement.closest(
+      'pre,code,kbd,samp,script,style,textarea,[contenteditable]'))continue;
     var t=n.nodeValue,nt=t
       .replace(/([\\u4e00-\\u9fa5])([a-zA-Z0-9@#%%$])/g,'$1 $2')
       .replace(/([a-zA-Z0-9@#%%$])([\\u4e00-\\u9fa5])/g,'$1 $2');
@@ -4943,7 +4973,9 @@ function init(){
             var pre = txt.substring(0, idx);
             var hl = txt.substring(idx, idx+t.length);
             var post = txt.substring(idx+t.length);
-            a.innerHTML = pre + '<span class=\"search-highlight\">' + hl + '</span>' + post;
+            var mark=document.createElement('span');
+            mark.className='search-highlight';mark.textContent=hl;
+            a.replaceChildren(document.createTextNode(pre),mark,document.createTextNode(post));
           }else{
             a.textContent = txt;
           }
