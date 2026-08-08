@@ -314,7 +314,7 @@ Applicable scope: org-museum--on-save (Fix-02).")
 
 (defun org-museum--file-content-hash (file)
   "Return the SHA-256 digest of regular FILE, or nil when unavailable."
-  (when (file-regular-p file)
+  (when (and file (file-regular-p file))
     (with-temp-buffer
       (set-buffer-multibyte nil)
       (insert-file-contents-literally file)
@@ -351,25 +351,61 @@ representation, so deployment must copy the referenced bytes instead."
                  (insert-file-contents source)
                  (string-trim (buffer-string)))))
           (if (and (file-name-absolute-p pointer)
+                   (equal (file-name-nondirectory pointer)
+                          (file-name-nondirectory source))
                    (not (equal (org-museum--normalised-path pointer)
-                               (org-museum--normalised-path source)))
-                   (file-regular-p pointer))
-              (expand-file-name pointer)
+                               (org-museum--normalised-path source))))
+              (when (file-regular-p pointer)
+                (expand-file-name pointer))
             source))
       source)))
+
+(defun org-museum--resource-source-path (relative-path)
+  "Return the authoritative package resource for RELATIVE-PATH.
+When Straight keeps both a repository checkout and a stale build copy, the
+repository wins.  Link-tree placeholders are dereferenced before testing the
+candidate.  Loaded-library and legacy roam locations remain fallbacks for
+non-Straight installations."
+  (let* ((repo-dir (expand-file-name "straight/repos/org-museum.el/"
+                                    user-emacs-directory))
+         (links-dir (expand-file-name "straight/links/org-museum/"
+                                     user-emacs-directory))
+         (build-dir (expand-file-name "straight/build/org-museum/"
+                                     user-emacs-directory))
+         (plugin-dir (org-museum--plugin-dir))
+         (roam-dir (expand-file-name "org-roam/" user-emacs-directory))
+         (managed-plugin-p
+          (cl-some (lambda (dir)
+                     (file-in-directory-p (expand-file-name plugin-dir)
+                                          (expand-file-name dir)))
+                   (list repo-dir links-dir build-dir roam-dir)))
+         (candidates (delete-dups
+                      (delq nil
+                            (if managed-plugin-p
+                                (list repo-dir links-dir plugin-dir build-dir roam-dir)
+                              (list plugin-dir repo-dir links-dir build-dir roam-dir)))))
+         resolved)
+    (while (and candidates (not resolved))
+      (let ((candidate
+             (org-museum--resolve-resource-source
+              (expand-file-name relative-path (pop candidates)))))
+        (when (and candidate (file-regular-p candidate))
+          (setq resolved candidate))))
+    (or resolved
+        (org-museum--resolve-resource-source
+         (expand-file-name relative-path plugin-dir)))))
 
 (defun org-museum--ensure-url-resource (url dest label)
   "Copy a bundled asset or download URL to DEST, returning DEST when it exists.
 The package-local resource with the same basename is preferred so a fresh
 export remains offline-capable.  LABEL is used only for diagnostics."
   (let ((bundled
-         (org-museum--resolve-resource-source
-          (expand-file-name
-           (concat "resources/" (file-name-nondirectory dest))
-           (org-museum--plugin-dir)))))
+         (org-museum--resource-source-path
+          (concat "resources/" (file-name-nondirectory dest)))))
     (make-directory (file-name-directory dest) t)
     (cond
-     ((and (file-exists-p bundled)
+     ((and bundled
+           (file-exists-p bundled)
            (not (equal (expand-file-name bundled)
                        (expand-file-name dest))))
       (unless (org-museum--files-have-same-content-p bundled dest)
@@ -476,12 +512,24 @@ Layout: <org-museum-root-dir>/<org-museum-pages-subdir>/"
 
 (defun org-museum--css-source-path ()
   "Absolute path of the source CSS file."
-  (org-museum--resolve-resource-source
-   (expand-file-name org-museum-css-file (org-museum--plugin-dir))))
+  (org-museum--resource-source-path org-museum-css-file))
 
 (defun org-museum--css-output-path ()
   "Absolute path of the deployed CSS file."
   (expand-file-name org-museum-css-file (org-museum--shared-root)))
+
+(defun org-museum--css-deployment-status ()
+  "Return source/output paths and SHA-256 deployment state for the CSS."
+  (let* ((source (org-museum--css-source-path))
+         (output (org-museum--css-output-path))
+         (source-hash (org-museum--file-content-hash source))
+         (output-hash (org-museum--file-content-hash output)))
+    (list :source source
+          :output output
+          :source-hash source-hash
+          :output-hash output-hash
+          :in-sync (and source-hash output-hash
+                        (string= source-hash output-hash)))))
 
 (defun org-museum--relative-path (target from-file)
   "Return TARGET path relative to the directory of FROM-FILE, forward-slashed."
@@ -698,7 +746,7 @@ When DOTTED is non-nil, use YYYY.MM.DD; otherwise use YYYY-MM-DD."
   "Copy source CSS to the export directory when its content differs."
   (let ((src (org-museum--css-source-path))
         (dst (org-museum--css-output-path)))
-    (when (file-exists-p src)
+    (when (and src (file-exists-p src))
       (make-directory (file-name-directory dst) t)
       (when (or (not (file-exists-p dst))
                 (not (org-museum--files-have-same-content-p src dst)))
@@ -3343,26 +3391,29 @@ else if(tocDrawerMedia.addListener)tocDrawerMedia.addListener(onTocDrawerChange)
 var identity=document.getElementById('museum-article-identity');
 var articleTitle=document.querySelector('.article-container > .title');
 var articleScroller=document.getElementById('main-scroll')||window;
-var identityHeadings=Array.from(document.querySelectorAll(
-  '.article-container h2[id],.article-container h3[id],.article-container h4[id]'));
 var identityFrame=0;
+var identityHeading=window.orgMuseumActiveHeading||null;
+function updateIdentitySection(detail){
+  if(detail)identityHeading=detail;
+  if(!identity)return;
+  var section=identity.querySelector('[data-current-section]');
+  if(section)section.textContent=identityHeading?identityHeading.title:'文章开头';
+}
 function updateArticleIdentity(){
   identityFrame=0;if(!identity||!articleTitle)return;
   var topbar=document.querySelector('.museum-topbar');
   var threshold=topbar?topbar.getBoundingClientRect().bottom+8:8;
-  var current=null;
-  identityHeadings.forEach(function(item){
-    if(item.getBoundingClientRect().top<=threshold+36)current=item;
-  });
   var show=articleTitle.getBoundingClientRect().bottom<=threshold;
   identity.hidden=!show;
-  var section=identity.querySelector('[data-current-section]');
-  if(section)section.textContent=current?current.textContent.trim():'文章开头';
+  updateIdentitySection(window.orgMuseumActiveHeading||identityHeading);
 }
 function scheduleArticleIdentity(){
   if(identityFrame)return;identityFrame=requestAnimationFrame(updateArticleIdentity);
 }
 if(identity){
+  document.addEventListener('museum:active-heading',function(event){
+    updateIdentitySection(event.detail);scheduleArticleIdentity();
+  });
   articleScroller.addEventListener('scroll',scheduleArticleIdentity,{passive:true});
   window.addEventListener('load',scheduleArticleIdentity);
   window.addEventListener('hashchange',scheduleArticleIdentity);
@@ -3402,8 +3453,7 @@ if(document.body.dataset.pageKind!=='article')return;
 var pageId=document.body.dataset.pageId;if(!pageId)return;
 var scroller=document.getElementById('main-scroll')||document.scrollingElement;
 var article=document.querySelector('.article-container');
-var headings=article?Array.from(article.querySelectorAll('h2[id],h3[id],h4[id]')):[];
-var activeHeading=null,dbPromise=null,restored=false,timer=null;
+var activeHeading=window.orgMuseumActiveHeading||null,dbPromise=null,restored=false,timer=null;
 var engagedTotalMs=0,qualifiedAt=0;
 function readingActive(){
   return document.visibilityState==='visible'&&document.hasFocus();
@@ -3442,13 +3492,7 @@ function metrics(){
     scroller.scrollHeight-scroller.clientHeight;
   return {top:top,height:height,ratio:height>0?Math.max(0,Math.min(1,top/height)):0};
 }
-function updateActiveHeading(){
-  var current=null;
-  headings.forEach(function(heading){if(heading.getBoundingClientRect().top<=150)current=heading;});
-  activeHeading=current;
-}
 function record(){
-  updateActiveHeading();
   updateEngagement();
   var state=metrics(),engagedMs=currentEngagedMs(),progress=state.ratio;
   if(!qualifiedAt&&(progress>=0.03||engagedMs>=30000))qualifiedAt=Date.now();
@@ -3457,7 +3501,7 @@ function record(){
     title:document.body.dataset.pageTitle||document.title,
     category:document.body.dataset.pageCategory||'未分类',lastVisitedAt:Date.now(),
     lastHeadingId:activeHeading?activeHeading.id:'',
-    lastHeadingTitle:activeHeading?activeHeading.textContent.trim():'',
+    lastHeadingTitle:activeHeading?(activeHeading.title||''):'',
     scrollRatio:progress,progress:progress,engagedMs:engagedMs,
     qualifiedAt:qualifiedAt||undefined
   };
@@ -3494,6 +3538,9 @@ function restore(){
   }).catch(function(){});
 }
 scroller.addEventListener('scroll',schedule,{passive:true});
+document.addEventListener('museum:active-heading',function(event){
+  activeHeading=event.detail||null;
+});
 document.addEventListener('visibilitychange',updateEngagement);
 window.addEventListener('focus',updateEngagement);
 window.addEventListener('blur',updateEngagement);
@@ -4110,7 +4157,8 @@ in large-tier graphs."
       <strong id=\"tt-title\"></strong><span id=\"tt-meta\"></span>
     </div>
     <div class=\"graph-workspace-footer\">
-      <div id=\"graph-selected-detail\"><span>—</span><a href=\"index.html\">打开笔记 →</a></div>
+      <p id=\"graph-selection-prompt\">选择节点查看详情</p>
+      <div id=\"graph-selected-detail\" hidden><span></span><a href=\"index.html\">打开笔记 →</a></div>
       <ul id=\"graph-legend\" aria-label=\"主题图例\"></ul>
     </div>
   </section>
@@ -4128,6 +4176,7 @@ var canvas=document.getElementById('graph-canvas');
 var zeroNotice=document.getElementById('graph-zero-notice');
 var isolatedFallback=document.getElementById('graph-isolated-fallback');
 var selectedDetail=document.getElementById('graph-selected-detail');
+var selectionPrompt=document.getElementById('graph-selection-prompt');
 var cats=Array.from(new Set(nodes.map(function(node){return node.group||'未分类';}))).sort();
 var focusId=new URLSearchParams(location.search).get('focus')||'';
 var focusNeighbors=new Set(focusId?[focusId]:[]);
@@ -4147,6 +4196,9 @@ var alphaDecay=Number(meta['alpha-decay']);
 var tickLimit=meta['tick-limit']===false?0:Number(meta['tick-limit']);
 var preTicks=meta['pre-ticks']===false?0:Number(meta['pre-ticks']);
 var tickCount=0;
+var motionQuery=window.matchMedia('(prefers-reduced-motion: reduce)');
+var reduceMotion=motionQuery.matches;
+if(selectedDetail)selectedDetail.hidden=true;
 if(!Number.isFinite(charge))charge=-240;
 if(!Number.isFinite(alphaDecay)||alphaDecay<=0)alphaDecay=0.0228;
 if(!Number.isFinite(tickLimit)||tickLimit<0)tickLimit=0;
@@ -4262,14 +4314,19 @@ function renderLegend(){
     root.appendChild(item);
   });
 }
+function nodeHref(node){return node.url||'index.html';}
+function openNode(node){location.href=nodeHref(node);}
 function selectNode(node){
   selected=node;
   activeNeighborhood=neighborhood(node);applyFilter();
-  nodeSelection.select('circle').classed('is-selected',function(entry){return entry.id===node.id;});
+  nodeSelection.select('.graph-node-dot').classed('is-selected',function(entry){return entry.id===node.id;});
+  nodeSelection.attr('aria-current',function(entry){return entry.id===node.id?'true':null;});
+  if(selectedDetail)selectedDetail.hidden=false;
+  if(selectionPrompt)selectionPrompt.hidden=true;
   selectedDetail.querySelector('span').textContent=
     String(nodes.indexOf(node)+1).padStart(2,'0')+' / '+(node.group||'未分类')+
     ' / '+count(node.degree||0)+' 条关系';
-  selectedDetail.querySelector('a').href=node.url||'index.html';
+  selectedDetail.querySelector('a').href=nodeHref(node);
 }
 
 renderFilters();renderLegend();
@@ -4298,9 +4355,12 @@ var svg=d3.select(canvas).append('svg')
   .attr('role','group')
   .attr('aria-label','Org Museum 知识图谱');
 var layer=svg.append('g');
+var zoomScale=1;
 var zoom=d3.zoom().scaleExtent([0.35,5]).on('zoom',function(event){
+  zoomScale=event.transform.k;
   layer.attr('transform',event.transform);
   layer.classed('graph-labels-dense',event.transform.k>=0.9);
+  if(nodeSelection)nodeSelection.select('.graph-node-hit-target').attr('r',16/zoomScale);
 });
 svg.call(zoom);
 layer.classed('graph-labels-dense',true);
@@ -4308,10 +4368,18 @@ var linkSelection=layer.append('g').attr('class','graph-links')
   .selectAll('line').data(links).enter().append('line');
 var nodeSelection=layer.append('g').attr('class','graph-nodes')
   .selectAll('g').data(nodes).enter().append('g')
-  .attr('tabindex',0).attr('role','link');
+  .attr('tabindex',0).attr('role','link')
+  .attr('aria-label',function(node){
+    return (node.name||'未命名')+'，'+(node.group||'未分类')+'，'+
+      count(node.degree||0)+' 条关系'+(node.status==='draft'?'，草稿':'')+
+      '，Space 选择，Enter 打开笔记';
+  });
 graphReady=true;
 nodeSelection.append('circle')
-  .attr('class',function(node){return node.status==='draft'?'is-draft':null;})
+  .attr('class','graph-node-hit-target')
+  .attr('r',16);
+nodeSelection.append('circle')
+  .attr('class',function(node){return 'graph-node-dot'+(node.status==='draft'?' is-draft':'');})
   .attr('r',function(node){return 6+Math.min(8,Math.sqrt(node.degree||0)*2);})
   .attr('fill',function(node){return color(node.group);});
 nodeSelection.append('text').attr('x',14).attr('y',4)
@@ -4320,13 +4388,26 @@ nodeSelection.append('text').attr('x',14).attr('y',4)
     var limit=width<600?16:22;
     return name.length>limit?name.slice(0,limit)+'…':name;
   });
+nodeSelection.each(function(node){
+  var label=this.querySelector('text');
+  node.labelWidth=label?Math.ceil(label.getComputedTextLength()):0;
+});
 
 function positionNodeLabels(){
   nodeSelection.select('text')
-    .attr('x',function(node){return width<600?14:(node.x>width/2?-14:14);})
-    .attr('text-anchor',function(node){return width<600?'start':(node.x>width/2?'end':'start');});
+    .attr('x',function(node){return width<600?0:(node.x>width/2?-14:14);})
+    .attr('y',function(){return width<600?24:4;})
+    .attr('text-anchor',function(node){return width<600?'middle':(node.x>width/2?'end':'start');});
+}
+function constrainNode(node){
+  var labelHalf=width<600?(node.labelWidth||0)/2:0;
+  var minX=Math.max(18,labelHalf+6),maxX=Math.max(minX,width-minX);
+  var minY=18,maxY=Math.max(minY,height-(width<600?30:18));
+  node.x=Math.max(minX,Math.min(maxX,node.x));
+  node.y=Math.max(minY,Math.min(maxY,node.y));
 }
 function renderTick(){
+  nodes.forEach(constrainNode);
   linkSelection
     .attr('x1',function(link){return link.source.x;})
     .attr('y1',function(link){return link.source.y;})
@@ -4345,15 +4426,16 @@ simulation=d3.forceSimulation(nodes)
     .stop();
 if(links.length)
   simulation.force('link',d3.forceLink(links).id(function(node){return node.id;}).distance(130));
-  for(var warmTick=0;warmTick<preTicks;warmTick+=1)simulation.tick();
+  var layoutTicks=reduceMotion?Math.max(preTicks,160):preTicks;
+  for(var warmTick=0;warmTick<layoutTicks;warmTick+=1)simulation.tick();
   renderTick();
-  simulation.on('tick',function(){
+  if(!reduceMotion)simulation.on('tick',function(){
     renderTick();tickCount+=1;
     if(tickLimit&&tickCount>=tickLimit)simulation.stop();
   }).restart();
   nodeSelection.call(d3.drag()
-    .on('start',function(event,node){if(!event.active){tickCount=0;simulation.alphaTarget(.25).restart();}node.fx=node.x;node.fy=node.y;})
-    .on('drag',function(event,node){node.fx=event.x;node.fy=event.y;})
+    .on('start',function(event,node){if(!reduceMotion&&!event.active){tickCount=0;simulation.alphaTarget(.25).restart();}node.fx=node.x;node.fy=node.y;})
+    .on('drag',function(event,node){node.fx=event.x;node.fy=event.y;if(reduceMotion){node.x=event.x;node.y=event.y;renderTick();}})
     .on('end',function(event,node){if(!event.active)simulation.alphaTarget(0);node.fx=null;node.fy=null;}));
 
 var activeNeighborhood=null;
@@ -4396,18 +4478,29 @@ nodeSelection
     activeNeighborhood=selected?neighborhood(selected):null;applyFilter();
   })
   .on('click',function(_event,node){selectNode(node);})
-  .on('dblclick',function(_event,node){location.href=node.url||'index.html';})
+  .on('dblclick',function(_event,node){openNode(node);})
   .on('keydown',function(event,node){
-    if(event.key==='Enter'){event.preventDefault();location.href=node.url||'index.html';}
+    if(event.key==='Enter'){event.preventDefault();openNode(node);}
+    else if(event.key===' '){event.preventDefault();selectNode(node);}
   });
 
 document.getElementById('btn-reset').addEventListener('click',function(){
-  svg.transition().duration(350).call(zoom.transform,d3.zoomIdentity);
+  if(reduceMotion)svg.call(zoom.transform,d3.zoomIdentity);
+  else svg.transition().duration(350).call(zoom.transform,d3.zoomIdentity);
 });
-document.getElementById('btn-freeze').addEventListener('click',function(){
+var freezeButton=document.getElementById('btn-freeze');
+freezeButton.addEventListener('click',function(){
   frozen=!frozen;this.textContent=frozen?'继续布局':'冻结布局';
   if(simulation){if(frozen)simulation.stop();else {tickCount=0;simulation.alpha(.35).restart();}}
 });
+function syncMotionPreference(event){
+  reduceMotion=event.matches;
+  if(reduceMotion){simulation.stop();frozen=true;freezeButton.disabled=true;freezeButton.textContent='布局已静止';}
+  else {freezeButton.disabled=false;freezeButton.textContent=frozen?'继续布局':'冻结布局';}
+}
+syncMotionPreference(motionQuery);
+if(motionQuery.addEventListener)motionQuery.addEventListener('change',syncMotionPreference);
+else if(motionQuery.addListener)motionQuery.addListener(syncMotionPreference);
 if(search)search.addEventListener('input',function(){
   query=search.value.trim().toLowerCase();applyFilter();
   if(isZeroLinkGraph)renderFallbackList();
@@ -4425,9 +4518,8 @@ applyFilter();if(selected)selectNode(selected);
 
 (defun org-museum--script-ui-core (out-file)
   "Return the main UI script block.
-[Fix-09] initScrollSpy now uses IntersectionObserver with #main-scroll
-as the root element, eliminating the offsetTop coordinate-system mismatch
-that caused TOC highlight to freeze on the first heading."
+The shared section resolver publishes one active-heading state for the TOC,
+sticky article identity and qualified reading-state persistence."
   (let* ((assets (org-museum--hljs-assets))
          (lisp-src (org-museum--hljs-src-from-assets assets :lisp-js out-file))
          (css-src (org-museum--hljs-src-from-assets assets :css out-file))
@@ -4459,12 +4551,60 @@ document.addEventListener('keydown',function(e){
   }
 });
 
-/* ── 2. Scroll spy [Fix-09: IntersectionObserver relative to #main-scroll] ── */
+/* ── 2. Shared article section state ── */
 function initScrollSpy(){
   var sc=document.getElementById('main-scroll');
-  var tl=document.querySelectorAll('#org-museum-right-sidebar a[href^=\"#\"]');
+  var tl=Array.from(document.querySelectorAll('#org-museum-right-sidebar a[href^=\"#\"]'));
   if(!tl.length)return;
-
+  var headings=tl.map(function(link){
+    return document.getElementById(link.getAttribute('href').slice(1));
+  }).filter(Boolean);
+  var activeId=null,sectionFrame=0,preferredId='',preferredUntil=0;
+  function decodedHash(){
+    var raw=location.hash.replace(/^#/,'');
+    try{return decodeURIComponent(raw);}catch(_error){return raw;}
+  }
+  function activationLine(){
+    var top=sc?sc.getBoundingClientRect().top:0;
+    var height=sc?sc.clientHeight:window.innerHeight;
+    return top+Math.min(120,Math.max(84,height*0.12));
+  }
+  function resolveActive(preferred){
+    var target=preferred?document.getElementById(preferred):null;
+    if(target&&headings.includes(target))return target;
+    var current=null,line=activationLine();
+    headings.forEach(function(heading){
+      if(heading.getBoundingClientRect().top<=line)current=heading;
+    });
+    return current||headings[0]||null;
+  }
+  function publishActive(target,source){
+    if(!target)return;
+    var detail={id:target.id,title:target.textContent.trim(),
+                level:Number(target.tagName.slice(1))||0,source:source};
+    window.orgMuseumActiveHeading=detail;
+    if(activeId===detail.id)return;
+    activeId=detail.id;
+    var activeLink=null;
+    tl.forEach(function(link){
+      var isActive=link.getAttribute('href')==='#'+activeId;
+      link.classList.toggle('toc-active',isActive);
+      if(isActive)activeLink=link;
+    });
+    if(activeLink)activeLink.dispatchEvent(
+      new CustomEvent('museum:toc-active',{bubbles:true}));
+    document.dispatchEvent(new CustomEvent('museum:active-heading',{detail:detail}));
+  }
+  function updateActive(source,preferred){
+    publishActive(resolveActive(preferred),source);
+  }
+  function scheduleActive(){
+    if(sectionFrame)return;
+    sectionFrame=requestAnimationFrame(function(){
+      sectionFrame=0;
+      updateActive('scroll',Date.now()<preferredUntil?preferredId:'');
+    });
+  }
   tl.forEach(function(l){
     l.addEventListener('click',function(e){
       var tid=this.getAttribute('href').slice(1),te=document.getElementById(tid);
@@ -4472,38 +4612,20 @@ function initScrollSpy(){
       e.preventDefault();
       var iz=document.body.classList.contains('zen-mode');
       if(iz)document.body.classList.remove('zen-mode');
-      (sc||window).scrollTo({top:te.offsetTop-80,behavior:'smooth'});
+      preferredId=tid;preferredUntil=Date.now()+900;
+      publishActive(te,'toc');
+      te.scrollIntoView({block:'start',behavior:'smooth'});
       if(iz)setTimeout(function(){document.body.classList.add('zen-mode');updZ();},800);
       history.pushState(null,null,'#'+tid);
     });
   });
-
-  var activeId=null;
-  var observer=new IntersectionObserver(function(entries){
-    entries.forEach(function(entry){
-      if(entry.isIntersecting){
-        activeId=entry.target.id;
-        var activeLink=null;
-        tl.forEach(function(l){
-          var isActive=l.getAttribute('href')==='#'+activeId;
-          l.classList.toggle('toc-active',isActive);
-          if(isActive)activeLink=l;
-        });
-        if(activeLink)activeLink.dispatchEvent(
-          new CustomEvent('museum:toc-active',{bubbles:true}));
-      }
-    });
-  },{
-    root: sc||null,
-    rootMargin: '-10%% 0px -80%% 0px',
-    threshold: 0
+  (sc||window).addEventListener('scroll',scheduleActive,{passive:true});
+  window.addEventListener('hashchange',function(){
+    preferredId=decodedHash();preferredUntil=Date.now()+300;
+    updateActive('hash',preferredId);
   });
-
-  tl.forEach(function(l){
-    var tid=l.getAttribute('href').slice(1);
-    var te=document.getElementById(tid);
-    if(te)observer.observe(te);
-  });
+  preferredId=decodedHash();preferredUntil=preferredId?Date.now()+300:0;
+  updateActive(preferredId?'hash':'initial',preferredId);
 }
 
 /* ── 3. Code blocks ── */
@@ -5256,7 +5378,8 @@ isolated pages, quick action links.
   (org-museum--guard-init)
   (let* ((pages  (org-museum-index-pages org-museum--index))
          (health (org-museum--index-health-report pages))
-         (stale  (org-museum--count-stale-pages)))
+         (stale  (org-museum--count-stale-pages))
+         (css-status (org-museum--css-deployment-status)))
     (with-current-buffer (get-buffer-create "*Org Museum Status*")
       (erase-buffer) (org-mode)
       (insert "#+TITLE: Org Museum Status Report\n")
@@ -5266,8 +5389,19 @@ isolated pages, quick action links.
       (insert (format "- Root Dir:    =%s=\n" org-museum-root-dir))
       (insert (format "- Pages Dir:   =%s=\n" (org-museum--pages-base-dir)))
       (insert (format "- CSS Source:  =%s= %s\n"
-                      (org-museum--css-source-path)
-                      (if (file-exists-p (org-museum--css-source-path)) "✓" "✗ MISSING")))
+                      (plist-get css-status :source)
+                      (if (plist-get css-status :source-hash) "✓" "✗ MISSING")))
+      (insert (format "- CSS Source SHA-256: =%s=\n"
+                      (or (plist-get css-status :source-hash) "missing")))
+      (insert (format "- CSS Export:  =%s= %s\n"
+                      (plist-get css-status :output)
+                      (if (plist-get css-status :output-hash) "✓" "✗ MISSING")))
+      (insert (format "- CSS Export SHA-256: =%s=\n"
+                      (or (plist-get css-status :output-hash) "missing")))
+      (insert (format "- CSS Sync:    %s\n"
+                      (if (plist-get css-status :in-sync)
+                          "✓ current"
+                        "⚠ source/export mismatch")))
       (insert (format "- Export Dir:  =%s=\n" (org-museum--pages-root)))
       (insert (format "- Scan Dir:    =%s=\n" (org-museum--scan-root)))
 

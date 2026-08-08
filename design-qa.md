@@ -222,4 +222,34 @@
 - ERT completed 45/45 tests, including duplicate IDs, late rollback,
   successful commit, unchanged links, ID renames, and atomic cache failures.
 
+## Round 10 resource, section, graph and print verification (2026-08-08)
+
+- Straight repository resources are now authoritative over stale build, link-tree,
+  and legacy roam copies. The final repository and exported CSS SHA-256 are both
+  `7f6bf8e0c1c45abc995c257540bd2bb9d9f8de7e0cd5adc69d96f6aab82f7e1b`, and all
+  14 HTML files reference `org-museum.css?v=7f6bf8e0c1c4`. When the repository
+  asset is absent or a link placeholder points to a missing target, both CSS and
+  shared script deployment explicitly fall back to the Straight build copy without
+  exporting pointer text or attempting the network.
+- Direct entry to the current long-article 5.5 anchor resolves one shared state:
+  sticky identity text and TOC highlight both report 5.5, the heading clears the
+  top bars at 168px, the article column is 960px, and horizontal overflow is zero.
+- At 390x844 the graph renders 12 real isolated nodes and zero edges. All 12 labels
+  remain inside the SVG, the smallest hit target is 32px, Space selects, Enter opens,
+  and the unselected detail link stays hidden. The 32px hit area remains constant at
+  every zoom level. Forced reduced-motion output produced 12 distinct precomputed
+  positions, disables the freeze control, and reports `布局已静止`.
+- Monokai scrollbars are active on the mobile article and graph (`#5f6057` thumb,
+  `#1e1f1c` track), with no page-level horizontal overflow or console warnings.
+- A real Edge print produced a 52-page article PDF. Rendered page inspection confirms
+  a light paper surface, readable code and tables, sensible page breaks, and no topbar,
+  sidebars, mobile HUD, open drawer/backdrop, background effects, or code buttons.
+- Final browser checks found 13 working long-code toggles, no remote resources, no
+  console errors, 12 manifest pages, 1 published / 11 drafts, 6 categories, and zero
+  inferred graph relationships. ERT completed 51/51 tests.
+- Final screenshots and print artifacts are in
+  `C:/Users/luoyu/AppData/Local/Temp/org-museum-audit-2026-08-08/09-home-1280-final.png`,
+  `10-graph-mobile-final.png`, `11-article-anchor-mobile-final.png`, and
+  `16-article-print-final.pdf`.
+
 final result: passed

@@ -261,6 +261,77 @@
             (should (equal (org-museum--css-source-path) repo-css))))
       (delete-directory root t))))
 
+(ert-deftest org-museum-css-source-prefers-repository-over-stale-build-copy ()
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-build-resource-test-" t)))
+         (user-emacs-directory root)
+         (repo-dir (expand-file-name "straight/repos/org-museum.el/" root))
+         (build-dir (expand-file-name "straight/build/org-museum/" root))
+         (repo-css (expand-file-name "resources/org-museum.css" repo-dir))
+         (build-css (expand-file-name "resources/org-museum.css" build-dir))
+         (build-library (expand-file-name "org-museum.el" build-dir))
+         (org-museum--plugin-dir nil)
+         (load-file-name nil))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory repo-css) t)
+          (make-directory (file-name-directory build-css) t)
+          (with-temp-file repo-css (insert "CURRENT-REPOSITORY"))
+          (with-temp-file build-css (insert "STALE-BUILD"))
+          (with-temp-file build-library (insert ";; compiled package entry"))
+          (cl-letf (((symbol-function 'locate-library)
+                     (lambda (_library) build-library)))
+            (should (equal (org-museum--css-source-path) repo-css))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-resources-fall-back-to-straight-build-when-repo-is-missing ()
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-build-fallback-test-" t)))
+         (user-emacs-directory root)
+         (org-museum-root-dir root)
+         (org-museum--plugin-dir
+          (expand-file-name "straight/links/org-museum/" root))
+         (build-resources
+          (expand-file-name "straight/build/org-museum/resources/" root))
+         (build-css (expand-file-name "org-museum.css" build-resources))
+         (build-d3 (expand-file-name "d3.v7.min.js" build-resources))
+         (link-css (expand-file-name "resources/org-museum.css"
+                                     org-museum--plugin-dir))
+         (link-d3 (expand-file-name "resources/d3.v7.min.js"
+                                    org-museum--plugin-dir))
+         (missing-css (expand-file-name
+                       "straight/repos/org-museum.el/resources/org-museum.css"
+                       root))
+         (missing-d3 (expand-file-name
+                      "straight/repos/org-museum.el/resources/d3.v7.min.js"
+                      root))
+         (dest (expand-file-name "exports/html/resources/d3.v7.min.js" root))
+         (network-called nil))
+    (unwind-protect
+        (progn
+          (make-directory org-museum--plugin-dir t)
+          (make-directory build-resources t)
+          (make-directory (file-name-directory link-css) t)
+          (with-temp-file link-css
+            (insert (replace-regexp-in-string "\\\\" "/" missing-css t t)))
+          (with-temp-file link-d3
+            (insert (replace-regexp-in-string "\\\\" "/" missing-d3 t t)))
+          (with-temp-file build-css (insert "/* build css */"))
+          (with-temp-file build-d3 (insert "/* build d3 */"))
+          (should (equal (org-museum--css-source-path) build-css))
+          (cl-letf (((symbol-function 'url-copy-file)
+                     (lambda (&rest _args)
+                       (setq network-called t)
+                       (error "network should not be used"))))
+            (should (equal (org-museum--ensure-url-resource
+                            "https://invalid.example/d3.js" dest "D3.js")
+                           dest)))
+          (should-not network-called)
+          (with-temp-buffer
+            (insert-file-contents dest)
+            (should (equal (buffer-string) "/* build d3 */"))))
+      (delete-directory root t))))
+
 (ert-deftest org-museum-css-source-dereferences-straight-link-placeholder ()
   (let* ((root (file-name-as-directory
                 (make-temp-file "org-museum-css-link-test-" t)))
@@ -297,6 +368,26 @@
             (should-not
              (equal first
                     (org-museum--versioned-resource-href asset out-file)))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-css-deployment-status-reports-source-output-drift ()
+  (let* ((root (make-temp-file "org-museum-css-status-test-" t))
+         (source (expand-file-name "source.css" root))
+         (output (expand-file-name "output.css" root)))
+    (unwind-protect
+        (progn
+          (with-temp-file source (insert "CURRENT"))
+          (with-temp-file output (insert "STALE"))
+          (cl-letf (((symbol-function 'org-museum--css-source-path)
+                     (lambda () source))
+                    ((symbol-function 'org-museum--css-output-path)
+                     (lambda () output)))
+            (let ((status (org-museum--css-deployment-status)))
+              (should (equal (plist-get status :source) source))
+              (should (equal (plist-get status :output) output))
+              (should (= (length (plist-get status :source-hash)) 64))
+              (should (= (length (plist-get status :output-hash)) 64))
+              (should-not (plist-get status :in-sync)))))
       (delete-directory root t))))
 
 (ert-deftest org-museum-full-export-caches-highlight-deployment-per-batch ()
@@ -485,6 +576,24 @@
              ".article-container h2,\n.article-container h3,\n.article-container h4" nil t))
     (should (search-forward "scroll-margin-top: 48px" nil t))))
 
+(ert-deftest org-museum-article-section-state-is-shared-by-toc-identity-and-reading-history ()
+  (let ((ui-script
+         (cl-letf (((symbol-function 'org-museum--hljs-lisp-js-src)
+                    (lambda (_out-file) nil))
+                   ((symbol-function 'org-museum--hljs-css-src)
+                    (lambda (_out-file) nil))
+                   ((symbol-function 'org-museum--hljs-js-src)
+                    (lambda (_out-file) nil)))
+           (org-museum--script-ui-core "article.html")))
+        (shell-script (org-museum--script-shell))
+        (reading-script (org-museum--script-reading-state)))
+    (should (string-match-p "window\.orgMuseumActiveHeading" ui-script))
+    (should (string-match-p "museum:active-heading" ui-script))
+    (should (string-match-p "source:source" ui-script))
+    (should (string-match-p "museum:active-heading" shell-script))
+    (should (string-match-p "museum:active-heading" reading-script))
+    (should-not (string-match-p "function updateActiveHeading" reading-script))))
+
 (ert-deftest org-museum-article-width-is-configurable-and-exported ()
   (should (= org-museum-article-max-width 960))
   (let ((org-museum-article-max-width 912)
@@ -666,6 +775,48 @@
              (regexp-quote "<script src=\"resources/d3.v7.min.js\"></script>")
              graph))
     (should-not (string-match-p "src=\"<script" graph))))
+
+(ert-deftest org-museum-graph-keeps-mobile-labels-and-interactions-in-bounds ()
+  (let ((graph (org-museum--build-graph-html
+                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                "resources/org-museum.css" "resources/d3.v7.min.js")))
+    (should (string-match-p "graph-node-hit-target" graph))
+    (should (string-match-p (regexp-quote ".attr('r',16)") graph))
+    (should (string-match-p "node\.labelWidth" graph))
+    (should (string-match-p "Math\.max(minX,Math\.min(maxX,node\.x))" graph))
+    (should (string-match-p (regexp-quote ".attr('aria-label'") graph))
+    (should (string-match-p "event\.key===' '" graph))
+    (should (string-match-p "prefers-reduced-motion: reduce" graph))
+    (should (string-match-p "if(!reduceMotion)simulation\.on" graph))
+    (should (string-match-p
+             (regexp-quote
+              "layoutTicks=reduceMotion?Math.max(preTicks,160):preTicks")
+             graph))
+    (should (string-match-p (regexp-quote "16/zoomScale") graph))
+    (should (string-match-p "selectedDetail\.hidden=true" graph))))
+
+(ert-deftest org-museum-css-themes-scroll-regions-and-print-output ()
+  "Scrollable UI stays Monokai on screen and articles become paper-friendly."
+  (let ((css (with-temp-buffer
+               (insert-file-contents
+                (expand-file-name "resources/org-museum.css"
+                                  org-museum-test--repo-root))
+               (buffer-string))))
+    (should (string-match-p "--scrollbar-track:" css))
+    (should (string-match-p
+             "scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track)"
+             css))
+    (should (string-match-p "graph-node-hit-target" css))
+    (should (string-match-p "pointer-events: all" css))
+    (let ((print-pos (string-match "@media print" css)))
+      (should print-pos)
+      (should (string-match "#org-museum-sidebar" css print-pos))
+      (should (string-match "#museum-drawer-backdrop" css print-pos)))
+    (should (string-match-p "\\.museum-topbar" css))
+    (should (string-match-p "\\.reading-hud" css))
+    (should (string-match-p "#mobile-hud" css))
+    (should (string-match-p "break-inside: avoid" css))
+    (should (string-match-p "background: #fff" css))))
 
 (ert-deftest org-museum-org-html-has-complete-monokai-semantic-colors ()
   (with-temp-buffer

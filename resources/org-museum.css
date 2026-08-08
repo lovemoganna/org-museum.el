@@ -22,6 +22,9 @@
   --topbar-height: 92px;
   --reading-progress: 0%;
   --museum-touch-target: 44px;
+  --scrollbar-track: #1e1f1c;
+  --scrollbar-thumb: #5f6057;
+  --scrollbar-thumb-hover: #7b7a6d;
 }
 
 *,
@@ -47,6 +50,31 @@ body {
   letter-spacing: 0.01em;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb {
+  min-height: 28px;
+  border: 2px solid var(--scrollbar-track);
+  border-radius: 8px;
+  background: var(--scrollbar-thumb);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
 }
 
 button,
@@ -1596,10 +1624,22 @@ pre.org-museum-code-block.org-museum-code-expanded {
   cursor: pointer;
 }
 
+.graph-node-hit-target {
+  fill: transparent;
+  stroke: none !important;
+  pointer-events: all;
+}
+
 .graph-nodes circle {
   stroke: transparent;
   stroke-width: 2px;
   transition: opacity 120ms ease, stroke 120ms ease;
+}
+
+#graph-selection-prompt {
+  margin: 0;
+  color: var(--text-muted);
+  font: 400 10px/1.5 var(--font-mono);
 }
 
 .graph-nodes circle.is-draft {
@@ -2257,5 +2297,134 @@ body.zen-mode .article-container {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+}
+
+@media print {
+  @page {
+    margin: 16mm 14mm;
+  }
+
+  html,
+  body,
+  .org-museum-page {
+    min-width: 0;
+    min-height: 0;
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+    color: #20211e !important;
+  }
+
+  body {
+    font-size: 10pt;
+    line-height: 1.55;
+  }
+
+  .museum-topbar,
+  .museum-article-meta,
+  #org-museum-right-sidebar,
+  .reading-hud,
+  #mobile-hud,
+  #org-museum-sidebar,
+  #museum-drawer-backdrop,
+  .reading-progress-container,
+  .museum-article-identity,
+  .article-back-nav,
+  #org-museum-fx-canvas,
+  .code-copy-btn,
+  .code-toggle-btn,
+  .museum-graph-rail,
+  .graph-view-controls,
+  #graph-tooltip,
+  #graph-isolated-fallback {
+    display: none !important;
+  }
+
+  #main-scroll {
+    position: static;
+    inset: auto;
+    height: auto;
+    overflow: visible !important;
+    padding: 0;
+  }
+
+  .museum-article-layout,
+  .article-container,
+  .article-container.zen {
+    display: block;
+    width: auto;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .article-container,
+  .article-container p,
+  .article-container li,
+  .article-container dd,
+  .article-container dt {
+    color: #20211e !important;
+  }
+
+  .article-container a {
+    color: #176b7b !important;
+    text-decoration: underline;
+  }
+
+  .article-container h1,
+  .article-container h2,
+  .article-container h3,
+  .article-container h4,
+  .article-container h5,
+  .article-container h6 {
+    color: #111 !important;
+    break-after: avoid-page;
+    page-break-after: avoid;
+  }
+
+  .article-container table,
+  .article-container tr,
+  .article-container img,
+  .article-container blockquote,
+  pre.src,
+  pre.example,
+  pre.org-museum-code-block {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .museum-table-scroll {
+    overflow: visible !important;
+    border: 0;
+  }
+
+  .article-container table {
+    width: 100%;
+    min-width: 0;
+    font-size: 8.5pt;
+  }
+
+  .article-container th {
+    position: static;
+    background: #ecece8 !important;
+    color: #574a00 !important;
+  }
+
+  .article-container th,
+  .article-container td {
+    border-color: #b8b8b0;
+  }
+
+  pre.src,
+  pre.example,
+  pre.org-museum-code-block {
+    max-height: none !important;
+    overflow: visible !important;
+    white-space: pre-wrap;
+    border: 1px solid #b8b8b0;
+    border-left: 3px solid #77786f;
+    background: #f4f4f0 !important;
+    color: #20211e !important;
   }
 }
