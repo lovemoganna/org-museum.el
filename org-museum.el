@@ -660,34 +660,155 @@ When DOTTED is non-nil, use YYYY.MM.DD; otherwise use YYYY-MM-DD."
     (setq text (replace-regexp-in-string "&gt;" ">" text t t))
     (string-trim text)))
 
-(defun org-museum--source-headings (page)
-  "Return fallback heading metadata parsed from PAGE's Org source."
+(defun org-museum--fallback-selected-headlines (ast info)
+  "Return export-selected headlines using stable Org element data."
+  (let* ((select-tags (cl-mapcan (lambda (tag) (org-tags-expand tag t))
+                                 (plist-get info :select-tags)))
+           (filetags (plist-get info :filetags))
+           (all (org-element-map ast 'headline #'identity))
+           selected)
+    (cond
+     ((cl-some (lambda (tag) (member tag select-tags)) filetags) all)
+     (t
+      (dolist (headline all)
+        (when (cl-some (lambda (tag) (member tag select-tags))
+                       (org-element-property :tags headline))
+          (dolist (datum (cons headline (org-element-lineage headline)))
+            (when (eq (org-element-type datum) 'headline)
+              (cl-pushnew datum selected :test #'eq)))
+          (org-element-map headline 'headline
+            (lambda (child) (cl-pushnew child selected :test #'eq)))))
+      selected))))
+
+(defun org-museum--export-selected-headlines (ast info)
+  "Return selected export headlines from AST using a compatibility boundary."
+  (if (fboundp 'org-export--selected-trees)
+      (condition-case nil
+          (org-export--selected-trees ast info)
+        (wrong-number-of-arguments
+         (org-museum--fallback-selected-headlines ast info)))
+    (org-museum--fallback-selected-headlines ast info)))
+
+(defun org-museum--fallback-skip-headline-p (headline info selected excluded)
+  "Compatibility implementation of Org headline export exclusion."
+  (let ((tags (org-export-get-tags headline info nil t))
+          (with-tasks (plist-get info :with-tasks))
+          (todo (org-element-property :todo-keyword headline))
+          (todo-type (org-element-property :todo-type headline)))
+    (or (cl-some (lambda (tag) (member tag excluded)) tags)
+        (and selected (not (memq headline selected)))
+        (org-element-property :commentedp headline)
+        (and (not (plist-get info :with-archived-trees))
+             (org-element-property :archivedp headline))
+        (and todo
+             (or (not with-tasks)
+                 (and (memq with-tasks '(todo done))
+                      (not (eq todo-type with-tasks)))
+                 (and (consp with-tasks)
+                      (not (member todo with-tasks))))))))
+
+(defun org-museum--export-skip-headline-p (headline info selected excluded)
+  "Return non-nil when HEADLINE should be omitted from export.
+Private Org exporter behavior is isolated here; the fallback covers the public
+headline options used by supported bundled Org versions."
+  (if (fboundp 'org-export--skip-p)
+      (condition-case nil
+          (org-export--skip-p headline info selected excluded)
+        (wrong-number-of-arguments
+         (org-museum--fallback-skip-headline-p
+          headline info selected excluded)))
+    (org-museum--fallback-skip-headline-p
+     headline info selected excluded)))
+
+(defun org-museum--exportable-headline-p (headline info selected excluded)
+  "Return non-nil when HEADLINE and its ancestors survive Org export."
+  (cl-every
+   (lambda (datum)
+     (or (not (eq (org-element-type datum) 'headline))
+         (not (org-museum--export-skip-headline-p
+               datum info selected excluded))))
+   (cons headline (org-element-lineage headline))))
+
+(defun org-museum--source-heading-inventory (page)
+  "Return canonical export-aware H2--H4 heading records for PAGE."
   (let ((file (org-museum-page-path page))
-        headings)
+        (occurrences (make-hash-table :test 'equal))
+        inventory)
     (when (file-readable-p file)
       (with-temp-buffer
         (insert-file-contents file)
         (org-mode)
-        (org-with-wide-buffer
-         (org-map-entries
-          (lambda ()
-            (let ((level (org-current-level)))
-              (when (and level (<= level 4))
-                (let* ((title (org-get-heading t t t t))
-                       (custom (or (org-entry-get nil "CUSTOM_ID")
-                                   (org-entry-get nil "ID")))
-                       (id (or custom
-                               (concat "heading-"
-                                       (substring
-                                        (secure-hash 'sha1
-                                                     (format "%s:%s"
-                                                             (org-museum-page-id page)
-                                                             title))
-                                        0 10)))))
-                  (push `((id . ,id) (title . ,title) (level . ,level))
-                        headings)))))
-          nil nil))))
-    (nreverse headings)))
+        (let* ((ast (org-element-parse-buffer))
+               (info (org-export-get-environment 'html))
+               (selected (org-museum--export-selected-headlines ast info))
+               (excluded (plist-get info :exclude-tags)))
+          (org-element-map ast 'headline
+            (lambda (headline)
+              (let ((level (org-element-property :level headline)))
+                (when (and (<= level 3)
+                           (org-museum--exportable-headline-p
+                            headline info selected excluded))
+                  (goto-char (org-element-property :begin headline))
+                  (let* ((title (org-get-heading t t t t))
+                         (custom (or (org-entry-get nil "CUSTOM_ID")
+                                     (org-entry-get nil "ID")))
+                         (path (org-get-outline-path t t))
+                         (path-key (mapconcat #'identity path "\0"))
+                         (occurrence
+                          (1+ (gethash path-key occurrences 0)))
+                         (id (or custom
+                                 (concat "section-"
+                                         (substring
+                                          (secure-hash
+                                           'sha1
+                                           (format "%s\0%s\0%d"
+                                                   (org-museum-page-id page)
+                                                   path-key occurrence))
+                                          0 12)))))
+                    (puthash path-key occurrence occurrences)
+                    (push (list :id id :title title :level (1+ level)
+                                :path (mapconcat #'identity path " / ")
+                                :occurrence occurrence)
+                          inventory))))))))
+    (nreverse inventory))))
+
+(defun org-museum--source-headings (page)
+  "Return public heading metadata parsed from PAGE's exportable Org source."
+  (mapcar (lambda (heading)
+            `((id . ,(plist-get heading :id))
+              (title . ,(plist-get heading :title))
+              (level . ,(plist-get heading :level))))
+          (org-museum--source-heading-inventory page)))
+
+(defun org-museum--pp-stabilize-heading-anchors (org-file)
+  "Replace transient Org heading anchors using ORG-FILE metadata.
+Only exported H2--H4 headings are rewritten.  Same-document fragment links and
+Org outline-container IDs follow the stable heading ID."
+  (when-let* ((page (org-museum--page-for-file org-file))
+              (headings (org-museum--source-headings page)))
+    (let (rewrites)
+      (goto-char (point-min))
+      (while (and headings
+                  (re-search-forward
+                   "<h[2-4][^>]*\\bid=\"\\([^\"]+\\)\"" nil t))
+        (let* ((old-id (match-string-no-properties 1))
+               (heading (pop headings))
+               (stable-id (alist-get 'id heading)))
+          (unless (equal old-id stable-id)
+            (replace-match stable-id t t nil 1)
+            (push (cons old-id stable-id) rewrites))))
+      (dolist (rewrite rewrites)
+        (let ((old-id (car rewrite))
+              (stable-id (cdr rewrite)))
+          (dolist (pair
+                   (list
+                    (cons (concat "href=\"#" old-id)
+                          (concat "href=\"#" stable-id))
+                    (cons (concat "id=\"outline-container-" old-id)
+                          (concat "id=\"outline-container-" stable-id))))
+            (goto-char (point-min))
+            (while (search-forward (car pair) nil t)
+              (replace-match (cdr pair) t t))))))))
 
 (defun org-museum--exported-headings (page)
   "Return exact exported heading metadata for PAGE when its HTML exists."
@@ -1305,6 +1426,7 @@ malformed HTML."
     (org-museum--pp-inject-hljs-language-classes)
     (org-museum--pp-inject-page-attributes org-file)
     (org-museum--pp-annotate-local-file-links)
+    (org-museum--pp-stabilize-heading-anchors org-file)
     (org-museum--pp-wrap-tables)
     (if (not (org-museum--pp-wrap-content-div out-file org-file))
         (progn
@@ -1407,7 +1529,9 @@ its semicolon.  Keep the workaround local to exported HTML."
       "<span class=\"museum-identity-meta\">%s%s</span>"
       "<span class=\"museum-identity-divider\" aria-hidden=\"true\">·</span>"
       "<span class=\"museum-identity-section\" data-current-section "
-      "aria-live=\"polite\">文章开头</span></div>\n")
+      "aria-live=\"polite\">文章开头</span>"
+      "<button type=\"button\" class=\"museum-identity-toc\" data-toc-toggle "
+      "aria-label=\"打开本文目录\">目录</button></div>\n")
      (org-museum--html-escape home-href t)
      (org-museum--html-escape (org-museum-page-title page))
      (org-museum--html-escape
@@ -1560,7 +1684,9 @@ Applicable scope: org-museum--postprocess-html."
            "<div id=\"content\" class=\"museum-article-layout\" style=\"--museum-article-max-width: %dpx\">"
            (max 640 org-museum-article-max-width))
           meta
-          "<article class=\"article-container\"" article-attrs ">")
+          "<article class=\"article-container\"" article-attrs ">"
+          "<button type=\"button\" class=\"museum-article-toc-trigger\" "
+          "data-toc-toggle>打开目录</button>")
          t t)
         t)
     (message "Org Museum [PostProcess]: #content not found in %s — \
@@ -1859,7 +1985,10 @@ KIND is one of `home', `article', or `graph'."
          (placeholder (pcase kind
                         ('article "搜索此 Wiki…")
                         ('graph "搜索节点…")
-                        (_ "搜索标题、分类或标签…"))))
+                        (_ "搜索标题、分类或标签…")))
+         (search-label (if (eq kind 'graph)
+                           "搜索图谱节点"
+                         "全局搜索")))
     (format
      (concat
       "<header class=\"museum-topbar\" data-home-href=\"%s\">\n"
@@ -1867,10 +1996,10 @@ KIND is one of `home', `article', or `graph'."
       "  <a class=\"museum-wordmark\" href=\"%s\">ORG MUSEUM</a>\n"
       "  <time class=\"museum-today\" datetime=\"%s\" title=\"导出于 %s\">%s</time>\n"
       "  <label class=\"museum-search-line\">\n"
-      "    <span class=\"sr-only\">全局搜索</span>\n"
+      "    <span class=\"sr-only\">%s</span>\n"
       "    <input id=\"org-museum-global-search\" type=\"search\" "
       "placeholder=\"%s\" autocomplete=\"off\" spellcheck=\"false\" "
-      "aria-label=\"全局搜索\" aria-keyshortcuts=\"/\">\n"
+      "aria-label=\"%s\" aria-keyshortcuts=\"/\">\n"
       "    <kbd aria-hidden=\"true\">/</kbd>\n"
       "  </label>\n"
       "  <nav class=\"museum-top-links\" aria-label=\"Wiki 导航\">\n"
@@ -1883,7 +2012,9 @@ KIND is one of `home', `article', or `graph'."
      (format-time-string "%Y-%m-%d")
      (format-time-string "%Y.%m.%d")
      (format-time-string "%Y.%m.%d")
+     search-label
      placeholder
+     search-label
      (if (eq kind 'home) "#recent-updates"
        (org-museum--html-escape home-href t))
      (if (eq kind 'home) " data-index-reset" "")
@@ -2938,7 +3069,7 @@ Check org-museum-css-file or reinstall the plugin" css-src)))
              (heading (cl-find-if
                        (lambda (item)
                          (string= title (or (cdr (assq 'title item)) "")))
-                       (org-museum--page-headings page))))
+                       (org-museum--source-headings page))))
         (and heading (cdr (assq 'id heading))))))))
 
 (defun org-museum--rewrite-org-museum-links (buf out-file &optional source-file)
@@ -3454,6 +3585,8 @@ var pageId=document.body.dataset.pageId;if(!pageId)return;
 var scroller=document.getElementById('main-scroll')||document.scrollingElement;
 var article=document.querySelector('.article-container');
 var activeHeading=window.orgMuseumActiveHeading||null,dbPromise=null,restored=false,timer=null;
+var restoreStarted=false;
+var saveInterval=null;
 var engagedTotalMs=0,qualifiedAt=0;
 function readingActive(){
   return document.visibilityState==='visible'&&document.hasFocus();
@@ -3492,6 +3625,26 @@ function metrics(){
     scroller.scrollHeight-scroller.clientHeight;
   return {top:top,height:height,ratio:height>0?Math.max(0,Math.min(1,top/height)):0};
 }
+function normalizeHeadingTitle(value){
+  return String(value||'').replace(/\\s+/g,' ').trim();
+}
+function headingByTitle(title){
+  var wanted=normalizeHeadingTitle(title);
+  if(!wanted)return null;
+  var matches=Array.from(article.querySelectorAll('h2[id],h3[id],h4[id]'))
+    .filter(function(heading){
+      return normalizeHeadingTitle(heading.textContent)===wanted;
+    });
+  return matches.length===1?matches[0]:null;
+}
+function persistRecoveredHeading(db,saved,target){
+  saved.lastHeadingId=target.id;
+  saved.lastHeadingTitle=normalizeHeadingTitle(target.textContent);
+  try{
+    db.transaction('readingState','readwrite')
+      .objectStore('readingState').put(saved);
+  }catch(_error){}
+}
 function record(){
   updateEngagement();
   var state=metrics(),engagedMs=currentEngagedMs(),progress=state.ratio;
@@ -3513,6 +3666,14 @@ function save(){
     db.transaction('readingState','readwrite').objectStore('readingState').put(value);
   }).catch(function(){});
 }
+function startPeriodicSave(){
+  if(saveInterval)return;
+  saveInterval=setInterval(function(){save();},5000);
+}
+function stopPeriodicSave(){
+  if(!saveInterval)return;
+  clearInterval(saveInterval);saveInterval=null;
+}
 function schedule(){
   var state=metrics();
   document.documentElement.style.setProperty('--reading-progress',(state.ratio*100)+'%');
@@ -3520,16 +3681,22 @@ function schedule(){
   timer=setTimeout(function(){timer=null;save();},800);
 }
 function restore(){
+  if(restoreStarted)return;restoreStarted=true;
   openDb().then(function(db){return new Promise(function(resolve,reject){
     var request=db.transaction('readingState','readonly').objectStore('readingState').get(pageId);
-    request.onsuccess=function(){resolve(request.result);};
+    request.onsuccess=function(){resolve({db:db,saved:request.result});};
     request.onerror=function(){reject(request.error);};
-  });}).then(function(saved){
+  });}).then(function(result){
+    var db=result.db,saved=result.saved;
     if(restored||!saved)return;restored=true;
     var raw=location.hash.replace(/^#/,'');
     var hash=(function(){try{return decodeURIComponent(raw);}catch(_error){return raw;}})();
     var target=hash?document.getElementById(hash):null;
     if(!target&&saved.lastHeadingId)target=document.getElementById(saved.lastHeadingId);
+    if(!target&&saved.lastHeadingTitle){
+      target=headingByTitle(saved.lastHeadingTitle);
+      if(target)persistRecoveredHeading(db,saved,target);
+    }
     if(target)target.scrollIntoView({block:'start'});
     else if(saved.scrollRatio>0)requestAnimationFrame(function(){
       var top=saved.scrollRatio*metrics().height;
@@ -3541,24 +3708,25 @@ scroller.addEventListener('scroll',schedule,{passive:true});
 document.addEventListener('museum:active-heading',function(event){
   activeHeading=event.detail||null;
 });
-document.addEventListener('visibilitychange',updateEngagement);
+document.addEventListener('visibilitychange',function(){
+  updateEngagement();
+  if(document.visibilityState==='hidden')save();
+});
 window.addEventListener('focus',updateEngagement);
 window.addEventListener('blur',updateEngagement);
-window.addEventListener('pagehide',function(){if(timer)clearTimeout(timer);save();});
-window.addEventListener('load',function(){
-  restore();schedule();
-  setInterval(function(){save();},5000);
+window.addEventListener('pagehide',function(){
+  if(timer){clearTimeout(timer);timer=null;}
+  stopPeriodicSave();save();
 });
+function startReadingSession(){restore();schedule();startPeriodicSave();}
+window.addEventListener('load',startReadingSession);
+window.addEventListener('pageshow',startReadingSession);
 })();
 </script>\n")
 
 (defun org-museum--build-sidebar-injection (out-file)
   "Return the full sidebar+script HTML string to inject before </body>."
   (concat
-   "<nav id=\"mobile-hud\" aria-label=\"移动导航\">\n"
-   "  <button type=\"button\" class=\"hud-btn\" data-drawer-toggle>全部笔记</button>\n"
-   "  <button type=\"button\" class=\"hud-btn\" data-toc-toggle>本文目录</button>\n"
-   "</nav>\n"
    "<button type=\"button\" id=\"museum-drawer-backdrop\" aria-label=\"关闭抽屉\"></button>\n"
    "<p id=\"museum-article-live-status\" class=\"sr-only\" role=\"status\" aria-live=\"polite\"></p>\n"
    "<div id=\"zen-mask\"></div>\n"
@@ -4141,6 +4309,7 @@ in large-tier graphs."
       <button type=\"button\" id=\"btn-freeze\">冻结布局</button>
       <small>拖动画布 · 滚轮缩放</small>
     </div>
+    <p id=\"graph-match-status\" role=\"status\" aria-live=\"polite\">匹配 00 个节点</p>
   </aside>
   <section class=\"museum-graph-workspace\" aria-label=\"知识关系画布\">
     <div id=\"graph-canvas\"></div>
@@ -4158,7 +4327,9 @@ in large-tier graphs."
     </div>
     <div class=\"graph-workspace-footer\">
       <p id=\"graph-selection-prompt\">选择节点查看详情</p>
-      <div id=\"graph-selected-detail\" hidden><span></span><a href=\"index.html\">打开笔记 →</a></div>
+      <div id=\"graph-selected-detail\" hidden><span></span><a href=\"index.html\">打开笔记 →</a>
+        <button type=\"button\" id=\"btn-clear-selection\">清除选择</button>
+      </div>
       <ul id=\"graph-legend\" aria-label=\"主题图例\"></ul>
     </div>
   </section>
@@ -4177,16 +4348,12 @@ var zeroNotice=document.getElementById('graph-zero-notice');
 var isolatedFallback=document.getElementById('graph-isolated-fallback');
 var selectedDetail=document.getElementById('graph-selected-detail');
 var selectionPrompt=document.getElementById('graph-selection-prompt');
+var matchStatus=document.getElementById('graph-match-status');
+var clearSelectionButton=document.getElementById('btn-clear-selection');
 var cats=Array.from(new Set(nodes.map(function(node){return node.group||'未分类';}))).sort();
 var focusId=new URLSearchParams(location.search).get('focus')||'';
-var focusNeighbors=new Set(focusId?[focusId]:[]);
-links.forEach(function(link){
-  if(link.source===focusId)focusNeighbors.add(link.target);
-  if(link.target===focusId)focusNeighbors.add(link.source);
-});
-var category='*';
-var query='';
-var selected=nodes.find(function(node){return node.id===focusId;})||null;
+var state={query:'',category:'*',selectedId:
+  nodes.some(function(node){return node.id===focusId;})?focusId:''};
 var simulation=null;
 var frozen=false;
 var graphReady=false;
@@ -4197,6 +4364,7 @@ var tickLimit=meta['tick-limit']===false?0:Number(meta['tick-limit']);
 var preTicks=meta['pre-ticks']===false?0:Number(meta['pre-ticks']);
 var tickCount=0;
 var motionQuery=window.matchMedia('(prefers-reduced-motion: reduce)');
+var mobileGraphMedia=window.matchMedia('(max-width:620px)');
 var reduceMotion=motionQuery.matches;
 if(selectedDetail)selectedDetail.hidden=true;
 if(!Number.isFinite(charge))charge=-240;
@@ -4216,18 +4384,28 @@ document.body.classList.toggle('graph-zero-mode',isZeroLinkGraph);
 var viewControls=document.querySelector('.graph-view-controls');
 if(viewControls)viewControls.hidden=false;
 var filterSummary=document.querySelector('.graph-filter-summary');
-if(filterSummary&&isZeroLinkGraph&&matchMedia('(max-width:620px)').matches)
-  filterSummary.open=false;
+function syncFilterSummary(event){
+  var mobile=event.matches;
+  if(filterSummary)filterSummary.open=!mobile;
+}
+syncFilterSummary(mobileGraphMedia);
+if(mobileGraphMedia.addEventListener)
+  mobileGraphMedia.addEventListener('change',syncFilterSummary);
+else if(mobileGraphMedia.addListener)
+  mobileGraphMedia.addListener(syncFilterSummary);
 
 function color(group){
   var index=Math.max(0,cats.indexOf(group));
   return palette[index%%palette.length]||'#a29e8e';
 }
 function matches(node){
-  var catOk=category==='*'||node.group===category;
+  var catOk=state.category==='*'||node.group===state.category;
   var hay=[node.name,node.group].concat(node.tags||[]).join(' ').toLowerCase();
-  var focusOk=!focusId||query||category!=='*'||focusNeighbors.has(node.id);
-  return catOk&&focusOk&&(!query||hay.indexOf(query)>=0);
+  return catOk&&(!state.query||hay.indexOf(state.query)>=0);
+}
+function visibleNodes(){return nodes.filter(matches);}
+function updateMatchStatus(visible){
+  if(matchStatus)matchStatus.textContent=visible.length+' 个匹配节点';
 }
 function copyWikiLink(value,button){
   var status=document.getElementById('graph-copy-status');
@@ -4251,7 +4429,8 @@ function copyWikiLink(value,button){
 }
 function renderFallbackList(){
   var listRoot=document.getElementById('graph-isolated-list');
-  var visible=nodes.filter(matches);
+  var visible=visibleNodes();
+  updateMatchStatus(visible);
   if(listRoot){
     listRoot.textContent='';
     visible.forEach(function(node){
@@ -4276,13 +4455,13 @@ function renderFallbackList(){
 }
 function syncGraphCategoryControls(){
   document.querySelectorAll('[data-graph-category]').forEach(function(entry){
-    var active=entry.dataset.graphCategory===category;
+    var active=entry.dataset.graphCategory===state.category;
     entry.classList.toggle('is-active',active);
     entry.setAttribute('aria-pressed',active?'true':'false');
   });
 }
 function setCategory(value){
-  category=value||'*';syncGraphCategoryControls();
+  state.category=value||'*';syncGraphCategoryControls();
   if(graphReady)applyFilter();
   if(isZeroLinkGraph||!graphReady)renderFallbackList();
 }
@@ -4299,8 +4478,8 @@ function renderFilters(){
     button.innerHTML='<span></span><b></b>';
     button.querySelector('span').textContent=item.label;
     button.querySelector('b').textContent=count(item.count);
-    button.setAttribute('aria-pressed',item.name===category?'true':'false');
-    if(item.name===category)button.classList.add('is-active');
+    button.setAttribute('aria-pressed',item.name===state.category?'true':'false');
+    if(item.name===state.category)button.classList.add('is-active');
     button.addEventListener('click',function(){setCategory(item.name);});
     root.appendChild(button);
   });
@@ -4317,7 +4496,7 @@ function renderLegend(){
 function nodeHref(node){return node.url||'index.html';}
 function openNode(node){location.href=nodeHref(node);}
 function selectNode(node){
-  selected=node;
+  state.selectedId=node.id;
   activeNeighborhood=neighborhood(node);applyFilter();
   nodeSelection.select('.graph-node-dot').classed('is-selected',function(entry){return entry.id===node.id;});
   nodeSelection.attr('aria-current',function(entry){return entry.id===node.id?'true':null;});
@@ -4328,9 +4507,21 @@ function selectNode(node){
     ' / '+count(node.degree||0)+' 条关系';
   selectedDetail.querySelector('a').href=nodeHref(node);
 }
+function clearSelection(){
+  state.selectedId='';activeNeighborhood=null;
+  if(nodeSelection){
+    nodeSelection.select('.graph-node-dot').classed('is-selected',false);
+    nodeSelection.attr('aria-current',null);
+  }
+  if(selectedDetail)selectedDetail.hidden=true;
+  if(selectionPrompt)selectionPrompt.hidden=false;
+  if(graphReady)applyFilter();
+}
+if(clearSelectionButton)clearSelectionButton.addEventListener('click',clearSelection);
 
 renderFilters();renderLegend();
 document.addEventListener('keydown',function(event){
+  if(event.key==='Escape'&&state.selectedId){clearSelection();return;}
   if(event.key==='/'&&!event.metaKey&&!event.ctrlKey&&!event.altKey&&
      !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)){
     event.preventDefault();if(search)search.focus();
@@ -4343,7 +4534,7 @@ if(typeof d3==='undefined'||!canvas){
   if(viewControls)viewControls.hidden=true;
   renderFallbackList();
   if(search)search.addEventListener('input',function(){
-    query=search.value.trim().toLowerCase();renderFallbackList();
+    state.query=search.value.trim().toLowerCase();renderFallbackList();
   });
   return;
 }
@@ -4382,16 +4573,21 @@ nodeSelection.append('circle')
   .attr('class',function(node){return 'graph-node-dot'+(node.status==='draft'?' is-draft':'');})
   .attr('r',function(node){return 6+Math.min(8,Math.sqrt(node.degree||0)*2);})
   .attr('fill',function(node){return color(node.group);});
+function nodeLabelText(node){
+  var name=node.name||'未命名';
+  var limit=width<600?16:22;
+  return name.length>limit?name.slice(0,limit)+'…':name;
+}
 nodeSelection.append('text').attr('x',14).attr('y',4)
-  .text(function(node){
-    var name=node.name||'未命名';
-    var limit=width<600?16:22;
-    return name.length>limit?name.slice(0,limit)+'…':name;
+  .text(nodeLabelText);
+function measureNodeLabels(){
+  nodeSelection.select('text').text(nodeLabelText);
+  nodeSelection.each(function(node){
+    var label=this.querySelector('text');
+    node.labelWidth=label?Math.ceil(label.getComputedTextLength()):0;
   });
-nodeSelection.each(function(node){
-  var label=this.querySelector('text');
-  node.labelWidth=label?Math.ceil(label.getComputedTextLength()):0;
-});
+}
+measureNodeLabels();
 
 function positionNodeLabels(){
   nodeSelection.select('text')
@@ -4416,6 +4612,35 @@ function renderTick(){
   nodeSelection.attr('transform',function(node){return 'translate('+node.x+','+node.y+')';});
   positionNodeLabels();
 }
+function syncGraphViewport(){
+  var nextWidth=canvas.clientWidth||width;
+  var nextHeight=canvas.clientHeight||height;
+  if(nextWidth===width&&nextHeight===height)return;
+  var scaleX=width?nextWidth/width:1;
+  var scaleY=height?nextHeight/height:1;
+  nodes.forEach(function(node){
+    if(Number.isFinite(node.x))node.x*=scaleX;
+    if(Number.isFinite(node.y))node.y*=scaleY;
+    if(Number.isFinite(node.fx))node.fx*=scaleX;
+    if(Number.isFinite(node.fy))node.fy*=scaleY;
+  });
+  width=nextWidth;height=nextHeight;
+  svg.attr('viewBox','0 0 '+width+' '+height);
+  measureNodeLabels();
+  if(simulation){
+    simulation.force('center',d3.forceCenter(width/2,height/2));
+    simulation.force('x',d3.forceX(width/2).strength(0.035));
+    simulation.force('y',d3.forceY(height/2).strength(0.035));
+    if(reduceMotion){
+      simulation.alpha(.35).stop();
+      for(var resizeTick=0;resizeTick<40;resizeTick+=1)simulation.tick();
+      simulation.stop();
+    }else if(!frozen){
+      tickCount=0;simulation.alpha(.2).restart();
+    }
+  }
+  renderTick();
+}
 simulation=d3.forceSimulation(nodes)
     .force('charge',d3.forceManyBody().strength(charge))
     .force('center',d3.forceCenter(width/2,height/2))
@@ -4437,6 +4662,10 @@ if(links.length)
     .on('start',function(event,node){if(!reduceMotion&&!event.active){tickCount=0;simulation.alphaTarget(.25).restart();}node.fx=node.x;node.fy=node.y;})
     .on('drag',function(event,node){node.fx=event.x;node.fy=event.y;if(reduceMotion){node.x=event.x;node.y=event.y;renderTick();}})
     .on('end',function(event,node){if(!event.active)simulation.alphaTarget(0);node.fx=null;node.fy=null;}));
+if(window.ResizeObserver){
+  var graphResizeObserver=new ResizeObserver(function(){syncGraphViewport();});
+  graphResizeObserver.observe(canvas);
+}else window.addEventListener('resize',syncGraphViewport);
 
 var activeNeighborhood=null;
 function neighborhood(node){
@@ -4449,13 +4678,13 @@ function neighborhood(node){
   return ids;
 }
 function applyFilter(){
+  var visible=visibleNodes();
+  updateMatchStatus(visible);
   nodeSelection
     .classed('graph-node-neighbour',function(node){
       return !!activeNeighborhood&&activeNeighborhood.has(node.id);
     })
-    .classed('is-dimmed',function(node){
-      return !matches(node)||(activeNeighborhood&&!activeNeighborhood.has(node.id));
-    });
+    .classed('is-dimmed',function(node){return !matches(node);});
   linkSelection.classed('is-dimmed',function(link){
     var source=link.source.id?link.source:nodes.find(function(node){return node.id===link.source;});
     var target=link.target.id?link.target:nodes.find(function(node){return node.id===link.target;});
@@ -4475,7 +4704,8 @@ nodeSelection
   })
   .on('mouseleave',function(){
     tooltip.classList.remove('is-visible');
-    activeNeighborhood=selected?neighborhood(selected):null;applyFilter();
+    var selectedNode=nodes.find(function(node){return node.id===state.selectedId;});
+    activeNeighborhood=selectedNode?neighborhood(selectedNode):null;applyFilter();
   })
   .on('click',function(_event,node){selectNode(node);})
   .on('dblclick',function(_event,node){openNode(node);})
@@ -4502,10 +4732,12 @@ syncMotionPreference(motionQuery);
 if(motionQuery.addEventListener)motionQuery.addEventListener('change',syncMotionPreference);
 else if(motionQuery.addListener)motionQuery.addListener(syncMotionPreference);
 if(search)search.addEventListener('input',function(){
-  query=search.value.trim().toLowerCase();applyFilter();
+  state.query=search.value.trim().toLowerCase();applyFilter();
   if(isZeroLinkGraph)renderFallbackList();
 });
-applyFilter();if(selected)selectNode(selected);
+applyFilter();
+var initialSelectedNode=nodes.find(function(node){return node.id===state.selectedId;});
+if(initialSelectedNode)selectNode(initialSelectedNode);
 })();
 </script>
 </body>
@@ -4560,6 +4792,7 @@ function initScrollSpy(){
     return document.getElementById(link.getAttribute('href').slice(1));
   }).filter(Boolean);
   var activeId=null,sectionFrame=0,preferredId='',preferredUntil=0;
+  var anchorLocked=false;
   function decodedHash(){
     var raw=location.hash.replace(/^#/,'');
     try{return decodeURIComponent(raw);}catch(_error){return raw;}
@@ -4602,9 +4835,18 @@ function initScrollSpy(){
     if(sectionFrame)return;
     sectionFrame=requestAnimationFrame(function(){
       sectionFrame=0;
-      updateActive('scroll',Date.now()<preferredUntil?preferredId:'');
+      updateActive('scroll',anchorLocked||Date.now()<preferredUntil?preferredId:'');
     });
   }
+  function unlockAnchor(){anchorLocked=false;preferredUntil=0;}
+  ['wheel','touchstart','pointerdown'].forEach(function(type){
+    (sc||window).addEventListener(type,unlockAnchor,{passive:true});
+  });
+  document.addEventListener('keydown',function(event){
+    if(['ArrowUp','ArrowDown','PageUp','PageDown','Home','End',' ',
+        'j','k','n','p'].includes(event.key))
+      unlockAnchor();
+  });
   tl.forEach(function(l){
     l.addEventListener('click',function(e){
       var tid=this.getAttribute('href').slice(1),te=document.getElementById(tid);
@@ -4612,7 +4854,7 @@ function initScrollSpy(){
       e.preventDefault();
       var iz=document.body.classList.contains('zen-mode');
       if(iz)document.body.classList.remove('zen-mode');
-      preferredId=tid;preferredUntil=Date.now()+900;
+      preferredId=tid;preferredUntil=Date.now()+900;anchorLocked=true;
       publishActive(te,'toc');
       te.scrollIntoView({block:'start',behavior:'smooth'});
       if(iz)setTimeout(function(){document.body.classList.add('zen-mode');updZ();},800);
@@ -4621,10 +4863,11 @@ function initScrollSpy(){
   });
   (sc||window).addEventListener('scroll',scheduleActive,{passive:true});
   window.addEventListener('hashchange',function(){
-    preferredId=decodedHash();preferredUntil=Date.now()+300;
+    preferredId=decodedHash();preferredUntil=Date.now()+300;anchorLocked=Boolean(preferredId);
     updateActive('hash',preferredId);
   });
   preferredId=decodedHash();preferredUntil=preferredId?Date.now()+300:0;
+  anchorLocked=Boolean(preferredId);
   updateActive(preferredId?'hash':'initial',preferredId);
 }
 
@@ -5268,6 +5511,31 @@ PAGES is used to exclude links that resolve to another indexed Wiki page."
                           records)))))))))
     (nreverse records)))
 
+(defun org-museum--page-duplicate-heading-paths (page)
+  "Return duplicate H2--H4 outline paths found in PAGE's Org source.
+Each path is reported once, in the order its second occurrence appears."
+  (delq nil
+        (mapcar (lambda (heading)
+                  (when (= (plist-get heading :occurrence) 2)
+                    (plist-get heading :path)))
+                (org-museum--source-heading-inventory page))))
+
+(defun org-museum--page-legacy-heading-anchors (page)
+  "Return transient Org-style H2--H4 anchors in PAGE's current HTML export."
+  (let ((output (ignore-errors
+                  (org-museum--export-filename
+                   (org-museum-page-path page))))
+        anchors)
+    (when (and output (file-readable-p output))
+      (with-temp-buffer
+        (insert-file-contents output)
+        (goto-char (point-min))
+        (while (re-search-forward
+                "<h[2-4]\\b[^>]*\\bid=\\\"\\(org[[:xdigit:]]+\\)\\\""
+                nil t)
+          (push (match-string-no-properties 1) anchors))))
+    (nreverse anchors)))
+
 (defun org-museum--index-health-report (pages)
   "Return a plist of health indicators for PAGES hash-table.
 Keys:
@@ -5275,9 +5543,12 @@ Keys:
   :broken   — list of (from-id . missing-target-id) pairs
   :isolated — list of all IDs with no links in or out
   :draft    — list of IDs with status=draft
+  :duplicate-heading-paths — (page-id . outline-path) migration risks
+  :legacy-anchors — (page-id . transient-anchor) entries in current HTML
 Applicable scope: org-museum-status, org-museum-index-verify, CI checks."
   (let (ghost broken isolated isolated-published isolated-draft draft
-              missing-description local-external local-missing)
+              missing-description local-external local-missing
+              duplicate-heading-paths legacy-anchors)
     (maphash
      (lambda (id page)
        (unless (file-exists-p (org-museum-page-path page))
@@ -5301,7 +5572,11 @@ Applicable scope: org-museum-status, org-museum-index-verify, CI checks."
        (dolist (record (org-museum--page-local-file-links page pages))
          (push record local-external)
          (unless (plist-get record :exists)
-           (push record local-missing))))
+           (push record local-missing)))
+       (dolist (path (org-museum--page-duplicate-heading-paths page))
+         (push (cons id path) duplicate-heading-paths))
+       (dolist (anchor (org-museum--page-legacy-heading-anchors page))
+         (push (cons id anchor) legacy-anchors)))
      pages)
     (list :ghost ghost :broken broken :isolated isolated
           :isolated-published isolated-published
@@ -5309,7 +5584,9 @@ Applicable scope: org-museum-status, org-museum-index-verify, CI checks."
           :draft draft
           :missing-description missing-description
           :local-external local-external
-          :local-missing local-missing)))
+          :local-missing local-missing
+          :duplicate-heading-paths (nreverse duplicate-heading-paths)
+          :legacy-anchors (nreverse legacy-anchors))))
 
 ;; Fix-12: count pages whose HTML is stale relative to their .org or the CSS.
 (defun org-museum--count-stale-pages ()
@@ -5429,6 +5706,10 @@ isolated pages, quick action links.
                       (length (plist-get health :draft))))
       (insert (format "- Missing Descriptions: %d\n"
                       (length (plist-get health :missing-description))))
+      (insert (format "- Duplicate Heading Paths: %d\n"
+                      (length (plist-get health :duplicate-heading-paths))))
+      (insert (format "- Legacy Heading Anchors:  %d\n"
+                      (length (plist-get health :legacy-anchors))))
       (insert (format "- External Local Files: %d\n"
                       (length (plist-get health :local-external))))
       (insert (format "- Missing Local Files:  %d\n"
@@ -5464,6 +5745,18 @@ isolated pages, quick action links.
           (when-let ((p (gethash id pages)))
             (insert (format "- [[museum:%s][%s]] — add #+DESCRIPTION when useful\n"
                             id (org-museum-page-title p))))))
+
+      (when (plist-get health :duplicate-heading-paths)
+        (insert "\n** Duplicate Heading Paths\n\n")
+        (dolist (record (plist-get health :duplicate-heading-paths))
+          (insert (format "- =%s= — =%s=; add CUSTOM_ID when a permanent public anchor is required\n"
+                          (car record) (cdr record)))))
+
+      (when (plist-get health :legacy-anchors)
+        (insert "\n** Legacy Heading Anchors\n\n")
+        (dolist (record (plist-get health :legacy-anchors))
+          (insert (format "- =%s= — =%s=; run org-museum-export-all to migrate\n"
+                          (car record) (cdr record)))))
 
       (when (plist-get health :local-external)
         (insert "\n** External Local Files\n\n")

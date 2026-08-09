@@ -443,13 +443,44 @@
                  "museum-today[^>]*aria-label" topbar))
     (should-not (string-match-p
                  "museum-search-line\" for=" topbar))
-    (should (string-match-p "<nav id=\"mobile-hud\"" sidebar))
+    (should-not (string-match-p "<nav id=\"mobile-hud\"" sidebar))
     (should (string-match-p
              "<button type=\"button\" class=\"fx-btn\"" sidebar))
     (should (string-match-p
              "<ul id=\"graph-legend\" aria-label=" graph))
     (should (string-match-p
              "document.createElement('li')" graph))))
+
+(ert-deftest org-museum-mobile-toc-controls-do-not-overlay-reading ()
+  (let* ((root (make-temp-file "org-museum-mobile-toc-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (page (org-museum-test--page
+                "article" "Article title" 1 "Test" nil "draft"))
+         (identity (org-museum--article-identity-html
+                    page (expand-file-name "exports/html/pages/article.html"
+                                           root)))
+         (sidebar (org-museum--build-sidebar-injection "article.html"))
+         (wrapped
+          (let ((org-museum--index nil))
+            (with-temp-buffer
+              (insert "<html><body><div id=\"content\"><h1 class=\"title\">Article</h1></div></body></html>")
+              (org-museum--pp-wrap-content-div "article.html" "article.org")
+              (buffer-string))))
+         (css (with-temp-buffer
+                (insert-file-contents
+                 (expand-file-name "resources/org-museum.css"
+                                   org-museum-test--repo-root))
+                (buffer-string))))
+    (unwind-protect
+        (progn
+          (should (string-match-p "museum-identity-toc" identity))
+          (should (string-match-p "data-toc-toggle" identity))
+          (should (string-match-p "museum-article-toc-trigger" wrapped))
+          (should-not (string-match-p "id=\"mobile-hud\"" sidebar))
+          (should (string-match-p "museum-identity-toc" css))
+          (should-not (string-match-p "#mobile-hud" css)))
+      (delete-directory root t))))
 
 (ert-deftest org-museum-postprocess-repairs-org-tag-entities-and-table-landmarks ()
   (with-temp-buffer
@@ -593,6 +624,42 @@
     (should (string-match-p "museum:active-heading" shell-script))
     (should (string-match-p "museum:active-heading" reading-script))
     (should-not (string-match-p "function updateActiveHeading" reading-script))))
+
+(ert-deftest org-museum-article-anchor-survives-responsive-reflow-until-user-scroll ()
+  "A layout-only scroll event must not replace the URL-selected section."
+  (let ((script
+         (cl-letf (((symbol-function 'org-museum--hljs-lisp-js-src)
+                    (lambda (_out-file) nil))
+                   ((symbol-function 'org-museum--hljs-css-src)
+                    (lambda (_out-file) nil))
+                   ((symbol-function 'org-museum--hljs-js-src)
+                    (lambda (_out-file) nil)))
+           (org-museum--script-ui-core "article.html"))))
+    (should (string-search "anchorLocked" script))
+    (should (string-search "function unlockAnchor" script))
+    (should (string-search "'wheel'" script))
+    (should (string-search "'touchstart'" script))
+    (should (string-search "'pointerdown'" script))
+    (should (string-search "'j','k','n','p'" script))
+    (should (string-search "anchorLocked||Date.now()<preferredUntil" script))))
+
+(ert-deftest org-museum-reading-state-recovers-stale-heading-by-title ()
+  (let ((script (org-museum--script-reading-state)))
+    (should (string-match-p "function headingByTitle" script))
+    (should (string-match-p "saved\.lastHeadingTitle" script))
+    (should (string-match-p "matches\.length===1" script))
+    (should (string-match-p "saved\.lastHeadingId=target\.id" script))
+    (should (string-match-p
+             "objectStore('readingState')\.put(saved)" script))))
+
+(ert-deftest org-museum-reading-state-saves-on-hide-and-cleans-up-timers ()
+  (let ((script (org-museum--script-reading-state)))
+    (should (string-match-p "saveInterval=null" script))
+    (should (string-search "document.visibilityState==='hidden'" script))
+    (should (string-search "clearInterval(saveInterval)" script))
+    (should (string-search "window.addEventListener('pageshow'" script))
+    (should (string-search "if(restoreStarted)return" script))
+    (should (string-search "function startPeriodicSave" script))))
 
 (ert-deftest org-museum-article-width-is-configurable-and-exported ()
   (should (= org-museum-article-max-width 960))
@@ -795,6 +862,35 @@
     (should (string-match-p (regexp-quote "16/zoomScale") graph))
     (should (string-match-p "selectedDetail\.hidden=true" graph))))
 
+(ert-deftest org-museum-graph-reflows-after-viewport-changes ()
+  (let ((graph (org-museum--build-graph-html
+                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                "resources/org-museum.css" "resources/d3.v7.min.js")))
+    (should (string-match-p "new ResizeObserver" graph))
+    (should (string-match-p "function syncGraphViewport" graph))
+    (should (string-search
+             "svg.attr('viewBox','0 0 '+width+' '+height)" graph))
+    (should (string-search "simulation.force('center'" graph))
+    (should (string-search "simulation.alpha(.35).stop()" graph))
+    (should (string-search "mobileGraphMedia.addEventListener" graph))
+    (should (string-search "filterSummary.open=!mobile" graph))))
+
+(ert-deftest org-museum-graph-search-and-selection-share-visible-state ()
+  (let ((graph (org-museum--build-graph-html
+                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                "resources/org-museum.css" "resources/d3.v7.min.js")))
+    (should (string-match-p "aria-label=\"搜索图谱节点\"" graph))
+    (should (string-match-p "id=\"graph-match-status\"" graph))
+    (should (string-match-p "id=\"btn-clear-selection\"" graph))
+    (should (string-search "var state={query:'',category:'*',selectedId:" graph))
+    (should-not (string-search "focusOk" graph))
+    (should (string-search
+             ".classed('is-dimmed',function(node){return !matches(node);})"
+             graph))
+    (should (string-search "function clearSelection" graph))
+    (should (string-search "event.key==='Escape'" graph))
+    (should (string-search "visible.length+' 个匹配节点'" graph))))
+
 (ert-deftest org-museum-css-themes-scroll-regions-and-print-output ()
   "Scrollable UI stays Monokai on screen and articles become paper-friendly."
   (let ((css (with-temp-buffer
@@ -811,10 +907,13 @@
     (let ((print-pos (string-match "@media print" css)))
       (should print-pos)
       (should (string-match "#org-museum-sidebar" css print-pos))
-      (should (string-match "#museum-drawer-backdrop" css print-pos)))
+      (should (string-match "#museum-drawer-backdrop" css print-pos))
+      (should (string-match "\\.museum-article-toc-trigger" css print-pos)))
     (should (string-match-p "\\.museum-topbar" css))
     (should (string-match-p "\\.reading-hud" css))
-    (should (string-match-p "#mobile-hud" css))
+    (should-not (string-match-p "#mobile-hud" css))
+    (should (string-match-p "\\.museum-identity-toc" css))
+    (should (string-match-p "\\.museum-article-toc-trigger" css))
     (should (string-match-p "break-inside: avoid" css))
     (should (string-match-p "background: #fff" css))))
 
@@ -989,6 +1088,37 @@
             (should-not (org-museum-page-description page))))
       (delete-directory root t))))
 
+(ert-deftest org-museum-health-reports-duplicate-heading-paths-and-legacy-anchors ()
+  "Health diagnostics expose migration risks without rewriting source notes."
+  (let* ((root (make-temp-file "org-museum-heading-health-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (source (expand-file-name "pages/notes/page.org" root))
+         (output (expand-file-name "exports/html/pages/notes/page.html" root))
+         (pages (make-hash-table :test 'equal)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory source) t)
+          (make-directory (file-name-directory output) t)
+          (with-temp-file source
+            (insert "#+TITLE: Heading health\n#+WIKI_ID: heading-health\n"
+                    "* Repeated\n** Child\n* Repeated\n** Child\n"))
+          (with-temp-file output
+            (insert "<article><h2 id=\"orgabc123\">Repeated</h2>"
+                    "<h3 id=\"section-good123456\">Child</h3></article>"))
+          (puthash "heading-health"
+                   (org-museum-test--page
+                    "heading-health" "Heading health" 1 "notes" nil
+                    "published" source)
+                   pages)
+          (let ((health (org-museum--index-health-report pages)))
+            (should (equal (plist-get health :duplicate-heading-paths)
+                           '(("heading-health" . "Repeated")
+                             ("heading-health" . "Repeated / Child"))))
+            (should (equal (plist-get health :legacy-anchors)
+                           '(("heading-health" . "orgabc123"))))))
+      (delete-directory root t))))
+
 (ert-deftest org-museum-external-local-links-are-resolved-and-marked ()
   (let* ((root (make-temp-file "org-museum-local-links-test-" t))
          (source-dir (expand-file-name "pages/Sql" root))
@@ -1019,9 +1149,17 @@
           (dolist (file (list target external external-org))
             (make-directory (file-name-directory file) t)
             (with-temp-file file (insert "fixture")))
+          (with-temp-file target
+            (insert "#+TITLE: 目标\n#+WIKI_ID: target\n* Stable section\n"))
+          (let ((stale-target-html
+                 (expand-file-name "exports/html/pages/Sql/target.html" root)))
+            (make-directory (file-name-directory stale-target-html) t)
+            (with-temp-file stale-target-html
+              (insert "<h2 id=\"orgdeadbeef\">Stable section</h2>")))
           (make-directory (file-name-directory source) t)
           (with-temp-file source
             (insert "[[file:target.org][内部]]\n"
+                    "[[file:target.org::*Stable section][章节]]\n"
                     "[[file:../../queries/查询 & sample.sql][查询]]\n"
                     "[[file:../../queries/guide.org][指南]]\n"
                     "[[file:../../queries/missing.org][缺失]]\n"))
@@ -1030,11 +1168,16 @@
           (with-temp-buffer
             (setq buffer-file-name source)
             (insert "[[file:target.org][内部]]\n"
+                    "[[file:target.org::*Stable section][章节]]\n"
                     "[[file:../../queries/查询 & sample.sql][查询]]\n"
                     "[[file:../../queries/guide.org][指南]]\n"
                     "[[file:../../queries/missing.org][缺失]]\n")
             (org-museum--rewrite-org-museum-links (current-buffer) out-file source)
             (should (string-match-p "target.html" (buffer-string)))
+            (should (string-match-p
+                     "target.html#section-[0-9a-f]\\{12\\}"
+                     (buffer-string)))
+            (should-not (string-match-p "orgdeadbeef" (buffer-string)))
             (should (string-match-p
                      (regexp-quote (replace-regexp-in-string "\\\\" "/" external))
                      (buffer-string))))
@@ -1254,6 +1397,101 @@
             (should-not
              (string-match-p
               "if(links.length===0)[[:space:]]*{[^}]*return;" html))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-full-export-keeps-heading-anchors-stable ()
+  "Repeated full exports keep public section links stable and unique."
+  (let* ((root (make-temp-file "org-museum-stable-anchor-test-" t))
+         (pages-dir (expand-file-name "pages/Test" root))
+         (org-file (expand-file-name "stable.org" pages-dir))
+         (html-file
+          (expand-file-name "exports/html/pages/Test/stable.html" root))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-css-file "resources/org-museum.css")
+         (org-museum-open-browser-after-export nil)
+         (org-museum--plugin-dir org-museum-test--repo-root)
+         first-ids second-ids)
+    (unwind-protect
+        (progn
+          (make-directory pages-dir t)
+          (with-temp-file org-file
+            (insert
+             "#+TITLE: Stable anchors\n"
+             "#+WIKI_ID: stable\n"
+             "#+CATEGORY: Test\n\n"
+             "* Parent\n"
+             "** Repeated\n"
+             "** Repeated\n"
+             "* Custom\n"
+             ":PROPERTIES:\n:CUSTOM_ID: kept-custom\n:END:\n"))
+          (cl-labels
+              ((heading-ids ()
+                 (with-temp-buffer
+                   (insert-file-contents html-file)
+                   (goto-char (point-min))
+                   (let (ids)
+                     (while (re-search-forward
+                             "<h[2-4][^>]* id=\"\\([^\"]+\\)\"" nil t)
+                       (let ((id (match-string-no-properties 1)))
+                         (unless (string-prefix-p "local-" id)
+                           (push id ids))))
+                     (nreverse ids)))))
+            (cl-letf (((symbol-function 'url-copy-file)
+                       (lambda (&rest _args)
+                         (error "fixture export must not use the network")))
+                      ((symbol-function 'browse-url)
+                       (lambda (&rest _args) nil)))
+              (org-museum-export-all)
+              (setq first-ids (heading-ids))
+              (org-museum-export-all)
+              (setq second-ids (heading-ids)))
+            (should (equal first-ids second-ids))
+            (should (member "kept-custom" first-ids))
+            (should (= (length first-ids)
+                       (length (delete-dups (copy-sequence first-ids)))))
+            (should (cl-every
+                     (lambda (id)
+                       (or (equal id "kept-custom")
+                           (string-match-p "\\`section-[0-9a-f]\\{12\\}\\'" id)))
+                     first-ids))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-stable-heading-inventory-skips-non-exported-subtrees ()
+  "COMMENT and noexport headings must not shift later stable-anchor pairing."
+  (let* ((root (make-temp-file "org-museum-export-heading-test-" t))
+         (source (expand-file-name "page.org" root))
+         (page (org-museum-test--page
+                "export-aware" "Export aware" 1 "notes" nil
+                "published" source)))
+    (unwind-protect
+        (progn
+          (with-temp-file source
+            (insert "#+TITLE: Export aware\n#+WIKI_ID: export-aware\n"
+                    "* Visible first\n"
+                    "* COMMENT Hidden comment\n** Hidden child\n"
+                    "* Hidden tagged :noexport:\n"
+                    "* Visible later\n"))
+          (let ((expected '("Visible first" "Visible later")))
+            (should (equal
+                     (mapcar (lambda (heading) (alist-get 'title heading))
+                             (org-museum--source-headings page))
+                     expected))
+            (cl-letf (((symbol-function 'org-export--selected-trees) nil)
+                      ((symbol-function 'org-export--skip-p) nil))
+              (should (equal
+                       (mapcar (lambda (heading) (alist-get 'title heading))
+                               (org-museum--source-headings page))
+                       expected)))
+            (cl-letf (((symbol-function 'org-export--selected-trees)
+                       (lambda () nil)))
+              (should (equal
+                       (mapcar (lambda (heading) (alist-get 'title heading))
+                               (org-museum--source-headings page))
+                       expected)))))
       (delete-directory root t))))
 
 (ert-deftest org-museum-full-export-fixture ()

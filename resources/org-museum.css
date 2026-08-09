@@ -684,6 +684,17 @@ button {
   white-space: nowrap;
 }
 
+.museum-identity-toc,
+.museum-article-toc-trigger {
+  display: none;
+  min-width: var(--museum-touch-target);
+  min-height: var(--museum-touch-target);
+  border: 1px solid var(--rule);
+  color: var(--mono-blue);
+  background: var(--mono-deep);
+  font-size: 10px;
+}
+
 .museum-article-meta,
 #org-museum-right-sidebar {
   position: sticky;
@@ -741,6 +752,7 @@ button {
 }
 
 .article-container {
+  position: relative;
   width: 100%;
   min-width: 0;
   color: var(--text-main);
@@ -1465,10 +1477,6 @@ pre.org-museum-code-block.org-museum-code-expanded {
   color: var(--mono-blue);
 }
 
-#mobile-hud {
-  display: none;
-}
-
 #org-museum-fx-canvas {
   position: fixed;
   z-index: 0;
@@ -1595,6 +1603,12 @@ pre.org-museum-code-block.org-museum-code-expanded {
   margin-top: 8px;
   color: var(--text-muted);
   font: 400 10px/1.5 var(--font-mono);
+}
+
+#graph-match-status {
+  margin: 18px 0 0;
+  color: var(--text-muted);
+  font: 400 9px/1.5 var(--font-mono);
 }
 
 .museum-graph-workspace {
@@ -1846,6 +1860,22 @@ pre.org-museum-code-block.org-museum-code-expanded {
   font-family: var(--font-sans);
 }
 
+#btn-clear-selection {
+  width: max-content;
+  padding: 2px 0;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+#btn-clear-selection:hover,
+#btn-clear-selection:focus-visible {
+  border-color: var(--mono-blue);
+  color: var(--mono-blue);
+}
+
 #graph-legend {
   display: flex;
   flex-wrap: wrap;
@@ -1967,21 +1997,20 @@ body.zen-mode .article-container {
     transform: translateX(0);
   }
 
-  #mobile-hud {
-    position: fixed;
-    z-index: 70;
-    right: var(--page-padding);
-    bottom: 20px;
-    display: flex;
-    gap: 12px;
+  .museum-identity-toc {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
   }
 
-  .hud-btn {
-    padding: 8px 10px;
-    border: 1px solid var(--rule);
-    color: var(--text-main);
-    background: var(--mono-deep);
-    font-size: 10px;
+  .museum-article-toc-trigger {
+    float: right;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 0 12px 18px;
+    padding: 0 10px;
   }
 }
 
@@ -2097,6 +2126,7 @@ body.zen-mode .article-container {
 
   #graph-category-filters button,
   .graph-view-controls button,
+  #btn-clear-selection,
   .graph-isolated-list button,
   .graph-filter-summary > summary,
   #graph-isolated-fallback > summary,
@@ -2110,7 +2140,8 @@ body.zen-mode .article-container {
   .museum-search-line input,
   .sidebar-search input,
   .toc-search input,
-  .hud-btn,
+  .museum-identity-toc,
+  .museum-article-toc-trigger,
   .sidebar-header button,
   .toc-sidebar-header button,
   .toc-search-tools [data-toc-clear],
@@ -2172,7 +2203,8 @@ body.zen-mode .article-container {
   }
 
   #main-scroll {
-    padding-bottom: 110px;
+    padding-bottom: 80px;
+    scroll-padding-top: 64px;
   }
 
   .article-container > .title {
@@ -2180,15 +2212,38 @@ body.zen-mode .article-container {
   }
 
   .museum-article-identity {
-    gap: 7px;
+    grid-template-columns: minmax(0, 1fr) var(--museum-touch-target);
+    grid-template-rows: 1fr 1fr;
+    grid-template-areas:
+      "title toc"
+      "section toc";
+    gap: 0 10px;
+    height: 52px;
+    padding-top: 5px;
+    padding-bottom: 5px;
   }
 
   .museum-identity-title {
-    max-width: 42vw;
+    grid-area: title;
+    max-width: none;
+  }
+
+  .museum-identity-section {
+    grid-area: section;
+  }
+
+  .museum-identity-toc {
+    grid-area: toc;
   }
 
   .museum-identity-meta {
     display: none;
+  }
+
+  .article-container h2,
+  .article-container h3,
+  .article-container h4 {
+    scroll-margin-top: 64px;
   }
 
   .museum-article-meta dl {
@@ -2325,11 +2380,11 @@ body.zen-mode .article-container {
   .museum-article-meta,
   #org-museum-right-sidebar,
   .reading-hud,
-  #mobile-hud,
   #org-museum-sidebar,
   #museum-drawer-backdrop,
   .reading-progress-container,
   .museum-article-identity,
+  .museum-article-toc-trigger,
   .article-back-nav,
   #org-museum-fx-canvas,
   .code-copy-btn,

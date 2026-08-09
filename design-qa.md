@@ -252,4 +252,46 @@
   `10-graph-mobile-final.png`, `11-article-anchor-mobile-final.png`, and
   `16-article-print-final.pdf`.
 
+## Round 11 stable anchors, responsive graph and lifecycle verification (2026-08-09)
+
+- Repeated full fixture exports now preserve every exportable H2-H4 anchor. `CUSTOM_ID` and
+  heading `ID` remain authoritative; all other anchors use a deterministic
+  `section-<12 hex>` value derived from page ID, full outline path, and duplicate
+  occurrence. `COMMENT`, `noexport`, selected-tree, archived-tree, and task export
+  rules are evaluated before pairing source headings with generated HTML. The real
+  export contains 316 stable section anchors and zero transient `org...` heading anchors.
+- URL entry, TOC highlighting, sticky identity, and reading history share one active
+  heading. Direct entry to `#section-cd51d6fc4549` reports section 5.5 everywhere;
+  switching from 1440x1024 to 390x844 keeps 5.5 through responsive reflow, while a
+  subsequent real user scroll updates the state to the newly visible section.
+- The mobile article has two contextual TOC triggers with 44px minimum targets and no
+  bottom HUD. At 390x844 its content width is 332px, document width equals viewport
+  width, the direct target remains below the sticky bars, and no horizontal overflow
+  occurs.
+- The graph recomputes its SVG viewBox from `332x558` at 390x844 to `870x571` at
+  1280x720. All 12 labels remain within the canvas, hit targets are at least 32x32px,
+  mobile filters default closed, and desktop filters reopen after the breakpoint.
+- Graph query and selection use one `{query, category, selectedId}` state. Searching
+  `DuckDB` reports three matches; selecting one node keeps all three matches visible;
+  clear selection restores the prompt and removes `aria-current`.
+- Reading state now saves qualified sessions when the page becomes hidden, clears its
+  timers on `pagehide`, resumes once on `pageshow`, and rewrites uniquely matched old
+  heading titles to stable IDs without changing IndexedDB version 1.
+- Health reporting now adds duplicate outline paths and transient exported anchors to
+  the existing missing-description and isolated-page diagnostics. It remains read-only
+  and does not modify Org sources.
+- The real export completed 12/12 pages: 1 published, 11 drafts, 6 categories, 12 graph
+  nodes, and zero inferred links. Repository, exported, and Straight build CSS all use
+  SHA-256 `71d9d49e8416884a923eb46f35521075f12a80ca3c0a1d65faa03144f72863e7`;
+  all 14 HTML files carry the content-versioned CSS URL and no remote runtime assets.
+- HTTP browser verification completed at 1440x1024, 1280x720, and 390x844 with zero
+  console warnings or errors. Direct `file:///` navigation could not be repeated because
+  the automation browser blocks local-file URLs by policy; no bypass was attempted.
+  Static inspection confirms relative offline assets, and the prior Round 8 direct-file
+  acceptance remains applicable.
+- ERT completed 60/60 tests, including stable duplicate headings, export-excluded
+  subtrees, stale cross-page fragments, legacy reading
+  recovery, responsive reflow, unified graph state, mobile TOC controls, and hidden-page
+  persistence.
+
 final result: passed
