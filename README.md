@@ -2,7 +2,7 @@
 
 A MECE-refactored static wiki generator based on Org Mode, featuring a Monokai theme, D3.js graph visualization, and Zen writing mode.
 
-**Version:** 2.3.0
+**Version:** 2.4.0
 
 ## Installation
 
@@ -65,20 +65,25 @@ More content here.
 ### 3. Build the Wiki
 
 ```elisp
-M-x org-museum--build-wiki
+M-x org-museum-export-all
 ```
 
 Or programmatically:
 
 ```elisp
-(org-museum--build-wiki)
+(org-museum-export-all)
 ```
 
-### 4. Open in Browser
+### 4. Inspect or Reopen
 
 ```elisp
-M-x org-museum--open-site
+M-x org-museum-status
+M-x org-museum-dispatch
 ```
+
+A full export opens `index.html` by default.  Set
+`org-museum-open-page-after-export` to `graph` to open the graph instead, or to
+`nil` to leave the browser untouched.
 
 ## Project Structure
 
@@ -152,6 +157,9 @@ The main index (`index.html`) includes a small local graph for each page's immed
 | `org-museum-shared-export-dir` | `"exports/html"` | Shared resources location |
 | `org-museum-css-file` | `"resources/org-museum.css"` | CSS file path |
 | `org-museum-open-browser-after-export` | `t` | Auto-open browser after export |
+| `org-museum-open-page-after-export` | `index` | Page opened after export: `index`, `graph`, or `nil` |
+| `org-museum-auto-reload-before-export` | `t` | Reload the authoritative source when the loaded runtime is stale |
+| `org-museum-default-language` | `"zh-CN"` | HTML language when `#+LANGUAGE` is absent |
 | `org-museum-local-graph-neighbour-limit` | `12` | Max neighbors in local graph |
 | `org-museum-clean-stale-html-on-full-export` | `nil` | Delete stale page HTML only after a successful full export |
 | `org-museum-category-label-alist` | `nil` | Display-only category labels, such as `Sql` → `SQL` |
@@ -172,11 +180,12 @@ symbolic links.
   (org-museum-shared-export-dir "output")
   (org-museum-css-file "themes/custom.css")
   (org-museum-open-browser-after-export t)
+  (org-museum-open-page-after-export 'index)
   (org-museum-clean-stale-html-on-full-export t)
   (org-museum-category-label-alist '(("Sql" . "SQL") ("lisp" . "Lisp")))
   :config
   ;; Add your custom key binding
-  (define-key org-mode-map (kbd "C-c w") #'org-museum--build-wiki))
+  (define-key org-mode-map (kbd "C-c w") #'org-museum-export-all))
 ```
 
 ## Exported HTML Features
@@ -194,6 +203,22 @@ Qualified visits are stored locally in IndexedDB (`org-museum`, version `1`). A
 visit qualifies after 30 seconds of focused reading or 3% progress. No article
 body is stored or uploaded, and the continue-reading section is hidden when
 IndexedDB is unavailable.
+
+### Stable Sections and Current Runtime
+
+Exported H2-H4 headings use deterministic `section-…` anchors.  Explicit
+`CUSTOM_ID` or heading `ID` values still take priority, so saved reading
+positions and cross-page section links survive repeat exports.
+
+Before any page, graph, or full export, Org Museum compares the loaded Elisp
+digest with the authoritative Straight repository source.  A stale runtime is
+reloaded once before any index or HTML is written.  Use `M-x org-museum-reload`
+to refresh explicitly and `M-x org-museum-status` to inspect both paths and
+hashes.
+
+All browser code is deployed as content-versioned local resources.  D3,
+Highlight.js, CSS, and generated page runtimes are required bundled assets;
+export fails clearly when one is missing and never downloads a CDN fallback.
 
 ### Monokai Theme
 
@@ -223,7 +248,7 @@ A subtle reading progress indicator appears at the bottom of each page.
 
 ## Build Pipeline
 
-`org-museum--build-wiki` performs the following steps:
+`org-museum-export-all` performs the following steps:
 
 1. **Scan** — Find all `.org` files in the wiki root
 2. **Index** — Build JSON index of all pages and links
@@ -251,7 +276,7 @@ Not:
 
 ### Graph Missing Nodes
 
-- Run `org-museum--build-wiki` to regenerate the index
+- Run `org-museum-export-all` to regenerate the index
 - Check that your `.org` files have valid `#+TITLE:` or `#+ROAM_TITLE:` properties
 
 ### CSS Not Loading
@@ -259,6 +284,14 @@ Not:
 Verify that `org-museum-css-file` points to a valid path relative to the plugin directory.
 
 ## Version History
+
+### v2.4.0
+
+- Reloads stale loaded implementations before any export writes
+- Uses stable section anchors and Chinese-by-default HTML language metadata
+- Prioritizes filtered mobile search results and enlarges navigation targets
+- Externalizes shared browser runtimes with content hashes and offline-only assets
+- Normalizes source files to LF and compiles without warnings on current Org
 
 ### v2.3.0
 

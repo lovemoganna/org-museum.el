@@ -22,6 +22,7 @@
   --topbar-height: 92px;
   --reading-progress: 0%;
   --museum-touch-target: 44px;
+  --museum-meta-font-size: 11px;
   --scrollbar-track: #1e1f1c;
   --scrollbar-thumb: #5f6057;
   --scrollbar-thumb-hover: #7b7a6d;
@@ -179,6 +180,15 @@ button {
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.12em;
+}
+
+.museum-topbar-link {
+  display: inline-flex;
+  min-width: var(--museum-touch-target);
+  min-height: var(--museum-touch-target);
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
 }
 
 .museum-today {
@@ -355,6 +365,14 @@ button {
   min-height: 205px;
 }
 
+body.museum-index-filtering .museum-home-upper {
+  display: none;
+}
+
+body.museum-index-filtering .museum-index-shell {
+  padding-top: clamp(24px, 3vw, 42px);
+}
+
 .museum-resume[hidden] + .museum-topic-index {
   grid-column: 1 / -1;
   width: min(100%, 650px);
@@ -424,7 +442,7 @@ button {
 
 .resume-number {
   color: inherit;
-  font: 400 10px/1 var(--font-mono);
+  font: 400 var(--museum-meta-font-size)/1 var(--font-mono);
 }
 
 .resume-copy {
@@ -527,7 +545,7 @@ button {
   gap: 20px;
   margin-bottom: 14px;
   color: var(--text-muted);
-  font: 400 10px/1 var(--font-mono);
+  font: 400 var(--museum-meta-font-size)/1 var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2167,12 +2185,9 @@ body.zen-mode .article-container {
     gap: 8px;
   }
 
-  .museum-wordmark {
-    font-size: 10px;
-  }
-
+  .museum-wordmark,
   .museum-top-links {
-    font-size: 10px;
+    font-size: 12px;
   }
 
   .museum-topic-grid {

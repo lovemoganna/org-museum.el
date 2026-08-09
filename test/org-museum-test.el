@@ -323,8 +323,8 @@
                      (lambda (&rest _args)
                        (setq network-called t)
                        (error "network should not be used"))))
-            (should (equal (org-museum--ensure-url-resource
-                            "https://invalid.example/d3.js" dest "D3.js")
+            (should (equal (org-museum--deploy-bundled-resource
+                            "resources/d3.v7.min.js" dest "D3.js")
                            dest)))
           (should-not network-called)
           (with-temp-buffer
@@ -398,10 +398,10 @@
                  (list :css nil :js nil :lisp-js nil))))
       (let ((org-museum--resource-deployment-cache
              (make-hash-table :test 'eq)))
-        (org-museum--script-ui-core "first.html")
-        (org-museum--script-ui-core "second.html")
+        (org-museum--hljs-assets)
+        (org-museum--hljs-assets)
         (should (= calls 1)))
-      (org-museum--script-ui-core "single.html")
+      (org-museum--hljs-assets)
       (should (= calls 2)))))
 
 (ert-deftest org-museum-reading-state-normalizes-corrupt-browser-values ()
@@ -542,8 +542,8 @@
                        (setq network-called t)
                        (error "network should not be used"))))
             (should
-             (equal (org-museum--ensure-url-resource
-                     "https://invalid.example/d3.js" dest "D3.js")
+             (equal (org-museum--deploy-bundled-resource
+                     "resources/d3.v7.min.js" dest "D3.js")
                     dest)))
           (should-not network-called)
           (with-temp-buffer
@@ -568,8 +568,8 @@
           (make-directory (file-name-directory placeholder) t)
           (with-temp-file placeholder
             (insert (replace-regexp-in-string "\\\\" "/" actual t t)))
-          (should (equal (org-museum--ensure-url-resource
-                          "https://invalid.example/highlight.js"
+          (should (equal (org-museum--deploy-bundled-resource
+                          "resources/highlight.min.js"
                           dest "Highlight.js")
                          dest))
           (with-temp-buffer
@@ -1543,6 +1543,15 @@
             (org-museum-export-all))
           (let ((index-file (expand-file-name "exports/html/index.html" root))
                 (graph-file (expand-file-name "exports/html/graph.html" root))
+                (index-runtime
+                 (expand-file-name
+                  "exports/html/resources/org-museum-index.js" root))
+                (article-runtime
+                 (expand-file-name
+                  "exports/html/resources/org-museum-article.js" root))
+                (graph-runtime
+                 (expand-file-name
+                  "exports/html/resources/org-museum-graph.js" root))
                 (alpha-file
                  (expand-file-name "exports/html/pages/Emacs/alpha.html" root)))
             (should (file-exists-p index-file))
@@ -1553,19 +1562,26 @@
               (should (search-forward "museum-index-matrix" nil t))
               (should (search-forward "org-museum-index-data" nil t))
               (goto-char (point-min))
+              (should-not (search-forward "<script>" nil t))
+              (goto-char (point-min))
+              (should (re-search-forward
+                       "org-museum-index\\.js\\?v=[0-9a-f]\\{12\\}" nil t))
+              (goto-char (point-min))
               (should (re-search-forward
                        "resources/org-museum\\.css\\?v=[0-9a-f]\\{12\\}" nil t)))
             (with-temp-buffer
               (insert-file-contents alpha-file)
               (should (search-forward "data-page-id=\"alpha\"" nil t))
               (goto-char (point-min))
+              (should-not (search-forward "<script>" nil t))
+              (goto-char (point-min))
               (should (re-search-forward
                        "highlight\\.min\\.js\\?v=[0-9a-f]\\{12\\}" nil t))
               (goto-char (point-min))
               (should (search-forward "museum-article-layout" nil t))
-              (should (search-forward "museum-article-identity" nil t))
-              (should (search-forward "data-current-section" nil t))
-              (should (search-forward "indexedDB.open('org-museum',1)" nil t))
+              (goto-char (point-min))
+              (should (re-search-forward
+                       "org-museum-article\\.js\\?v=[0-9a-f]\\{12\\}" nil t))
               (goto-char (point-min))
               (should (search-forward "museum-table-scroll" nil t))
               (goto-char (point-min))
@@ -1576,40 +1592,220 @@
               (should (search-forward "data-toc-clear" nil t))
               (goto-char (point-min))
               (should (search-forward "data-toc-empty" nil t))
-              (should (search-forward "engagedMs" nil t))
-              (should (search-forward "progress>=0.03" nil t))
-              (should (search-forward "engagedMs>=30000" nil t))
-              (goto-char (point-min))
-              (should (search-forward "aria-expanded" nil t))
-              (goto-char (point-min))
-              (should (search-forward "document.body.appendChild(toc)" nil t))
               (goto-char (point-min))
               (should (search-forward "graph.html?focus=alpha" nil t))
               (goto-char (point-min))
               (should-not (search-forward "cdn.staticfile.net" nil t)))
             (with-temp-buffer
+              (insert-file-contents article-runtime)
+              (dolist (needle '("museum-article-identity"
+                                "data-current-section"
+                                "indexedDB.open('org-museum',1)"
+                                "engagedMs"
+                                "progress>=0.03"
+                                "engagedMs>=30000"
+                                "aria-expanded"
+                                "document.body.appendChild(toc)"))
+                (goto-char (point-min))
+                (should (search-forward needle nil t))))
+            (with-temp-buffer
               (insert-file-contents graph-file)
               (should (search-forward "museum-graph-shell" nil t))
               (goto-char (point-min))
+              (should-not (search-forward "<script>" nil t))
+              (goto-char (point-min))
               (should (re-search-forward
                        "d3\\.v7\\.min\\.js\\?v=[0-9a-f]\\{12\\}" nil t))
-              (should (search-forward "var meta=raw.meta||{}" nil t))
-              (should (search-forward "new URLSearchParams(location.search)" nil t))
-              (should (search-forward ".alphaDecay(alphaDecay)" nil t))
-              (should (search-forward "tickCount=0;simulation.alphaTarget(.25)" nil t))
-              (should (search-forward "tickCount=0;simulation.alpha(.35)" nil t))
+              (should (re-search-forward
+                       "org-museum-graph\\.js\\?v=[0-9a-f]\\{12\\}" nil t))
               (goto-char (point-min))
               (should (search-forward "尚未形成知识连线" nil t))
               (goto-char (point-min))
               (should-not (search-forward "https://d3js.org" nil t)))
+            (with-temp-buffer
+              (insert-file-contents graph-runtime)
+              (dolist (needle '("var meta=raw.meta||{}"
+                                "new URLSearchParams(location.search)"
+                                ".alphaDecay(alphaDecay)"
+                                "tickCount=0;simulation.alphaTarget(.25)"
+                                "tickCount=0;simulation.alpha(.35)"))
+                (goto-char (point-min))
+                (should (search-forward needle nil t))))
+            (should (file-exists-p index-runtime))
             (dolist (asset '("d3.v7.min.js"
                              "highlight.min.js"
                              "highlight-lisp.min.js"
-                             "highlight.monokai.min.css"))
+                             "highlight.monokai.min.css"
+                             "org-museum-index.js"
+                             "org-museum-article.js"
+                             "org-museum-graph.js"))
               (should
                (file-exists-p
                 (expand-file-name (concat "exports/html/resources/" asset)
                                   root))))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-runtime-status-prefers-repository-and-detects-drift ()
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-runtime-status-test-" t)))
+         (user-emacs-directory root)
+         (repo-file (expand-file-name
+                     "straight/repos/org-museum.el/org-museum.el" root))
+         (build-file (expand-file-name
+                      "straight/build/org-museum/org-museum.el" root))
+         (org-museum--loaded-source-path build-file)
+         (org-museum--loaded-source-hash nil))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory repo-file) t)
+          (make-directory (file-name-directory build-file) t)
+          (with-temp-file repo-file (insert ";; repository current\n"))
+          (with-temp-file build-file (insert ";; loaded stale\n"))
+          (setq org-museum--loaded-source-hash
+                (org-museum--file-content-hash build-file))
+          (let ((status (org-museum--runtime-source-status)))
+            (should (equal (plist-get status :canonical) repo-file))
+            (should (equal (plist-get status :loaded) build-file))
+            (should-not (plist-get status :in-sync))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-missing-bundled-resource-never-uses-network ()
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-offline-missing-test-" t)))
+         (user-emacs-directory root)
+         (org-museum-root-dir root)
+         (org-museum--plugin-dir (expand-file-name "plugin/" root))
+         (dest (expand-file-name "exports/html/resources/missing.js" root))
+         (network-called nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'url-copy-file)
+                   (lambda (&rest _args) (setq network-called t))))
+          (should (fboundp 'org-museum--deploy-bundled-resource))
+          (should-error
+           (org-museum--deploy-bundled-resource
+            "resources/missing.js" dest "Missing runtime"))
+          (should-not network-called)
+          (should-not (file-exists-p dest)))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-runtime-refresh-reenters-once-before-export-work ()
+  (let ((org-museum-auto-reload-before-export t)
+        (reloaded 0)
+        (reentered 0)
+        (mutated nil))
+    (cl-letf (((symbol-function 'org-museum--runtime-source-status)
+               (lambda () '(:in-sync nil)))
+              ((symbol-function 'org-museum-reload)
+               (lambda () (cl-incf reloaded) t))
+              ((symbol-function 'org-museum-test--fresh-export)
+               (lambda (value) (cl-incf reentered) value)))
+      (should
+       (eq (org-museum--run-with-current-runtime
+            'org-museum-test--fresh-export '(fresh)
+            (lambda () (setq mutated t)))
+           'fresh))
+      (should (= reloaded 1))
+      (should (= reentered 1))
+      (should-not mutated))))
+
+(ert-deftest org-museum-runtime-refresh-failure-aborts-before-export-work ()
+  (let ((org-museum-auto-reload-before-export t)
+        (mutated nil))
+    (cl-letf (((symbol-function 'org-museum--runtime-source-status)
+               (lambda () '(:in-sync nil)))
+              ((symbol-function 'org-museum-reload)
+               (lambda () (error "reload failed"))))
+      (should-error
+       (org-museum--run-with-current-runtime
+        'ignore nil (lambda () (setq mutated t))))
+      (should-not mutated))))
+
+(ert-deftest org-museum-index-filtering-prioritizes-results-and-migrates-history ()
+  (let* ((root (make-temp-file "org-museum-index-priority-test-" t))
+         (org-museum-root-dir root)
+         (org-museum--plugin-dir org-museum-test--repo-root)
+         (out-file (expand-file-name "exports/html/index.html" root))
+         (page (org-museum-test--page
+                "duck" "DuckDB" 42 "Sql" '("database") "draft"))
+         (html (org-museum--build-index-html
+                `(("Sql" . (,page))) "graph.html" out-file)))
+    (unwind-protect
+        (progn
+          (should (string-match-p
+                   "<h1 class=\"sr-only\">Org Museum</h1>" html))
+          (should (string-match-p
+                   (regexp-quote
+                    "document.body.classList.toggle('museum-index-filtering',listMode)")
+                   html))
+          (should (string-match-p "normalizeHeadingTitle" html))
+          (should (string-match-p
+                   (regexp-quote "if(!headingValid){") html))
+          (should (string-match-p "cursor.update(record)" html)))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-source-language-prefers-org-keyword-then-chinese-default ()
+  (let* ((root (make-temp-file "org-museum-language-test-" t))
+         (default-file (expand-file-name "default.org" root))
+         (english-file (expand-file-name "english.org" root))
+         (org-museum-default-language "zh-CN"))
+    (unwind-protect
+        (progn
+          (with-temp-file default-file (insert "#+TITLE: 中文\n"))
+          (with-temp-file english-file
+            (insert "#+TITLE: English\n#+LANGUAGE: en\n"))
+          (should (equal (org-museum--source-language default-file) "zh-CN"))
+          (should (equal (org-museum--source-language english-file) "en")))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-document-language-rewrite-preserves-doctype ()
+  (let ((org-file (make-temp-file "org-museum-language-html-" nil ".org")))
+    (unwind-protect
+        (progn
+          (with-temp-file org-file (insert "#+TITLE: 中文\n"))
+          (with-temp-buffer
+            (insert "<!DOCTYPE html>\n<html lang=\"en\">\n<body></body></html>")
+            (org-museum--pp-set-document-language org-file)
+            (should (string-prefix-p "<!DOCTYPE html>\n<html lang=\"zh-CN\">"
+                                     (buffer-string)))))
+      (delete-file org-file))))
+
+(ert-deftest org-museum-mobile-topbar-and-metadata-respect-small-text-floor ()
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    (dolist (needle '(".museum-topbar-link"
+                      "min-height: var(--museum-touch-target)"
+                      "font-size: 12px"
+                      "--museum-meta-font-size: 11px"))
+      (goto-char (point-min))
+      (should (search-forward needle nil t)))))
+
+(ert-deftest org-museum-externalizes-executable-runtime-with-content-version ()
+  (let* ((root (make-temp-file "org-museum-runtime-assets-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (out-file (expand-file-name "exports/html/pages/alpha.html" root))
+         (html (concat "<html><body>"
+                       "<script type=\"application/json\" id=\"data\">{}</script>"
+                       "<script>window.alpha=1;</script>"
+                       "<script>window.beta=2;</script>"
+                       "</body></html>")))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory out-file) t)
+          (let* ((result (org-museum--externalize-page-runtime
+                          html out-file 'article))
+                 (runtime (expand-file-name
+                           "exports/html/resources/org-museum-article.js" root)))
+            (should (file-exists-p runtime))
+            (should (string-match-p
+                     "org-museum-article\\.js\\?v=[0-9a-f]\\{12\\}" result))
+            (should (string-match-p "application/json" result))
+            (should-not (string-match-p "window\\.alpha" result))
+            (with-temp-buffer
+              (insert-file-contents runtime)
+              (should (search-forward "window.alpha=1" nil t))
+              (should (search-forward "window.beta=2" nil t)))))
       (delete-directory root t))))
 
 (provide 'org-museum-test)

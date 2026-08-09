@@ -294,4 +294,49 @@
   recovery, responsive reflow, unified graph state, mobile TOC controls, and hidden-page
   persistence.
 
+## Round 12 runtime consistency, mobile retrieval, and package quality (2026-08-09)
+
+- Every export entry point now compares the loaded Elisp digest with the
+  authoritative Straight repository source before writing. The current Emacs,
+  repository, and Straight build all use SHA-256
+  `56ed8689b9a357cbfe2d6c250906749d7f552840b3da0827bdb312630024d114`.
+  Reload failure and one-time re-entry are covered without allowing stale code
+  to mutate the index, HTML, or manifest.
+- Filtered home states use a results-first layout. At both 390x844 and 320x844,
+  `DuckDB` reports three results and the first result ends at 382px and 403px
+  respectively, without scrolling. Clearing filters restores the continue-reading
+  and topic sections. Top navigation targets measure 44px high at 12px type;
+  index metadata is 11px and horizontal overflow is zero.
+- Legacy reading records recover a unique stable section from a normalized title
+  whether the old ID is invalid or absent. Ambiguous titles keep the scroll ratio
+  without emitting a stale fragment. The home page also has a screen-reader H1.
+- All 12 articles now emit a valid HTML doctype and `lang="zh-CN"` unless an
+  explicit `#+LANGUAGE` overrides it. Browser entry to
+  `#section-cd51d6fc4549` shows 5.5 in the heading, sticky identity, and
+  `toc-active` link, with the heading at 204px and no horizontal overflow.
+- Index, article, and graph executable code is externalized to three local,
+  content-versioned resources. The 12 article files contain zero executable
+  inline scripts; the 41,478-byte shared article runtime avoids about 456KB of
+  repeated output. D3, Highlight.js, CSS, and generated runtimes have no network
+  fallback and all three generated scripts pass `node --check`.
+- The real export contains 12 manifest pages, 316 stable H2-H4 anchors, zero
+  transient heading anchors, 12 graph nodes, zero inferred links, and three
+  local runtime assets. Repository, Straight build, and exported CSS share
+  SHA-256 `60a2bb88eceba974ac820eed219924a3fe04ac73800e6c6174d719fafb321af0`.
+- Browser checks at 1440x1024, 1280x720, 390x844, and 320x844 found a 960px
+  desktop article, no global horizontal overflow, no remote requests, and no
+  console warnings or errors. The mobile graph keeps all 12 labels inside its
+  332x558 canvas with 32x32px hit targets. Code expansion changes the first long
+  block from 320px / `EXPAND` to 426px / `COLLAPSE` with synchronized ARIA state.
+- Direct `file:///` navigation was blocked by the automation browser's URL
+  policy, so no bypass was attempted. Static inspection confirms relative local
+  assets; HTTP execution completed without remote requests.
+- Source text is normalized to LF through `.gitattributes`. Emacs byte compilation
+  completes with warnings treated as errors, and ERT completes 69/69 tests.
+  Both Standards and Spec re-reviews report no remaining actionable findings.
+- Current-round screenshots are stored in
+  `C:/Users/luoyu/AppData/Local/Temp/org-museum-audit-2026-08-09-round13/` as
+  `01-home-desktop-1440.png`, `03-home-mobile-search-320.png`,
+  `04-article-mobile-anchor.png`, and `05-graph-mobile.png`.
+
 final result: passed
