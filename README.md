@@ -249,6 +249,10 @@ keyboard-accessible theme control on the home, article, and graph pages. A
 manual choice is stored only in `localStorage["org-museum-theme"]` and accepts
 `dark` or `light`; missing or invalid values fall back to dark. The local
 startup script applies the choice before page paint, without a network request.
+For default `file:///` browsing, local HTML navigation also carries that value
+in an `org-museum-theme` query parameter so each page can initialize its own
+storage scope; existing search, filter, anchor, and unrelated browser state is
+left intact.
 
 The dark theme includes:
 
