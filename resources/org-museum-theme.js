@@ -3,14 +3,18 @@
 
   var key = "org-museum-theme";
 
+  function isTheme(value) {
+    return value === "light" || value === "dark";
+  }
+
   function normalize(value) {
-    return value === "light" || value === "dark" ? value : "dark";
+    return isTheme(value) ? value : "dark";
   }
 
   function readThemeFromUrl() {
     try {
       var value = new URL(location.href).searchParams.get(key);
-      return value === "light" || value === "dark" ? value : null;
+      return isTheme(value) ? value : null;
     } catch (_error) {
       return null;
     }
