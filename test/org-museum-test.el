@@ -1906,6 +1906,9 @@
             (dolist (needle '("org-museum-theme"
                               "value === \"light\" || value === \"dark\""
                               "document.documentElement.dataset.theme"
+                              "new URL(link.href, location.href)"
+                              "url.searchParams.set(key, currentTheme())"
+                              "readThemeFromUrl"
                               "data-theme-toggle"
                               "DOMContentLoaded"))
               (goto-char (point-min))

@@ -7,6 +7,15 @@
     return value === "light" || value === "dark" ? value : "dark";
   }
 
+  function readThemeFromUrl() {
+    try {
+      var value = new URL(location.href).searchParams.get(key);
+      return value === "light" || value === "dark" ? value : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
   function readStoredTheme() {
     try {
       return normalize(localStorage.getItem(key));
@@ -27,6 +36,10 @@
     });
   }
 
+  function currentTheme() {
+    return normalize(document.documentElement.dataset.theme);
+  }
+
   function applyTheme(value, persist) {
     var theme = normalize(value);
     document.documentElement.dataset.theme = theme;
@@ -41,7 +54,24 @@
     }
   }
 
-  applyTheme(readStoredTheme(), false);
+  var themeFromUrl = readThemeFromUrl();
+  applyTheme(themeFromUrl || readStoredTheme(), Boolean(themeFromUrl));
+
+  function carryThemeToLocalPage(event) {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey ||
+        event.ctrlKey || event.shiftKey || event.altKey) return;
+    var link = event.target.closest && event.target.closest("a[href]");
+    if (!link || link.hasAttribute("download") || link.target) return;
+    var rawHref = link.getAttribute("href");
+    if (!rawHref || rawHref.charAt(0) === "#") return;
+    try {
+      var url = new URL(link.href, location.href);
+      if (!/\.html$/i.test(url.pathname) || url.protocol !== location.protocol) return;
+      if (url.protocol !== "file:" && url.origin !== location.origin) return;
+      url.searchParams.set(key, currentTheme());
+      link.href = url.href;
+    } catch (_error) {}
+  }
 
   function bindControls() {
     updateControls(normalize(document.documentElement.dataset.theme));
@@ -58,6 +88,8 @@
   } else {
     bindControls();
   }
+
+  document.addEventListener("click", carryThemeToLocalPage, true);
 
   window.addEventListener("storage", function (event) {
     if (event.key === key) applyTheme(event.newValue, false);
