@@ -26,6 +26,41 @@
   --scrollbar-track: #1e1f1c;
   --scrollbar-thumb: #5f6057;
   --scrollbar-thumb-hover: #7b7a6d;
+  --topbar-bg: rgba(39, 40, 34, 0.96);
+  --panel-bg: rgba(30, 31, 28, 0.97);
+  --panel-bg-strong: rgba(30, 31, 28, 0.985);
+  --panel-bg-soft: rgba(30, 31, 28, 0.88);
+  --panel-shadow: rgba(30, 31, 28, 0.4);
+  --overlay-bg: rgba(10, 10, 8, 0.68);
+  --lightbox-bg: rgba(30, 31, 28, 0.92);
+}
+
+:root[data-theme="light"] {
+  --mono-bg: #faf9f5;
+  --mono-deep: #efede5;
+  --mono-selection: #d9d5c8;
+  --mono-comment: #6d695f;
+  --mono-white: #20221e;
+  --mono-pink: #b80f4d;
+  --mono-green: #527600;
+  --mono-orange: #b24f00;
+  --mono-blue: #006b88;
+  --mono-purple: #6e3eae;
+  --mono-yellow: #725f00;
+  --text-main: #2d2f2a;
+  --text-muted: #69675e;
+  --rule: rgba(74, 72, 65, 0.32);
+  --rule-soft: rgba(74, 72, 65, 0.16);
+  --scrollbar-track: #ece9df;
+  --scrollbar-thumb: #aaa69a;
+  --scrollbar-thumb-hover: #858176;
+  --topbar-bg: rgba(250, 249, 245, 0.97);
+  --panel-bg: rgba(239, 237, 229, 0.97);
+  --panel-bg-strong: rgba(250, 249, 245, 0.99);
+  --panel-bg-soft: rgba(239, 237, 229, 0.9);
+  --panel-shadow: rgba(74, 72, 65, 0.18);
+  --overlay-bg: rgba(42, 42, 37, 0.38);
+  --lightbox-bg: rgba(239, 237, 229, 0.96);
 }
 
 *,
@@ -165,7 +200,7 @@ button {
   width: 100%;
   height: var(--topbar-height);
   padding: 0 var(--page-padding);
-  background: rgba(39, 40, 34, 0.96);
+  background: var(--topbar-bg);
 }
 
 .museum-wordmark,
@@ -245,6 +280,50 @@ button {
   font-family: var(--font-sans);
   font-size: 11px;
   white-space: nowrap;
+}
+
+.museum-theme-toggle {
+  display: inline-flex;
+  min-width: var(--museum-touch-target);
+  min-height: var(--museum-touch-target);
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 4px;
+  border: 0;
+  color: var(--text-main);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.museum-theme-toggle:hover,
+.museum-theme-toggle:focus-visible {
+  color: var(--mono-blue);
+}
+
+.museum-theme-toggle [data-theme-icon] {
+  color: var(--mono-yellow);
+  font-size: 13px;
+}
+
+.museum-drawer-toggle {
+  display: none;
+  min-width: var(--museum-touch-target);
+  min-height: var(--museum-touch-target);
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  border: 0;
+  color: var(--text-main);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.museum-drawer-toggle:hover,
+.museum-drawer-toggle:focus-visible {
+  color: var(--mono-blue);
 }
 
 .museum-section-heading {
@@ -674,8 +753,8 @@ body.museum-index-filtering .museum-index-shell {
   height: 34px;
   padding: 0 var(--page-padding);
   border-bottom: 1px solid var(--rule-soft);
-  background: rgba(30, 31, 28, 0.97);
-  box-shadow: 0 8px 18px rgba(30, 31, 28, 0.4);
+  background: var(--panel-bg);
+  box-shadow: 0 8px 18px var(--panel-shadow);
   font-size: 10px;
 }
 
@@ -1343,7 +1422,7 @@ pre.org-museum-code-block.org-museum-code-expanded {
   padding: 28px 26px 50px;
   overflow-y: auto;
   border-right: 1px solid var(--rule);
-  background: rgba(30, 31, 28, 0.985);
+  background: var(--panel-bg-strong);
   transform: translateX(-102%);
   transition: transform 180ms ease;
 }
@@ -1359,7 +1438,7 @@ pre.org-museum-code-block.org-museum-code-expanded {
   display: none;
   padding: 0;
   border: 0;
-  background: rgba(10, 10, 8, 0.68);
+  background: var(--overlay-bg);
 }
 
 .museum-drawer-open #museum-drawer-backdrop,
@@ -1717,7 +1796,7 @@ pre.org-museum-code-block.org-museum-code-expanded {
   gap: 3px;
   padding: 9px 11px;
   border: 1px solid var(--rule-soft);
-  background: rgba(30, 31, 28, 0.88);
+  background: var(--panel-bg-soft);
   pointer-events: none;
 }
 
@@ -1741,7 +1820,7 @@ pre.org-museum-code-block.org-museum-code-expanded {
   max-height: 42%;
   overflow: auto;
   border: 1px solid var(--rule-soft);
-  background: rgba(30, 31, 28, 0.96);
+  background: var(--panel-bg);
 }
 
 #graph-isolated-fallback > summary {
@@ -1765,7 +1844,7 @@ pre.org-museum-code-block.org-museum-code-expanded {
 
 .graph-isolated-list article {
   border: 1px solid var(--rule-soft);
-  background: rgba(30, 31, 28, 0.34);
+  background: color-mix(in srgb, var(--mono-deep) 34%, transparent);
 }
 
 .graph-isolated-list {
@@ -1932,7 +2011,7 @@ pre.org-museum-code-block.org-museum-code-expanded {
   display: none;
   place-items: center;
   padding: 56px 24px 24px;
-  background: rgba(30, 31, 28, 0.92);
+  background: var(--lightbox-bg);
 }
 
 #image-lightbox-overlay.visible {
@@ -2118,6 +2197,10 @@ body.zen-mode .article-container {
 }
 
 @media (max-width: 620px) {
+  .museum-drawer-toggle {
+    display: inline-flex;
+  }
+
   pre.src,
   pre.example,
   pre.org-museum-code-block {

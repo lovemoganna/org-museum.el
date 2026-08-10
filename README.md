@@ -33,6 +33,26 @@ git clone https://github.com/lovemoganna/org-museum.el.git
 (require 'org-museum)
 ```
 
+### Canonical Local Checkout
+
+On this workstation, the only development and runtime source is:
+
+```text
+C:/Users/luoyu/AppData/Roaming/.emacs.d/org-roam
+```
+
+The Emacs configuration uses `:straight nil` and adds that directory with
+`:load-path`. The old Straight checkout is retained only as a rollback copy.
+After starting Emacs, verify the loaded implementation with:
+
+```elisp
+(symbol-file 'org-museum-export-all 'defun)
+```
+
+The returned path must be under the canonical checkout above. The legacy
+`load.el` entry point delegates to the same Emacs configuration rather than
+defining another wiki root or package source.
+
 ## Quick Start
 
 ### 1. Set Up Your Wiki Root
@@ -211,18 +231,26 @@ Exported H2-H4 headings use deterministic `section-…` anchors.  Explicit
 positions and cross-page section links survive repeat exports.
 
 Before any page, graph, or full export, Org Museum compares the loaded Elisp
-digest with the authoritative Straight repository source.  A stale runtime is
-reloaded once before any index or HTML is written.  Use `M-x org-museum-reload`
-to refresh explicitly and `M-x org-museum-status` to inspect both paths and
-hashes.
+digest with its authoritative source. A manually loaded workspace remains
+authoritative even when a Straight rollback clone exists; a Straight-loaded
+runtime continues to prefer its repository source over build or link copies.
+A stale runtime is reloaded once before any index or HTML is written. Use
+`M-x org-museum-reload` to refresh explicitly and `M-x org-museum-status` to
+inspect both paths and hashes.
 
 All browser code is deployed as content-versioned local resources.  D3,
 Highlight.js, CSS, and generated page runtimes are required bundled assets;
 export fails clearly when one is missing and never downloads a CDN fallback.
 
-### Monokai Theme
+### Persistent Manual Theme
 
-The exported wiki uses the beautiful Monokai color scheme with:
+The exported wiki defaults to the Monokai dark theme and provides the same
+keyboard-accessible theme control on the home, article, and graph pages. A
+manual choice is stored only in `localStorage["org-museum-theme"]` and accepts
+`dark` or `light`; missing or invalid values fall back to dark. The local
+startup script applies the choice before page paint, without a network request.
+
+The dark theme includes:
 
 - Dark background (`#272822`)
 - Syntax highlighting via Highlight.js
@@ -257,6 +285,19 @@ A subtle reading progress indicator appears at the bottom of each page.
 5. **Generate Index** — Create `index.html` with all pages
 6. **Generate Graph** — Create `graph.html` with D3 visualization
 7. **Copy Assets** — Copy CSS, JS resources to export directory
+
+### Test and Export Commands
+
+From the canonical checkout, run the complete ERT suite with Emacs 30.2:
+
+```powershell
+& "C:\Program Files\Emacs\emacs-30.2\bin\emacs.exe" -Q --batch `
+  -L . -L test -l test/org-museum-test.el -f ert-run-tests-batch-and-exit
+```
+
+For the configured real wiki, run `M-x org-museum-export-all`. This rebuilds
+the recoverable index and HTML under `exports/html/`; it does not modify the
+source Org pages or the Org-roam database.
 
 ## Troubleshooting
 

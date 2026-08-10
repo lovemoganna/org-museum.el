@@ -334,6 +334,11 @@ Applicable scope: org-museum--on-save (Fix-02).")
   (expand-file-name "resources/highlight-lisp.min.js"
                     (org-museum--shared-root)))
 
+(defun org-museum--theme-resource-path ()
+  "Absolute path to the shared blocking theme bootstrap."
+  (expand-file-name "resources/org-museum-theme.js"
+                    (org-museum--shared-root)))
+
 (defun org-museum--file-content-hash (file)
   "Return the SHA-256 digest of regular FILE, or nil when unavailable."
   (when (and file (file-regular-p file))
@@ -446,8 +451,9 @@ representation, so deployment must copy the referenced bytes instead."
 
 (defun org-museum--canonical-elisp-source-path ()
   "Return the authoritative org-museum.el source file.
-Straight repository and link-tree sources take precedence over the build copy.
-The currently loaded source remains the fallback for manual installations."
+Manual installations keep their loaded workspace authoritative.  When the
+loaded file belongs to Straight's repository, link tree, or build tree, prefer
+the repository and link-tree sources over the generated build copy."
   (let* ((repo (expand-file-name
                 "straight/repos/org-museum.el/org-museum.el"
                 user-emacs-directory))
@@ -457,9 +463,19 @@ The currently loaded source remains the fallback for manual installations."
          (build (expand-file-name
                  "straight/build/org-museum/org-museum.el"
                  user-emacs-directory))
+         (loaded org-museum--loaded-source-path)
+         (straight-managed-p
+          (and loaded
+               (cl-some
+                (lambda (dir) (file-in-directory-p loaded dir))
+                (list (file-name-directory repo)
+                      (file-name-directory links)
+                      (file-name-directory build)))))
          (candidates (delete-dups
-                      (delq nil (list repo links build
-                                      org-museum--loaded-source-path))))
+                       (delq nil
+                             (if straight-managed-p
+                                 (list repo links build loaded)
+                               (list loaded repo links build)))))
          resolved)
     (while (and candidates (not resolved))
       (let ((candidate
@@ -562,6 +578,13 @@ never downloads runtime code during export."
   (org-museum--deploy-bundled-resource
    "resources/d3.v7.min.js" (org-museum--d3-resource-path) "D3.js"))
 
+(defun org-museum--ensure-theme-deployed ()
+  "Ensure the shared theme bootstrap is available locally."
+  (org-museum--deploy-bundled-resource
+   "resources/org-museum-theme.js"
+   (org-museum--theme-resource-path)
+   "theme bootstrap"))
+
 (defvar org-museum--resource-deployment-cache nil
   "Dynamically bound per-export cache for deployed static resources.")
 
@@ -623,6 +646,13 @@ Exported pages never fall back to a remote resource."
   (let ((local (org-museum--ensure-d3-deployed)))
     (when (and out-file local (file-exists-p local))
       (org-museum--versioned-resource-href local out-file))))
+
+(defun org-museum--theme-script-tag (out-file)
+  "Return the blocking, content-versioned theme script tag for OUT-FILE."
+  (let ((local (org-museum--ensure-theme-deployed)))
+    (format "<script src=\"%s\"></script>"
+            (org-museum--html-escape
+             (org-museum--versioned-resource-href local out-file) t))))
 
 (defun org-museum--shared-root ()
   "Absolute path to shared export root."
@@ -1504,9 +1534,13 @@ user Org settings remain untouched."
             (org-museum--rewrite-org-museum-links
              (current-buffer) out-file org-file)
             (goto-char (point-min))
-            (insert (format "#+HTML_HEAD: %s\n#+HTML_HEAD: %s\n"
-                            (org-museum--css-link-tag out-file)
-                            org-museum--favicon-link-tag))
+            (insert
+             (format
+              (concat "#+HTML_HEAD: <meta name=\"color-scheme\" content=\"dark light\">\n"
+                      "#+HTML_HEAD: %s\n#+HTML_HEAD: %s\n#+HTML_HEAD: %s\n")
+              (org-museum--theme-script-tag out-file)
+              (org-museum--css-link-tag out-file)
+              org-museum--favicon-link-tag))
             (write-region (point-min) (point-max) tmp))
           (let ((export-buf (find-file-noselect tmp)))
             (unwind-protect
@@ -1851,7 +1885,9 @@ Returns t on success, nil when #content is not found.
 Applicable scope: org-museum--postprocess-html."
   (goto-char (point-min))
   (if (re-search-forward "<div id=\"content\"[^>]*>" nil t)
-      (let* ((page (org-museum--page-for-file org-file))
+      (let* ((content-beg (match-beginning 0))
+             (content-end (match-end 0))
+             (page (org-museum--page-for-file org-file))
              (meta (if page
                        (org-museum--article-meta-html page out-file org-file)
                      "<aside class=\"museum-article-meta\"></aside>\n"))
@@ -1867,7 +1903,9 @@ Applicable scope: org-museum--postprocess-html."
                    (org-museum--html-escape (org-museum-page-title page) t)
                    (org-museum--html-escape (org-museum-page-category page) t))
                 "")))
-        (replace-match
+        (goto-char content-beg)
+        (delete-region content-beg content-end)
+        (insert
          (concat
           "<main id=\"main-scroll\"><span id=\"main-content\" class=\"museum-main-anchor\" tabindex=\"-1\"></span>" identity
           (format
@@ -1876,8 +1914,7 @@ Applicable scope: org-museum--postprocess-html."
           meta
           "<article class=\"article-container\"" article-attrs ">"
           "<button type=\"button\" class=\"museum-article-toc-trigger\" "
-          "data-toc-toggle>打开目录</button>")
-         t t)
+          "data-toc-toggle>打开目录</button>"))
         t)
     (message "Org Museum [PostProcess]: #content not found in %s — \
 check org-export output for this file" out-file)
@@ -2163,7 +2200,13 @@ KIND is one of `home', `article', or `graph'."
                         (_ "搜索标题、分类或标签…")))
          (search-label (if (eq kind 'graph)
                            "搜索图谱节点"
-                         "全局搜索")))
+                         "全局搜索"))
+         (drawer-control
+          (if (eq kind 'article)
+              (concat
+               "    <button type=\"button\" class=\"museum-drawer-toggle\" "
+               "data-drawer-toggle aria-label=\"打开全部笔记\">笔记</button>\n")
+            "")))
     (format
      (concat
       "<header class=\"museum-topbar\" data-home-href=\"%s\">\n"
@@ -2180,6 +2223,11 @@ KIND is one of `home', `article', or `graph'."
       "  <nav class=\"museum-top-links\" aria-label=\"Wiki 导航\">\n"
       "    <a class=\"museum-topbar-link\" href=\"%s\"%s>%s</a>\n"
       "    <a class=\"museum-topbar-link\" href=\"%s\">%s</a>\n"
+      "%s"
+      "    <button type=\"button\" class=\"museum-theme-toggle\" "
+      "data-theme-toggle aria-label=\"切换为浅色主题\" aria-pressed=\"false\">"
+      "<span aria-hidden=\"true\" data-theme-icon>☀</span>"
+      "<span data-theme-label>浅色</span></button>\n"
       "  </nav>\n"
       "</header>\n")
      (org-museum--html-escape home-href t)
@@ -2197,7 +2245,8 @@ KIND is one of `home', `article', or `graph'."
      (if (eq kind 'graph)
          (concat (org-museum--html-escape home-href t) "#recent-updates")
        (org-museum--html-escape graph-href t))
-     (if (eq kind 'graph) "全部笔记" "知识图谱"))))
+     (if (eq kind 'graph) "全部笔记" "知识图谱")
+     drawer-control)))
 
 (defun org-museum--build-topic-index-html (cats)
   "Return topic index controls for CATS."
@@ -2547,8 +2596,9 @@ openReadingDb().then(function(db){
      "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n"
      "  <meta charset=\"utf-8\">\n"
      "  <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
-     "  <meta name=\"color-scheme\" content=\"dark\">\n"
+     "  <meta name=\"color-scheme\" content=\"dark light\">\n"
      "  <title>Org Museum</title>\n"
+     (format "  %s\n" (org-museum--theme-script-tag out-file))
      (format "  %s\n" (org-museum--css-link-tag out-file))
      (format "  %s\n" org-museum--favicon-link-tag)
      "</head>\n<body class=\"org-museum-home\" data-page-kind=\"home\">\n"
@@ -4035,6 +4085,7 @@ Applicable scope: org-museum--generate-local-graph-html."
   "Return the unified Monokai graph page for JSON-DATA."
   (let* ((graph-file (expand-file-name "graph.html" (org-museum--shared-root)))
          (topbar (org-museum--build-topbar graph-file 'graph))
+         (theme-tag (org-museum--theme-script-tag graph-file))
          (safe-json json-data))
     (dolist (pair '(("<" . "\\u003c")
                     (">" . "\\u003e")
@@ -4048,8 +4099,9 @@ Applicable scope: org-museum--generate-local-graph-html."
 <head>
   <meta charset=\"utf-8\">
   <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
-  <meta name=\"color-scheme\" content=\"dark\">
+  <meta name=\"color-scheme\" content=\"dark light\">
   <title>Org Museum · 知识图谱</title>
+  %s
   <link rel=\"stylesheet\" href=\"%s\">
   <link rel=\"icon\" href=\"data:,\">
   %s
@@ -4510,6 +4562,7 @@ if(initialSelectedNode)selectNode(initialSelectedNode);
 </script>
 </body>
 </html>"
+     theme-tag
      css-href
      (if d3-src (format "<script src=\"%s\"></script>" d3-src) "")
      topbar

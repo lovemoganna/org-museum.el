@@ -676,6 +676,24 @@
      (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
     (should (search-forward "var(--museum-article-max-width, 960px)" nil t))))
 
+(ert-deftest org-museum-article-wrapper-survives-metadata-match-data ()
+  "Metadata parsing must not invalidate the content replacement bounds."
+  (with-temp-buffer
+    (insert "<html><body><div id=\"content\"><h1>Article</h1></div></body></html>")
+    (cl-letf (((symbol-function 'org-museum--page-for-file)
+               (lambda (_file)
+                 (org-museum-test--page "id" "Title" 1 "Topic")))
+              ((symbol-function 'org-museum--article-meta-html)
+               (lambda (&rest _args)
+                 (string-match "ab" "ab")
+                 "<aside class=\"museum-article-meta\"></aside>"))
+              ((symbol-function 'org-museum--article-identity-html)
+               (lambda (&rest _args) "")))
+      (should (org-museum--pp-wrap-content-div "article.html" "article.org"))
+      (goto-char (point-min))
+      (should (search-forward "<main id=\"main-scroll\">" nil t))
+      (should (search-forward "<h1>Article</h1>" nil t)))))
+
 (ert-deftest org-museum-background-effects-are-opt-in-and-motion-safe ()
   (should org-museum-background-effects-enabled)
   (let ((org-museum-background-effects-enabled nil))
@@ -910,6 +928,10 @@
       (should (string-match "#museum-drawer-backdrop" css print-pos))
       (should (string-match "\\.museum-article-toc-trigger" css print-pos)))
     (should (string-match-p "\\.museum-topbar" css))
+    (should (string-match-p ":root\\[data-theme=\"light\"\\]" css))
+    (should (string-match-p "--topbar-bg:" css))
+    (should (string-match-p "\\.museum-theme-toggle" css))
+    (should-not (string-match-p "mobile-drawer-overlay" css))
     (should (string-match-p "\\.reading-hud" css))
     (should-not (string-match-p "#mobile-hud" css))
     (should (string-match-p "\\.museum-identity-toc" css))
@@ -1552,6 +1574,9 @@
                 (graph-runtime
                  (expand-file-name
                   "exports/html/resources/org-museum-graph.js" root))
+                (theme-runtime
+                 (expand-file-name
+                  "exports/html/resources/org-museum-theme.js" root))
                 (alpha-file
                  (expand-file-name "exports/html/pages/Emacs/alpha.html" root)))
             (should (file-exists-p index-file))
@@ -1622,6 +1647,17 @@
               (should (search-forward "尚未形成知识连线" nil t))
               (goto-char (point-min))
               (should-not (search-forward "https://d3js.org" nil t)))
+            (dolist (html-file (list index-file alpha-file graph-file))
+              (with-temp-buffer
+                (insert-file-contents html-file)
+                (should (re-search-forward
+                         "org-museum-theme\\.js\\?v=[0-9a-f]\\{12\\}" nil t))
+                (goto-char (point-min))
+                (should (search-forward
+                         "name=\"color-scheme\" content=\"dark light\"" nil t))
+                (goto-char (point-min))
+                (should (= (how-many "id=\"museum-drawer-backdrop\"")
+                           (if (equal html-file alpha-file) 1 0)))))
             (with-temp-buffer
               (insert-file-contents graph-runtime)
               (dolist (needle '("var meta=raw.meta||{}"
@@ -1632,10 +1668,12 @@
                 (goto-char (point-min))
                 (should (search-forward needle nil t))))
             (should (file-exists-p index-runtime))
+            (should (file-exists-p theme-runtime))
             (dolist (asset '("d3.v7.min.js"
                              "highlight.min.js"
                              "highlight-lisp.min.js"
                              "highlight.monokai.min.css"
+                             "org-museum-theme.js"
                              "org-museum-index.js"
                              "org-museum-article.js"
                              "org-museum-graph.js"))
@@ -1806,6 +1844,72 @@
               (insert-file-contents runtime)
               (should (search-forward "window.alpha=1" nil t))
               (should (search-forward "window.beta=2" nil t)))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-manual-runtime-prefers-loaded-workspace ()
+  "A manually loaded workspace remains authoritative over Straight caches."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-manual-runtime-test-" t)))
+         (user-emacs-directory root)
+         (workspace (expand-file-name "workspace/org-museum.el" root))
+         (straight-repo
+          (expand-file-name "straight/repos/org-museum.el/org-museum.el" root))
+         (org-museum--loaded-source-path workspace))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory workspace) t)
+          (make-directory (file-name-directory straight-repo) t)
+          (with-temp-file workspace (insert "WORKSPACE"))
+          (with-temp-file straight-repo (insert "STRAIGHT"))
+          (should (equal (org-museum--canonical-elisp-source-path)
+                         workspace)))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-topbars-share-one-accessible-theme-control ()
+  "Home, article, and graph navigation expose the same theme action."
+  (dolist (kind '(home article graph))
+    (let ((topbar (org-museum--build-topbar "index.html" kind)))
+      (should (= (length (split-string topbar "data-theme-toggle" t)) 2))
+      (should (string-match-p
+               (regexp-quote "aria-label=\"切换为浅色主题\"") topbar))
+      (should (string-match-p
+               (regexp-quote "aria-pressed=\"false\"") topbar)))))
+
+(ert-deftest org-museum-article-topbar-exposes-one-drawer-trigger ()
+  "Only article pages expose the existing mobile notes drawer."
+  (let ((article (org-museum--build-topbar "article.html" 'article)))
+    (should (= (length (split-string article "data-drawer-toggle" t)) 2))
+    (should (string-match-p "aria-label=\"打开全部笔记\"" article)))
+  (dolist (kind '(home graph))
+    (should-not (string-match-p
+                 "data-drawer-toggle"
+                 (org-museum--build-topbar "index.html" kind)))))
+
+(ert-deftest org-museum-theme-runtime-is-local-versioned-and-defensive ()
+  "The blocking theme bootstrap is shared, offline, and rejects bad values."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-theme-runtime-test-" t)))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum--plugin-dir org-museum-test--repo-root)
+         (out-file (expand-file-name "exports/html/index.html" root))
+         (runtime (expand-file-name
+                   "exports/html/resources/org-museum-theme.js" root)))
+    (unwind-protect
+        (let ((tag (org-museum--theme-script-tag out-file)))
+          (should (file-exists-p runtime))
+          (should (string-match-p
+                   "org-museum-theme\\.js\\?v=[0-9a-f]\\{12\\}" tag))
+          (should-not (string-match-p "defer" tag))
+          (with-temp-buffer
+            (insert-file-contents runtime)
+            (dolist (needle '("org-museum-theme"
+                              "value === \"light\" || value === \"dark\""
+                              "document.documentElement.dataset.theme"
+                              "data-theme-toggle"
+                              "DOMContentLoaded"))
+              (goto-char (point-min))
+              (should (search-forward needle nil t)))))
       (delete-directory root t))))
 
 (provide 'org-museum-test)
