@@ -1627,12 +1627,20 @@
                                 "data-current-section"
                                 "indexedDB.open('org-museum',1)"
                                 "engagedMs"
-                                "progress>=0.03"
-                                "engagedMs>=30000"
-                                "aria-expanded"
+                                 "progress>=0.03"
+                                 "engagedMs>=30000"
+                                 "orgMuseumThemeUrl(destination)"
+                                 "aria-expanded"
                                 "document.body.appendChild(toc)"))
                 (goto-char (point-min))
                 (should (search-forward needle nil t))))
+            (should
+             (string-search
+              "orgMuseumThemeUrl(target)"
+              (org-museum--graph-render-js
+               '(:container-id "local-graph"
+                 :data-var "graphData"
+                 :nav-on-click t))))
             (with-temp-buffer
               (insert-file-contents graph-file)
               (should (search-forward "museum-graph-shell" nil t))
@@ -1662,6 +1670,7 @@
               (insert-file-contents graph-runtime)
               (dolist (needle '("var meta=raw.meta||{}"
                                 "new URLSearchParams(location.search)"
+                                "orgMuseumThemeUrl(href)"
                                 ".alphaDecay(alphaDecay)"
                                 "tickCount=0;simulation.alphaTarget(.25)"
                                 "tickCount=0;simulation.alpha(.35)"))
@@ -1906,9 +1915,10 @@
             (dolist (needle '("org-museum-theme"
                               "value === \"light\" || value === \"dark\""
                               "document.documentElement.dataset.theme"
-                              "new URL(link.href, location.href)"
+                              "new URL(href, location.href)"
                               "url.searchParams.set(key, currentTheme())"
                               "readThemeFromUrl"
+                              "window.orgMuseumThemeUrl"
                               "data-theme-toggle"
                               "DOMContentLoaded"))
               (goto-char (point-min))

@@ -61,6 +61,20 @@
   var themeFromUrl = readThemeFromUrl();
   applyTheme(themeFromUrl || readStoredTheme(), Boolean(themeFromUrl));
 
+  function themeUrl(href) {
+    try {
+      var url = new URL(href, location.href);
+      if (!/\.html$/i.test(url.pathname) || url.protocol !== location.protocol) return href;
+      if (url.protocol !== "file:" && url.origin !== location.origin) return href;
+      url.searchParams.set(key, currentTheme());
+      return url.href;
+    } catch (_error) {
+      return href;
+    }
+  }
+
+  window.orgMuseumThemeUrl = themeUrl;
+
   function carryThemeToLocalPage(event) {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey ||
         event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -68,13 +82,7 @@
     if (!link || link.hasAttribute("download") || link.target) return;
     var rawHref = link.getAttribute("href");
     if (!rawHref || rawHref.charAt(0) === "#") return;
-    try {
-      var url = new URL(link.href, location.href);
-      if (!/\.html$/i.test(url.pathname) || url.protocol !== location.protocol) return;
-      if (url.protocol !== "file:" && url.origin !== location.origin) return;
-      url.searchParams.set(key, currentTheme());
-      link.href = url.href;
-    } catch (_error) {}
+    link.href = themeUrl(link.href);
   }
 
   function bindControls() {

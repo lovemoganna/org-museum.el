@@ -3552,7 +3552,9 @@ if(search&&document.body.dataset.pageKind==='article'){
     if(event.key==='Enter'&&search.value.trim()){
       var top=document.querySelector('.museum-topbar');
       var home=top?top.getAttribute('data-home-href'):'index.html';
-      location.href=home+'?q='+encodeURIComponent(search.value.trim());
+      var destination=home+'?q='+encodeURIComponent(search.value.trim());
+      location.href=window.orgMuseumThemeUrl?
+        window.orgMuseumThemeUrl(destination):destination;
     }
   });
 }
@@ -3977,7 +3979,11 @@ Known limitation: category coloring ignores :node-color and :center-color."
       .style('font-size','%s').style('fill','#f8f8f2')
       .style('font-family','var(--font-sans)');
   }
-  if(%s){node.on('click',function(e,d){window.location.href=d.url||(d.id+'.html');});}
+  if(%s){node.on('click',function(e,d){
+    var target=d.url||(d.id+'.html');
+    window.location.href=window.orgMuseumThemeUrl?
+      window.orgMuseumThemeUrl(target):target;
+  });}
   sim.on('tick',function(){
     linkSel.attr('x1',function(d){return d.source.x;}).attr('y1',function(d){return d.source.y;})
         .attr('x2',function(d){return d.target.x;}).attr('y2',function(d){return d.target.y;});
@@ -4314,7 +4320,10 @@ function renderLegend(){
   });
 }
 function nodeHref(node){return node.url||'index.html';}
-function openNode(node){location.href=nodeHref(node);}
+function openNode(node){
+  var href=nodeHref(node);
+  location.href=window.orgMuseumThemeUrl?window.orgMuseumThemeUrl(href):href;
+}
 function selectNode(node){
   state.selectedId=node.id;
   activeNeighborhood=neighborhood(node);applyFilter();
