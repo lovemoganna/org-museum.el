@@ -2,7 +2,7 @@
 
 A MECE-refactored static wiki generator based on Org Mode, featuring a Monokai theme, D3.js graph visualization, and Zen writing mode.
 
-**Version:** 2.4.0
+**Version:** 2.4.1
 
 ## Installation
 
@@ -33,25 +33,28 @@ git clone https://github.com/lovemoganna/org-museum.el.git
 (require 'org-museum)
 ```
 
-### Canonical Local Checkout
+### Stable Source and Canonical Local Checkout
 
-On this workstation, the only development and runtime source is:
+The remote Git tag `v2.4.1` is the stable source of truth. On this workstation,
+the canonical runtime checkout fetched from that remote is:
 
 ```text
 C:/Users/luoyu/AppData/Roaming/.emacs.d/org-roam
 ```
 
 The Emacs configuration uses `:straight nil` and adds that directory with
-`:load-path`. The old Straight checkout is retained only as a rollback copy.
-After starting Emacs, verify the loaded implementation with:
+`:load-path`. Do not maintain a second live copy or continue development on a
+rollback checkout. Before treating a local revision as stable, fetch it from
+the remote, reload it in Emacs, and verify the loaded implementation with:
 
 ```elisp
 (symbol-file 'org-museum-export-all 'defun)
 ```
 
-The returned path must be under the canonical checkout above. The legacy
-`load.el` entry point delegates to the same Emacs configuration rather than
-defining another wiki root or package source.
+The returned path must be under the canonical checkout above, and the local
+file hash must match the fetched remote revision. The legacy `load.el` entry
+point delegates to the same Emacs configuration rather than defining another
+wiki root or package source. Older versions are recovery artifacts only.
 
 ## Quick Start
 
@@ -329,6 +332,14 @@ Not:
 Verify that `org-museum-css-file` points to a valid path relative to the plugin directory.
 
 ## Version History
+
+### v2.4.1
+
+- Keeps narrow article navigation and theme controls reachable down to 320 px
+- Reports mobile drawer and table-of-contents state with matching accessible labels
+- Preserves a manually loaded workspace as the authoritative runtime and resource root
+- Avoids full Org syntax-tree work in routine health checks while retaining export-aware fallbacks
+- Establishes the fetched and verified remote tag as the stable baseline
 
 ### v2.4.0
 
