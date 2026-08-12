@@ -1224,7 +1224,15 @@
                      "data-museum-local-file=\"missing\"" (buffer-string))))
           (let ((health (org-museum--index-health-report pages)))
             (should (= (length (plist-get health :local-external)) 3))
-            (should (= (length (plist-get health :local-missing)) 1))))
+            (should (= (length (plist-get health :local-missing)) 1)))
+          ;; Local-link health checks must stay lightweight.  Building a full
+          ;; Org AST here made `org-museum-status' take minutes on 12 pages.
+          (cl-letf (((symbol-function 'org-element-parse-buffer)
+                     (lambda (&rest _args)
+                       (ert-fail "local-link scan built a full Org AST"))))
+            (should (= (length
+                        (org-museum--page-local-file-links source-page pages))
+                       3))))
       (delete-directory root t))))
 
 (ert-deftest org-museum-stale-export-preview-and-cleanup-stay-in-pages-root ()
@@ -1498,10 +1506,13 @@
                     "* Hidden tagged :noexport:\n"
                     "* Visible later\n"))
           (let ((expected '("Visible first" "Visible later")))
-            (should (equal
-                     (mapcar (lambda (heading) (alist-get 'title heading))
-                             (org-museum--source-headings page))
-                     expected))
+            (let ((org-mode-hook
+                   (list (lambda ()
+                           (ert-fail "temporary parser ran org-mode-hook")))))
+              (should (equal
+                       (mapcar (lambda (heading) (alist-get 'title heading))
+                               (org-museum--source-headings page))
+                       expected)))
             (cl-letf (((symbol-function 'org-export--selected-trees) nil)
                       ((symbol-function 'org-export--skip-p) nil))
               (should (equal
@@ -1513,7 +1524,14 @@
               (should (equal
                        (mapcar (lambda (heading) (alist-get 'title heading))
                                (org-museum--source-headings page))
-                       expected)))))
+                       expected)))
+            (cl-letf (((symbol-function 'org-museum--source-heading-inventory)
+                       (lambda (&rest _args)
+                         (ert-fail "health check used export anchor inventory"))))
+              (let ((org-mode-hook
+                     (list (lambda ()
+                             (ert-fail "health check ran org-mode-hook")))))
+                (should-not (org-museum--page-duplicate-heading-paths page))))))
       (delete-directory root t))))
 
 (ert-deftest org-museum-full-export-fixture ()
@@ -1827,6 +1845,19 @@
       (goto-char (point-min))
       (should (search-forward needle nil t)))))
 
+(ert-deftest org-museum-narrow-article-topbar-keeps-all-actions-reachable ()
+  "The four article actions must fit without shrinking their touch targets."
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    (should (search-forward "@media (max-width: 380px)" nil t))
+    (should (re-search-forward
+             "\\.museum-topbar[[:space:]\n]*{[^}]*gap: 10px;[^}]*padding: 0 16px;"
+             nil t))
+    (should (re-search-forward
+             "\\.museum-top-links[[:space:]\n]*{[^}]*gap: 4px;"
+             nil t))))
+
 (ert-deftest org-museum-externalizes-executable-runtime-with-content-version ()
   (let* ((root (make-temp-file "org-museum-runtime-assets-test-" t))
          (org-museum-root-dir root)
@@ -1874,6 +1905,28 @@
                          workspace)))
       (delete-directory root t))))
 
+(ert-deftest org-museum-manual-workspace-prefers-its-own-resources ()
+  "A manually loaded workspace must not deploy stale Straight resources."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-manual-resource-test-" t)))
+         (user-emacs-directory root)
+         (workspace (expand-file-name "org-roam/" root))
+         (workspace-css (expand-file-name "resources/org-museum.css" workspace))
+         (straight-css
+          (expand-file-name
+           "straight/repos/org-museum.el/resources/org-museum.css" root))
+         (org-museum--plugin-dir workspace))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory workspace-css) t)
+          (make-directory (file-name-directory straight-css) t)
+          (with-temp-file workspace-css (insert "WORKSPACE"))
+          (with-temp-file straight-css (insert "STRAIGHT"))
+          (should (equal (org-museum--resource-source-path
+                          "resources/org-museum.css")
+                         workspace-css)))
+      (delete-directory root t))))
+
 (ert-deftest org-museum-topbars-share-one-accessible-theme-control ()
   "Home, article, and graph navigation expose the same theme action."
   (dolist (kind '(home article graph))
@@ -1889,6 +1942,11 @@
   (let ((article (org-museum--build-topbar "article.html" 'article)))
     (should (= (length (split-string article "data-drawer-toggle" t)) 2))
     (should (string-match-p "aria-label=\"打开全部笔记\"" article)))
+  (let ((runtime (org-museum--script-shell)))
+    (should (string-match-p
+             (regexp-quote
+              "button.setAttribute('aria-label',open?'关闭全部笔记':'打开全部笔记');")
+             runtime)))
   (dolist (kind '(home graph))
     (should-not (string-match-p
                  "data-drawer-toggle"

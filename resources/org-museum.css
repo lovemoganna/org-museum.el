@@ -2442,6 +2442,17 @@ body.zen-mode .article-container {
   }
 }
 
+@media (max-width: 380px) {
+  .museum-topbar {
+    gap: 10px;
+    padding: 0 16px;
+  }
+
+  .museum-top-links {
+    gap: 4px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

@@ -1,7 +1,7 @@
 ;;; org-museum.el --- Org Mode Wiki Generator -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2026
-;; Version: 2.4.0
+;; Version: 2.4.1
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: wiki, org-mode, hypermedia
 
@@ -264,6 +264,13 @@ nil       — No code highlighting in PDF exports."
                               (concat (file-name-sans-extension loaded) ".el")
                             loaded))))
         (and source (expand-file-name source))))
+
+;; Reloads can move the authoritative runtime from a Straight cache to a
+;; workspace checkout.  Do not retain the resource directory cached by the
+;; previously loaded copy.
+(setq org-museum--plugin-dir
+      (and org-museum--loaded-source-path
+           (file-name-directory org-museum--loaded-source-path)))
 
 ;; Fix-02: per-buffer debounce timer handle
 (defvar-local org-museum--save-timer nil
@@ -528,8 +535,8 @@ the repository and link-tree sources over the generated build copy."
   "Return the authoritative package resource for RELATIVE-PATH.
 When Straight keeps both a repository checkout and a stale build copy, the
 repository wins.  Link-tree placeholders are dereferenced before testing the
-candidate.  Loaded-library and legacy roam locations remain fallbacks for
-non-Straight installations."
+candidate.  A manually loaded workspace remains authoritative; legacy roam
+locations remain fallbacks for other non-Straight installations."
   (let* ((repo-dir (expand-file-name "straight/repos/org-museum.el/"
                                     user-emacs-directory))
          (links-dir (expand-file-name "straight/links/org-museum/"
@@ -542,7 +549,7 @@ non-Straight installations."
           (cl-some (lambda (dir)
                      (file-in-directory-p (expand-file-name plugin-dir)
                                           (expand-file-name dir)))
-                   (list repo-dir links-dir build-dir roam-dir)))
+                   (list repo-dir links-dir build-dir)))
          (candidates (delete-dups
                       (delq nil
                             (if managed-plugin-p
@@ -904,7 +911,7 @@ headline options used by supported bundled Org versions."
     (when (file-readable-p file)
       (with-temp-buffer
         (insert-file-contents file)
-        (org-mode)
+        (delay-mode-hooks (org-mode))
         (let* ((ast (org-element-parse-buffer))
                (info (org-export-get-environment 'html))
                (selected (org-museum--export-selected-headlines ast info))
@@ -3483,6 +3490,10 @@ placeToc();
 function controls(selector,open){
   document.querySelectorAll(selector).forEach(function(button){
     button.setAttribute('aria-expanded',open?'true':'false');
+    if(selector==='[data-drawer-toggle]')
+      button.setAttribute('aria-label',open?'关闭全部笔记':'打开全部笔记');
+    else if(selector==='[data-toc-toggle]')
+      button.setAttribute('aria-label',open?'关闭目录':'打开目录');
   });
 }
 function setPanelAvailable(panel,available){
@@ -3566,12 +3577,12 @@ document.addEventListener('keydown',function(event){
 });
 document.querySelectorAll('[data-drawer-toggle]').forEach(function(button){
   button.setAttribute('aria-controls','org-museum-sidebar');
-  button.setAttribute('aria-expanded','false');
 });
 document.querySelectorAll('[data-toc-toggle]').forEach(function(button){
   button.setAttribute('aria-controls','org-museum-right-sidebar');
-  button.setAttribute('aria-expanded','false');
 });
+controls('[data-drawer-toggle]',false);
+controls('[data-toc-toggle]',false);
 setPanelAvailable(drawer,false);
 setPanelAvailable(toc,!tocDrawerMedia.matches);
 if(!toc||!toc.querySelector('ul'))document.body.classList.add('museum-no-toc');
@@ -5313,35 +5324,80 @@ PAGES is used to exclude links that resolve to another indexed Wiki page."
     (when (file-readable-p source)
       (with-temp-buffer
         (insert-file-contents source)
-        (org-mode)
-        (let ((ast (org-element-parse-buffer)))
-          (org-element-map ast 'link
-            (lambda (link)
-              (when (string= (org-element-property :type link) "file")
-                (let* ((raw (or (org-element-property :path link) ""))
-                       (path (url-unhex-string
-                              (car (org-museum--file-link-parts raw))))
-                       (target (expand-file-name
-                                path (file-name-directory source)))
-                       (internal (org-museum--find-page-by-expanded-path
-                                  target pages)))
-                  (unless internal
-                    (push (list :page-id (org-museum-page-id page)
-                                :source source
-                                :raw raw
-                                :path target
-                                :exists (file-exists-p target))
-                          records)))))))))
+        (goto-char (point-min))
+        ;; Health reporting only needs bracketed file-link targets.  Avoid a
+        ;; full Org AST here: large notes made `org-museum-status' block Emacs
+        ;; for minutes even when they contained no file links.
+        (while (re-search-forward
+                "\\[\\[file:\\([^]\n]+\\)\\]\\(?:\\[[^]\n]*\\]\\)?\\]"
+                nil t)
+          (let* ((raw (match-string-no-properties 1))
+                 (path (url-unhex-string
+                        (car (org-museum--file-link-parts raw))))
+                 (target (expand-file-name
+                          path (file-name-directory source)))
+                 (internal (org-museum--find-page-by-expanded-path
+                            target pages)))
+            (unless internal
+              (push (list :page-id (org-museum-page-id page)
+                          :source source
+                          :raw raw
+                          :path target
+                          :exists (file-exists-p target))
+                    records))))))
     (nreverse records)))
+
+(defun org-museum--health-heading-paths (page)
+  "Return exportable H2--H4 outline paths for PAGE without building an AST.
+Selection-tag exports and non-default task filtering fall back to the canonical
+export inventory because those uncommon modes need the full exporter rules."
+  (let ((file (org-museum-page-path page))
+        (select-tags org-export-select-tags)
+        (exclude-tags org-export-exclude-tags)
+        selection-active paths)
+    (when (file-readable-p file)
+      (with-temp-buffer
+        (insert-file-contents file)
+        (delay-mode-hooks (org-mode))
+        (save-excursion
+          (goto-char (point-min))
+          (when (re-search-forward
+                 "^[ \t]*#\\+SELECT_TAGS:[ \t]*\\(.*\\)$" nil t)
+            (setq select-tags (split-string (match-string 1) nil t)))
+          (goto-char (point-min))
+          (when (re-search-forward
+                 "^[ \t]*#\\+EXCLUDE_TAGS:[ \t]*\\(.*\\)$" nil t)
+            (setq exclude-tags (split-string (match-string 1) nil t))))
+        (goto-char (point-min))
+        (while (re-search-forward org-heading-regexp nil t)
+          (goto-char (line-beginning-position))
+          (let ((local-tags (org-get-tags nil t)))
+            (when (cl-intersection local-tags select-tags :test #'equal)
+              (setq selection-active t)))
+          (when (and (<= (org-outline-level) 3)
+                     (not (org-in-commented-heading-p))
+                     (or org-export-with-archived-trees
+                         (not (org-in-archived-heading-p)))
+                     (not (cl-intersection
+                           (org-get-tags nil nil) exclude-tags :test #'equal)))
+            (push (mapconcat #'identity
+                             (org-get-outline-path t t) " / ")
+                  paths))
+          (forward-line 1))))
+    (if (or selection-active (not (eq org-export-with-tasks t)))
+        (mapcar (lambda (heading) (plist-get heading :path))
+                (org-museum--source-heading-inventory page))
+      (nreverse paths))))
 
 (defun org-museum--page-duplicate-heading-paths (page)
   "Return duplicate H2--H4 outline paths found in PAGE's Org source.
 Each path is reported once, in the order its second occurrence appears."
-  (delq nil
-        (mapcar (lambda (heading)
-                  (when (= (plist-get heading :occurrence) 2)
-                    (plist-get heading :path)))
-                (org-museum--source-heading-inventory page))))
+  (let ((occurrences (make-hash-table :test 'equal)) duplicates)
+    (dolist (path (org-museum--health-heading-paths page))
+      (let ((occurrence (1+ (gethash path occurrences 0))))
+        (puthash path occurrence occurrences)
+        (when (= occurrence 2) (push path duplicates))))
+    (nreverse duplicates)))
 
 (defun org-museum--page-legacy-heading-anchors (page)
   "Return transient Org-style H2--H4 anchors in PAGE's current HTML export."
