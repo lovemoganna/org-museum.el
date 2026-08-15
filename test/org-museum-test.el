@@ -79,6 +79,251 @@
                                     (error-message-string error-data)))))
       (delete-directory root t))))
 
+(ert-deftest org-museum-index-scan-aborts-on-page-parse-errors ()
+  "A malformed page must not disappear from an otherwise successful scan."
+  (let* ((root (make-temp-file "org-museum-parse-error-test-" t))
+         (pages-root (expand-file-name "pages" root))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (broken (expand-file-name "broken.org" pages-root)))
+    (unwind-protect
+        (progn
+          (make-directory pages-root t)
+          (with-temp-file broken (insert "#+TITLE: Broken\n"))
+          (cl-letf (((symbol-function 'org-museum--parse-page-metadata)
+                     (lambda (file)
+                       (if (equal (expand-file-name file) broken)
+                           (error "fixture parse failure")
+                         nil))))
+            (let ((error-data
+                   (should-error (org-museum--index-scan)
+                                 :type 'org-museum-index-scan-failed)))
+              (should (string-match-p "broken\\.org"
+                                      (error-message-string error-data)))
+              (should (string-match-p "fixture parse failure"
+                                      (error-message-string error-data))))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-index-freshness-covers-every-scanned-file ()
+  (let* ((root (make-temp-file "org-museum-scan-scope-test-" t))
+         (pages-root (expand-file-name "pages" root))
+         (index-file (expand-file-name ".org-museum-index.json" root))
+         (root-note (expand-file-name "root-note.org" root))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages"))
+    (unwind-protect
+        (progn
+          (make-directory pages-root t)
+          (with-temp-file index-file (insert "{}"))
+          (set-file-times index-file (seconds-to-time 100))
+          (with-temp-file root-note (insert "#+TITLE: Root\n"))
+          (set-file-times root-note (seconds-to-time 200))
+          (should (member (expand-file-name root-note)
+                          (org-museum--scan-files)))
+          (should-not (org-museum--index-fresh-p index-file)))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-index-rejects-invalid-publish-status ()
+  "A status typo must fail the scan instead of publishing the page."
+  (let* ((root (make-temp-file "org-museum-status-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (file (expand-file-name "pages/status.org" root)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory file) t)
+          (with-temp-file file
+            (insert "#+TITLE: Status\n#+WIKI_ID: status\n#+WIKI_STATUS: drfat\n"))
+          (should-error (org-museum-index-build t)
+                        :type 'org-museum-index-scan-failed))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-file-link-with-heading-builds-an-edge ()
+  (let* ((root (make-temp-file "org-museum-file-heading-test-" t))
+         (source (expand-file-name "source.org" root))
+         (target (expand-file-name "target note.org" root))
+         (pages (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file source
+            (insert "[[file:target%20note.org::*Section][Target]]"))
+          (with-temp-file target (insert "* Section\n"))
+          (puthash "source" (make-org-museum-page :id "source" :path source) pages)
+          (puthash "target" (make-org-museum-page :id "target" :path target) pages)
+          (cl-letf (((symbol-function 'org-museum--org-roam-db-linked-page-ids)
+                     (lambda (&rest _) nil)))
+            (should (equal '("target")
+                           (org-museum--extract-links-from-file source pages)))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-graph-omits-self-links ()
+  (let* ((root (make-temp-file "org-museum-self-link-test-" t))
+         (source (expand-file-name "source.org" root))
+         (pages (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file source (insert "[[wiki:source]]"))
+          (puthash "source" (make-org-museum-page :id "source" :path source) pages)
+          (cl-letf (((symbol-function 'org-museum--org-roam-db-linked-page-ids)
+                     (lambda (&rest _) nil)))
+            (should-not (org-museum--extract-links-from-file source pages))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-rename-rewrites-file-links-and-keeps-heading-search ()
+  (let* ((root (make-temp-file "org-museum-file-rename-test-" t))
+         (source (expand-file-name "notes/source.org" root))
+         (old (expand-file-name "pages/old note.org" root))
+         (new (expand-file-name "pages/new note.org" root)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory source) t)
+          (make-directory (file-name-directory old) t)
+          (with-temp-file source
+            (insert "[[file:../pages/old%20note.org::*Heading][target]]"))
+          (with-temp-file old (insert "* Heading"))
+          (should (= 1 (org-museum--update-file-links-for-rename old new
+                                                                 (list source))))
+          (with-temp-buffer
+            (insert-file-contents source)
+            (should (search-forward
+                     "[[file:../pages/new%20note.org::*Heading][target]]" nil t))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-offline-font-system-is-complete-and-semantic ()
+  (let* ((css-path (expand-file-name "resources/org-museum.css"
+                                     org-museum-test--repo-root))
+         (css (with-temp-buffer
+                (insert-file-contents css-path)
+                (buffer-string))))
+    (dolist (name '("NotoSansCJKsc-VF-v2.004.woff2"
+                    "VictorMono-Roman-v1.564.woff2"
+                    "VictorMono-Italic-v1.564.woff2"
+                    "OFL-Noto-Sans-CJK.txt"
+                    "OFL-Victor-Mono.txt"
+                    "SHA256SUMS"))
+      (should (file-regular-p
+               (expand-file-name (concat "resources/fonts/" name)
+                                 org-museum-test--repo-root))))
+    (dolist (variable '("--font-reading" "--font-ui"
+                        "--font-code" "--font-technical"))
+      (should (string-search variable css)))
+    (should (string-search ".org-museum-code {\n  font: inherit;" css))
+    (should-not (string-search "JetBrains Mono" css))
+    (should-not (string-search "Cascadia Code" css))))
+
+(ert-deftest org-museum-font-deployment-fails-when-a-required-source-is-missing ()
+  (cl-letf (((symbol-function 'org-museum--resource-source-path)
+             (lambda (_relative) nil)))
+    (should-error (org-museum--ensure-fonts-deployed))))
+
+(ert-deftest org-museum-search-description-and-reading-controls-are-exported ()
+  (let ((script (org-museum--script-index)))
+    (should (string-search "page._searchText=" script))
+    (should (string-search "page.description" script))
+    (should (string-search "className='resume-remove'" script))
+    (should (string-search "objectStore('readingState').delete(record.pageId)" script))))
+
+(ert-deftest org-museum-cross-buffer-saves-persist-one-index-batch ()
+  (let* ((org-museum-root-dir temporary-file-directory)
+         (org-museum--pending-save-files (make-hash-table :test #'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages (make-hash-table :test #'equal)
+           :tags (make-hash-table :test #'equal)
+           :categories (make-hash-table :test #'equal)
+           :graph (make-hash-table :test #'equal)))
+         updates (save-count 0))
+    (puthash "one.org" t org-museum--pending-save-files)
+    (puthash "two.org" t org-museum--pending-save-files)
+    (cl-letf (((symbol-function 'org-museum--on-save-handle-id-change)
+               (lambda (_file)))
+              ((symbol-function 'org-museum--scan-files)
+               (lambda () nil))
+              ((symbol-function 'org-museum--index-update-file-in-place)
+               (lambda (file) (push file updates)))
+              ((symbol-function 'org-museum--index-save)
+               (lambda (&rest _) (cl-incf save-count))))
+      (org-museum--flush-pending-saves))
+    (should (= 2 (length updates)))
+    (should (= 1 save-count))
+    (should (= 0 (hash-table-count org-museum--pending-save-files)))))
+
+(ert-deftest org-museum-full-link-scan-opens-the-roam-database-once ()
+  (let* ((pages (make-hash-table :test #'equal))
+         (index (make-org-museum-index
+                 :pages pages :tags (make-hash-table :test #'equal)
+                 :categories (make-hash-table :test #'equal)
+                 :graph (make-hash-table :test #'equal)))
+         (opens 0) (closes 0))
+    (dotimes (number 3)
+      (puthash (number-to-string number)
+               (make-org-museum-page :id (number-to-string number)
+                                     :path (format "%d.org" number))
+               pages))
+    (cl-letf (((symbol-function 'org-museum--org-roam-db-path)
+               (lambda () "org-roam.db"))
+              ((symbol-function 'sqlite-open)
+               (lambda (_path) (cl-incf opens) 'db))
+              ((symbol-function 'sqlite-close)
+               (lambda (_db) (cl-incf closes)))
+              ((symbol-function 'org-museum--extract-links-from-file)
+               (lambda (&rest _) nil)))
+      (org-museum--scan-resolve-links index))
+    (should (= 1 opens))
+    (should (= 1 closes))))
+
+(ert-deftest org-museum-batched-save-failure-restores-links-and-keeps-work-pending ()
+  (let* ((root (make-temp-file "org-museum-save-batch-rollback-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir nil)
+         (org-museum--project-save-timer nil)
+         (org-museum--project-save-retry-used nil)
+         (target (expand-file-name "target.org" root))
+         (referrer (expand-file-name "referrer.org" root))
+         (org-museum--pending-save-files (make-hash-table :test #'equal))
+         (pages (make-hash-table :test #'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages :tags (make-hash-table :test #'equal)
+           :categories (make-hash-table :test #'equal)
+           :graph (make-hash-table :test #'equal)))
+         (retry-count 0))
+    (unwind-protect
+        (progn
+          (with-temp-file target
+            (insert "#+TITLE: Target\n#+WIKI_ID: new-id\n"))
+          (with-temp-file referrer (insert "[[wiki:old-id]]"))
+          (puthash "old-id"
+                   (make-org-museum-page :id "old-id" :path target)
+                   pages)
+          (puthash target t org-museum--pending-save-files)
+          (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                    ((symbol-function 'run-with-idle-timer)
+                     (lambda (&rest _)
+                       (cl-incf retry-count)
+                       'fixture-retry-timer))
+                    ((symbol-function 'org-museum--index-update-file-in-place)
+                     (lambda (_file) (error "fixture failure"))))
+            (org-museum--flush-pending-saves))
+          (with-temp-buffer
+            (insert-file-contents referrer)
+            (should (search-forward "[[wiki:old-id]]" nil t))
+            (should-not (search-forward "[[wiki:new-id]]" nil t)))
+          (should (gethash target org-museum--pending-save-files))
+          (should (= retry-count 1))
+          (should (eq org-museum--project-save-timer
+                      'fixture-retry-timer))
+          (setq org-museum--project-save-timer nil)
+          (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                    ((symbol-function 'run-with-idle-timer)
+                     (lambda (&rest _) (cl-incf retry-count)))
+                    ((symbol-function 'org-museum--index-update-file-in-place)
+                     (lambda (_file) (error "fixture retry failure"))))
+            (org-museum--flush-pending-saves))
+          (should (= retry-count 1))
+          (should (gethash target org-museum--pending-save-files)))
+      (delete-directory root t))))
+
 (ert-deftest org-museum-create-page-saves-before-rebuilding-index ()
   (let* ((root (make-temp-file "org-museum-create-page-test-" t))
          (org-museum-root-dir root)
@@ -1401,6 +1646,8 @@
     (should (string-match-p "zen-mode" script))
     (should (string-match-p "MutationObserver" script))
     (should (string-match-p "removeEventListener" script))
+    (should (string-match-p "getPropertyValue('--font-code')" script))
+    (should-not (string-match-p "px monospace" script))
     (should (string-match-p "visibilitychange" script))
     (should (string-match-p "pagehide" script))))
 
@@ -2020,11 +2267,103 @@
                      (lambda () (setq manifest-called t)))
                     ((symbol-function 'org-museum--clean-stale-exports)
                      (lambda () (setq clean-called t))))
-            (org-museum-export-all))
+            (should-error (org-museum-export-all)
+                          :type 'org-museum-export-failed))
           (should-not manifest-called)
           (should-not clean-called)
           (should-not index-called)
           (should-not graph-called))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-full-export-restores-page-html-after-failure ()
+  (let* ((root (make-temp-file "org-museum-export-rollback-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-open-browser-after-export nil)
+         (source (expand-file-name "pages/broken.org" root))
+         (output (expand-file-name "exports/html/pages/broken.html" root))
+         (pages (make-hash-table :test 'equal))
+         (page (org-museum-test--page
+                "broken" "Broken" 1 "Test" nil "published" source))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory source) t)
+          (make-directory (file-name-directory output) t)
+          (with-temp-file source (insert "#+TITLE: Broken\n"))
+          (with-temp-file output (insert "OLD HTML"))
+          (puthash "broken" page pages)
+          (cl-letf (((symbol-function 'org-museum-index-build)
+                     (lambda (&optional _force) org-museum--index))
+                    ((symbol-function 'org-museum--ensure-css-deployed)
+                     #'ignore)
+                    ((symbol-function 'org-museum--hljs-assets) #'ignore)
+                    ((symbol-function 'org-museum--ensure-d3-deployed) #'ignore)
+                    ((symbol-function 'org-museum-export-page)
+                     (lambda (&rest _args)
+                       (with-temp-file output (insert "PARTIAL HTML"))
+                       (error "fixture export failure")))
+                    ((symbol-function 'org-museum--report-failures) #'ignore))
+            (should-error (org-museum--export-all-current)
+                          :type 'org-museum-export-failed))
+          (should (equal (org-museum-test--file-string output) "OLD HTML")))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-full-export-restores-resources-after-early-failure ()
+  (let* ((root (make-temp-file "org-museum-resource-rollback-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir nil)
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (css (org-museum--css-output-path))
+         (new-resource (org-museum--d3-resource-path)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory css) t)
+          (with-temp-file css (insert "OLD CSS"))
+          (cl-letf (((symbol-function 'org-museum--scan-files)
+                     (lambda () nil))
+                    ((symbol-function 'org-museum--export-all-transaction)
+                     (lambda ()
+                       (with-temp-file css (insert "PARTIAL CSS"))
+                       (with-temp-file new-resource (insert "PARTIAL D3"))
+                       (error "fixture resource failure"))))
+            (should-error (org-museum--export-all-current)
+                          :type 'org-museum-export-failed))
+          (should (equal (org-museum-test--file-string css) "OLD CSS"))
+          (should-not (file-exists-p new-resource)))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-full-export-restores-partly-cleaned-stale-pages ()
+  (let* ((root (make-temp-file "org-museum-stale-rollback-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir nil)
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-clean-stale-html-on-full-export t)
+         (stale-one (expand-file-name "exports/html/pages/old-one.html" root))
+         (stale-two (expand-file-name "exports/html/pages/old-two.html" root)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory stale-one) t)
+          (with-temp-file stale-one (insert "OLD ONE"))
+          (with-temp-file stale-two (insert "OLD TWO"))
+          (cl-letf (((symbol-function 'org-museum--scan-files)
+                     (lambda () nil))
+                    ((symbol-function 'org-museum--export-all-transaction)
+                     (lambda ()
+                       (delete-file stale-one)
+                       (error "fixture cleanup failure"))))
+            (should-error (org-museum--export-all-current)
+                          :type 'org-museum-export-failed))
+          (should (equal (org-museum-test--file-string stale-one) "OLD ONE"))
+          (should (equal (org-museum-test--file-string stale-two) "OLD TWO")))
       (delete-directory root t))))
 
 (ert-deftest org-museum-stale-cleanup-refuses-empty-index ()

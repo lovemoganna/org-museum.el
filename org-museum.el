@@ -45,6 +45,9 @@
   ["#f92672" "#a6e22e" "#66d9ef" "#fd971f" "#ae81ff" "#e6db74" "#f8f8f2"]
   "Monokai-derived colour palette for graph categories.")
 
+(defconst org-museum--index-schema-version 3
+  "Version of the persisted index and parsing/link-resolution rules.")
+
 ;; ============================================================
 ;; §2  CUSTOMISATION
 ;; ============================================================
@@ -189,9 +192,7 @@ when tags are not reliable yet."
 
 (defcustom org-museum-save-debounce-seconds 0.5
   "Idle seconds to wait before flushing the index after a save.
-Applicable scope: org-museum--on-save debounce (Fix-02).
-Known limitation: timer is per-buffer; rapid cross-buffer saves
-still trigger multiple flushes."
+Applicable scope: project-wide `org-museum--on-save' debounce."
   :type 'number
   :group 'org-museum)
 
@@ -272,10 +273,17 @@ nil       — No code highlighting in PDF exports."
       (and org-museum--loaded-source-path
            (file-name-directory org-museum--loaded-source-path)))
 
-;; Fix-02: per-buffer debounce timer handle
-(defvar-local org-museum--save-timer nil
-  "Idle timer handle for debounced index flush.
-Applicable scope: org-museum--on-save (Fix-02).")
+(defvar org-museum--project-save-timer nil
+  "Single debounce timer shared by saves in the active Museum project.")
+
+(defvar org-museum--project-save-retry-used nil
+  "Non-nil after the current pending save batch used its one automatic retry.")
+
+(defvar org-museum--pending-save-files (make-hash-table :test #'equal)
+  "Set of Org files awaiting one transactional index flush.")
+
+(defvar org-museum--org-roam-db-connection nil
+  "Dynamically bound read-only Org-roam SQLite connection for an index batch.")
 
 ;; ============================================================
 ;; §4  DATA STRUCTURES
@@ -294,6 +302,12 @@ Applicable scope: org-museum--on-save (Fix-02).")
 
 (define-error 'org-museum-duplicate-page-id
   "Duplicate Org Museum page ID")
+(define-error 'org-museum-index-scan-failed
+  "Org Museum index scan failed")
+(define-error 'org-museum-export-failed
+  "Org Museum full export failed")
+(define-error 'org-museum-invalid-page-status
+  "Invalid Org Museum page status")
 
 ;; ============================================================
 ;; §5  PATH HELPERS
@@ -344,6 +358,21 @@ Applicable scope: org-museum--on-save (Fix-02).")
 (defun org-museum--theme-resource-path ()
   "Absolute path to the shared blocking theme bootstrap."
   (expand-file-name "resources/org-museum-theme.js"
+                    (org-museum--shared-root)))
+
+(defconst org-museum--font-resources
+  '(("NotoSansCJKsc-VF-v2.004.woff2" . "Noto Sans SC 2.004 variable font")
+    ("VictorMono-Roman-v1.564.woff2" . "Victor Mono 1.564 variable Roman")
+    ("VictorMono-Italic-v1.564.woff2" . "Victor Mono 1.564 variable Italic")
+    ("OFL-Noto-Sans-CJK.txt" . "Noto Sans CJK OFL license")
+    ("OFL-Victor-Mono.txt" . "Victor Mono OFL license")
+    ("SHA256SUMS" . "font SHA-256 manifest")
+    ("SOURCES.md" . "font provenance record"))
+  "Bundled font files required for every offline export.")
+
+(defun org-museum--font-resource-path (name)
+  "Return the deployed font resource path for NAME."
+  (expand-file-name (concat "resources/fonts/" name)
                     (org-museum--shared-root)))
 
 (defun org-museum--file-content-hash (file)
@@ -595,6 +624,28 @@ never downloads runtime code during export."
 (defvar org-museum--resource-deployment-cache nil
   "Dynamically bound per-export cache for deployed static resources.")
 
+(defun org-museum--ensure-fonts-deployed ()
+  "Deploy every licensed offline font resource, failing closed if one is absent."
+  (let ((deploy
+         (lambda ()
+           (mapcar
+            (lambda (entry)
+              (org-museum--deploy-bundled-resource
+               (concat "resources/fonts/" (car entry))
+               (org-museum--font-resource-path (car entry))
+               (cdr entry)))
+            org-museum--font-resources))))
+    (if (not (hash-table-p org-museum--resource-deployment-cache))
+        (funcall deploy)
+      (let* ((missing (make-symbol "missing"))
+             (cached (gethash 'fonts org-museum--resource-deployment-cache
+                              missing)))
+        (if (not (eq cached missing))
+            cached
+          (let ((assets (funcall deploy)))
+            (puthash 'fonts assets org-museum--resource-deployment-cache)
+            assets))))))
+
 (defun org-museum--ensure-hljs-deployed ()
   "Ensure bundled Highlight.js assets are available locally."
   (list
@@ -671,6 +722,28 @@ Exported pages never fall back to a remote resource."
 (defun org-museum--scan-root ()
   "Absolute path to the .org scan root."
   (expand-file-name (or org-museum-scan-dir "") org-museum-root-dir))
+
+(defun org-museum--scan-files ()
+  "Return the complete, de-duplicated set of Org files used by the index."
+  (let* ((scan-root (file-name-as-directory (org-museum--scan-root)))
+         (project-root (file-name-as-directory
+                        (expand-file-name org-museum-root-dir)))
+         (dirs (cond
+                ((file-in-directory-p scan-root project-root)
+                 (list project-root))
+                ((file-in-directory-p project-root scan-root)
+                 (list scan-root))
+                (t (list scan-root project-root))))
+        (seen (make-hash-table :test #'equal))
+        files)
+    (dolist (dir dirs)
+      (when (file-directory-p dir)
+        (dolist (file (directory-files-recursively dir "\\.org\\'"))
+          (let ((key (org-museum--normalised-path file)))
+            (unless (gethash key seen)
+              (puthash key t seen)
+              (push (expand-file-name file) files))))))
+    (sort files #'string-lessp)))
 
 ;; Fix-15: single source of truth for the pages base directory.
 (defun org-museum--pages-base-dir ()
@@ -1017,6 +1090,7 @@ Org outline-container IDs follow the stable heading ID."
     (category . ,(org-museum-page-category page))
     (categoryLabel . ,(org-museum--category-label
                        (org-museum-page-category page)))
+    (description . ,(or (org-museum-page-description page) ""))
     (tags . ,(vconcat (org-museum-page-tags page)))
     (status . ,(downcase (or (org-museum-page-status page) "published")))
     (headings . ,(vconcat (org-museum--page-headings page)))
@@ -1039,6 +1113,7 @@ Org outline-container IDs follow the stable heading ID."
 
 (defun org-museum--ensure-css-deployed ()
   "Copy source CSS to the export directory when its content differs."
+  (org-museum--ensure-fonts-deployed)
   (let ((src (org-museum--css-source-path))
         (dst (org-museum--css-output-path)))
     (when (and src (file-exists-p src))
@@ -1081,24 +1156,23 @@ With prefix FORCE, always rebuild from scratch."
 
 (defun org-museum--scan-collect-pages (index)
   "Populate INDEX with page metadata from all .org files."
-  (let ((seen (make-hash-table :test 'equal))
-        (scan-root (org-museum--scan-root)))
-    (dolist (dir (delete-dups
-                  (delq nil
-                        (list scan-root
-                              (unless (string= scan-root org-museum-root-dir)
-                                org-museum-root-dir)))))
-      (when (file-directory-p dir)
-        (dolist (file (directory-files-recursively dir "\\.org$"))
-          (unless (gethash file seen)
-            (puthash file t seen)
-            (condition-case err
-                (when-let ((page (org-museum--parse-page-metadata file)))
-                  (org-museum--index-register-page index page))
-              (org-museum-duplicate-page-id
-               (signal (car err) (cdr err)))
-              (error (message "Org Museum: parse error in %s: %s"
-                              file (error-message-string err))))))))))
+  (let (failures)
+    (dolist (file (org-museum--scan-files))
+      (condition-case err
+          (when-let ((page (org-museum--parse-page-metadata file)))
+            (org-museum--index-register-page index page))
+        (org-museum-duplicate-page-id
+         (signal (car err) (cdr err)))
+        (error
+         (push (list file (error-message-string err)) failures))))
+    (when failures
+      (signal
+       'org-museum-index-scan-failed
+       (list
+        (mapconcat
+         (lambda (failure)
+           (format "%s: %s" (car failure) (cadr failure)))
+         (nreverse failures) "; "))))))
 
 (defun org-museum--index-register-page (index page)
   "Add PAGE to INDEX, updating tag/category tables."
@@ -1140,8 +1214,13 @@ With prefix FORCE, always rebuild from scratch."
            (tags   (org-museum--parse-tags (gethash "FILETAGS" kw)))
            (cat    (or (gethash "CATEGORY" kw) "uncategorized"))
            (theme  (gethash "WIKI_THEME" kw))
-           (status (or (gethash "WIKI_STATUS" kw) "published"))
+           (status (downcase (string-trim
+                              (or (gethash "WIKI_STATUS" kw) "published"))))
            (description (gethash "DESCRIPTION" kw)))
+      (unless (member status '("draft" "published"))
+        (signal 'org-museum-invalid-page-status
+                (list (format "%s uses unsupported WIKI_STATUS %S; expected draft or published"
+                              file status))))
       (make-org-museum-page
        :id id :title title :path file :tags tags :category cat
        :modified (org-museum--file-mtime file)
@@ -1150,18 +1229,26 @@ With prefix FORCE, always rebuild from scratch."
 
 (defun org-museum--scan-resolve-links (index)
   "Resolve and record bidirectional links for all pages in INDEX."
-  (maphash
-   (lambda (id page)
-     (let ((outgoing (org-museum--extract-links-from-file
-                      (org-museum-page-path page)
-                      (org-museum-index-pages index))))
-       (setf (org-museum-page-links-to page) outgoing)
-       (dolist (target-id outgoing)
-         (when-let ((target (gethash target-id (org-museum-index-pages index))))
-           (cl-pushnew id (org-museum-page-linked-from target) :test #'equal)))))
-   (org-museum-index-pages index)))
+  (let* ((pages (org-museum-index-pages index))
+         (aliases (org-museum--build-page-id-aliases pages))
+         (db-path (org-museum--org-roam-db-path))
+         (org-museum--org-roam-db-connection
+          (and (fboundp 'sqlite-open) db-path (sqlite-open db-path))))
+    (unwind-protect
+        (maphash
+         (lambda (id page)
+           (let ((outgoing (org-museum--extract-links-from-file
+                            (org-museum-page-path page) pages aliases)))
+             (setf (org-museum-page-links-to page) outgoing)
+             (dolist (target-id outgoing)
+               (when-let ((target (gethash target-id pages)))
+                 (cl-pushnew id (org-museum-page-linked-from target)
+                             :test #'equal)))))
+         pages)
+      (when org-museum--org-roam-db-connection
+        (sqlite-close org-museum--org-roam-db-connection)))))
 
-(defun org-museum--extract-links-from-file (file pages-table)
+(defun org-museum--extract-links-from-file (file pages-table &optional aliases)
   "Return canonical page IDs linked from FILE.
 Recognises wiki:, museum:, id:, and file: links.  Org-roam id links are
 resolved through every page's :ID: properties, so [[id:UUID][Title]] links
@@ -1171,28 +1258,37 @@ WIKI_ID rather than the Org-roam UUID."
     (insert-file-contents file)
     (let ((links '())
           (dir   (file-name-directory file))
-          (aliases (org-museum--build-page-id-aliases pages-table)))
+          (aliases (or aliases (org-museum--build-page-id-aliases pages-table)))
+          (source-page (org-museum--find-page-by-path file pages-table)))
       (goto-char (point-min))
       (while (re-search-forward
               "\\[\\[\\(?:wiki\\|museum\\):\\([^]\n]+\\)\\]\\(?:\\[[^]]*\\]\\)?\\]" nil t)
         (when-let ((id (org-museum--resolve-page-link-id
                         (match-string 1) pages-table aliases)))
-          (cl-pushnew id links :test #'equal)))
+          (unless (and source-page (equal id (org-museum-page-id source-page)))
+            (cl-pushnew id links :test #'equal))))
       (goto-char (point-min))
       (while (re-search-forward
               "\\[\\[id:\\([^]\n]+\\)\\]\\(?:\\[[^]]*\\]\\)?\\]" nil t)
         (when-let ((id (org-museum--resolve-page-link-id
                         (match-string 1) pages-table aliases)))
-          (cl-pushnew id links :test #'equal)))
+          (unless (and source-page (equal id (org-museum-page-id source-page)))
+            (cl-pushnew id links :test #'equal))))
       (goto-char (point-min))
       (while (re-search-forward
-              "\\[\\[file:\\([^]\n]+\\.org\\)\\]\\(?:\\[[^]]*\\]\\)?\\]" nil t)
-        (let* ((target-file (expand-file-name (match-string 1) dir))
+              "\\[\\[file:\\([^]\n]+\\)\\]\\(?:\\[[^]]*\\]\\)?\\]" nil t)
+        (let* ((parts (org-museum--file-link-parts (match-string 1)))
+               (path (url-unhex-string (car parts)))
+               (target-file (expand-file-name path dir))
                (target-page (org-museum--find-page-by-path target-file pages-table)))
-          (when target-page
+          (when (and target-page
+                     (or (null source-page)
+                         (not (equal (org-museum-page-id target-page)
+                                     (org-museum-page-id source-page)))))
             (cl-pushnew (org-museum-page-id target-page) links :test #'equal))))
       (dolist (id (org-museum--org-roam-db-linked-page-ids file pages-table aliases))
-        (cl-pushnew id links :test #'equal))
+        (unless (and source-page (equal id (org-museum-page-id source-page)))
+          (cl-pushnew id links :test #'equal)))
       links)))
 ;; ============================================================
 ;; §8  INDEX FRESHNESS
@@ -1200,11 +1296,17 @@ WIKI_ID rather than the Org-roam UUID."
 
 (defun org-museum--index-fresh-p (index-path)
   "Return non-nil when INDEX-PATH is newer than every .org file."
-  (let ((index-mtime (org-museum--file-mtime index-path))
-        (scan-root   (org-museum--scan-root)))
-    (and (file-directory-p scan-root)
+  (let ((index-mtime (org-museum--file-mtime index-path)))
+    (and (file-directory-p (org-museum--scan-root))
+         (condition-case nil
+             (let ((json-object-type 'alist)
+                   (json-key-type 'symbol))
+               (= org-museum--index-schema-version
+                  (or (cdr (assq 'schema-version
+                                 (json-read-file index-path))) -1)))
+           (error nil))
          (not (cl-some (lambda (f) (> (org-museum--file-mtime f) index-mtime))
-                       (directory-files-recursively scan-root "\\.org$")))
+                       (org-museum--scan-files)))
          (or (null org-museum--index)
              (not (org-museum--index-has-ghost-pages-p org-museum--index))))))
 
@@ -1346,7 +1448,8 @@ wikis up to roughly 5000 pages."
   (let (pages-list)
     (maphash (lambda (_id page) (push (org-museum--page-to-alist page) pages-list))
              (org-museum-index-pages index))
-    `((pages . ,(vconcat pages-list)))))
+    `((schema-version . ,org-museum--index-schema-version)
+      (pages . ,(vconcat pages-list)))))
 
 (defun org-museum--json-get (plist key &optional as-list)
   "Extract value from JSON alist PLIST at KEY.
@@ -2040,24 +2143,33 @@ check org-export output for this file" out-file)
       (user-error "Org Museum refuses cleanup outside the museum root"))
     pages-root))
 
+(defun org-museum--existing-safe-page-html-files ()
+  "Return every existing cleanup-safe page HTML file."
+  (let ((candidate (expand-file-name (org-museum--pages-root)))
+        files)
+    (when (file-exists-p candidate)
+      (let ((pages-root (org-museum--validated-cleanup-pages-root)))
+        (when (file-directory-p pages-root)
+          (dolist (file (directory-files-recursively
+                         pages-root "\\.html\\'" nil))
+            (when (org-museum--safe-page-html-p file pages-root)
+              (push (expand-file-name file) files))))))
+    (sort files #'string<)))
+
 ;;;###autoload
 (defun org-museum-preview-stale-exports ()
   "Return stale page HTML files without modifying the export directory.
 When called interactively, display the exact files that a successful full
 export would remove."
   (interactive)
-  (let* ((pages-root (org-museum--validated-cleanup-pages-root))
-         (expected (org-museum--expected-page-html-files))
+  (let* ((expected (org-museum--expected-page-html-files))
          (expected-table (make-hash-table :test 'equal))
          stale)
     (dolist (file expected)
       (puthash (downcase (expand-file-name file)) t expected-table))
-    (when (file-directory-p pages-root)
-      (dolist (file (directory-files-recursively pages-root "\\.html\\'" nil))
-        (when (and (org-museum--safe-page-html-p file pages-root)
-                   (not (gethash (downcase (expand-file-name file))
-                                 expected-table)))
-          (push (expand-file-name file) stale))))
+    (dolist (file (org-museum--existing-safe-page-html-files))
+      (when (not (gethash (downcase (expand-file-name file)) expected-table))
+        (push (expand-file-name file) stale)))
     (setq stale (sort stale #'string<))
     (when (called-interactively-p 'interactive)
       (with-current-buffer (get-buffer-create "*Org Museum Stale Exports*")
@@ -2113,41 +2225,106 @@ export would remove."
    'org-museum-export-all nil #'org-museum--export-all-current))
 
 (defun org-museum--export-all-current ()
+  "Transactionally export the complete site using the current runtime."
+  (let* ((static-targets
+          (append
+           (list (org-museum--css-output-path)
+                 (org-museum--d3-resource-path)
+                 (org-museum--hljs-css-resource-path)
+                 (org-museum--hljs-js-resource-path)
+                 (org-museum--hljs-lisp-js-resource-path)
+                 (org-museum--theme-resource-path)
+                 (expand-file-name "index.html" (org-museum--shared-root))
+                 (expand-file-name "graph.html" (org-museum--shared-root))
+                 (org-museum--export-manifest-path)
+                 (org-museum--index-file-path))
+           (mapcar (lambda (entry)
+                     (org-museum--font-resource-path (car entry)))
+                   org-museum--font-resources)))
+         (page-targets
+          (mapcar #'org-museum--export-filename (org-museum--scan-files)))
+         (cleanup-targets
+          (when org-museum-clean-stale-html-on-full-export
+            (org-museum--existing-safe-page-html-files)))
+         (targets (delete-dups
+                   (append static-targets page-targets cleanup-targets)))
+         (snapshots (org-museum--snapshot-files targets))
+         (preexisting (make-hash-table :test #'equal))
+         (original-index org-museum--index))
+    (dolist (file targets)
+      (puthash file (file-exists-p file) preexisting))
+    (condition-case err
+        (org-museum--export-all-transaction)
+      (error
+       (setq org-museum--index original-index)
+       (org-museum--restore-file-snapshots snapshots)
+       (dolist (file targets)
+         (when (and (not (gethash file preexisting))
+                    (file-regular-p file))
+           (delete-file file)))
+       (if (eq (car err) 'org-museum-export-failed)
+           (signal (car err) (cdr err))
+         (signal 'org-museum-export-failed
+                 (list (error-message-string err) err)))))))
+
+(defun org-museum--export-all-transaction ()
   "Export the complete site using the currently loaded runtime."
   (let ((org-museum--resource-deployment-cache (make-hash-table :test 'eq))
         (total   0)
         (success 0)
-        (failed  '()))
+        (failed  '())
+        timings (stage-start (float-time)))
     (org-museum--ensure-css-deployed)
     (org-museum--hljs-assets)
     (org-museum--ensure-d3-deployed)
+    (push (cons 'resources (- (float-time) stage-start)) timings)
+    (setq stage-start (float-time))
     (org-museum-index-build t)
+    (push (cons 'index (- (float-time) stage-start)) timings)
     (setq total (hash-table-count (org-museum-index-pages org-museum--index)))
+    (setq stage-start (float-time))
     (maphash
      (lambda (_id page)
        (condition-case err
            (progn (org-museum-export-page (org-museum-page-path page) t)
                   (cl-incf success))
-         (error (push (list (org-museum-page-id page) (error-message-string err))
+         (error (push (list (org-museum-page-id page) (error-message-string err)
+                            (org-museum-page-path page))
                       failed))))
      (org-museum-index-pages org-museum--index))
+    (push (cons 'pages (- (float-time) stage-start)) timings)
     (let ((graph-file nil)
           (cleaned 0)
           (complete (and (null failed) (= success total))))
       (when complete
-        (org-museum--generate-index-page)
-        (setq graph-file (org-museum-export-graph :silent t))
-        (when (> total 0)
-          (org-museum--write-export-manifest)
-          (when org-museum-clean-stale-html-on-full-export
-            (setq cleaned (org-museum--clean-stale-exports)))))
+        (condition-case err
+            (progn
+              (setq stage-start (float-time))
+              (org-museum--generate-index-page)
+              (push (cons 'homepage (- (float-time) stage-start)) timings)
+              (setq stage-start (float-time))
+              (setq graph-file (org-museum-export-graph :silent t))
+              (push (cons 'graph (- (float-time) stage-start)) timings)
+              (when (> total 0)
+                (org-museum--write-export-manifest)
+                (when org-museum-clean-stale-html-on-full-export
+                  (setq cleaned (org-museum--clean-stale-exports)))))
+          (error
+           (push (list "site-finalization" (error-message-string err) nil)
+                 failed))))
       (message "Export complete: %d/%d pages, %d failed"
                success total (length failed))
+      (message "Org Museum timings: %s"
+               (mapconcat (lambda (entry)
+                            (format "%s=%.3fs" (car entry) (cdr entry)))
+                          (nreverse timings) ", "))
       (when (> cleaned 0)
         (message "Org Museum removed %d stale page HTML files" cleaned))
-      (when failed (org-museum--report-failures failed))
+      (when failed
+        (org-museum--report-failures failed))
       (when (and org-museum-open-browser-after-export
                  org-museum-open-page-after-export
+                 (null failed)
                  graph-file)
         (let ((open-file
                (pcase org-museum-open-page-after-export
@@ -2156,15 +2333,32 @@ export would remove."
                                       (org-museum--shared-root))))))
           (browse-url
            (concat "file:///"
-                   (replace-regexp-in-string "\\\\" "/" open-file))))))))
+                   (replace-regexp-in-string "\\\\" "/" open-file)))))
+      (when failed
+        (signal 'org-museum-export-failed
+                (list (format "%d/%d pages exported; %d failed"
+                              success total (length failed))
+                      (nreverse failed)))))))
 
 (defun org-museum--report-failures (failed)
   "Show FAILED export items in a buffer."
   (with-current-buffer (get-buffer-create "*Org Museum Failures*")
+    (let ((inhibit-read-only t))
     (erase-buffer)
     (insert "* Export Failures\n\n")
     (dolist (item failed)
-      (insert (format "- %s :: %s\n" (car item) (cadr item))))
+      (let ((path (caddr item)))
+        (insert (format "- %s :: %s\n  " (car item) (cadr item)))
+        (when path
+          (insert-text-button
+           "打开源文件" 'follow-link t
+           'action (lambda (_button) (find-file path)))
+          (insert "  ")
+          (insert-text-button
+           "重试此页" 'follow-link t
+           'action (lambda (_button) (org-museum-export-page path t))))
+        (insert "\n")))
+    (special-mode))
     (display-buffer (current-buffer))))
 
 ;; ============================================================
@@ -2332,15 +2526,16 @@ var resumeList=document.getElementById('continue-reading-list');
 var resumeCount=document.getElementById('continue-reading-count');
 var state={query:'',category:'',status:'all'};
 var collator=new Intl.Collator('zh-CN',{sensitivity:'base'});
+pages.forEach(function(page){
+  page._searchText=[page.title,page.description,page.category,page.categoryLabel]
+    .concat(page.tags||[])
+    .concat((page.headings||[]).map(function(item){return item.title;}))
+    .join(' ').toLowerCase();
+});
 function count(value){return String(value).padStart(2,'0');}
 function categoryLabel(value){
   var page=pages.find(function(item){return item.category===value;});
   return page?(page.categoryLabel||page.category):value;
-}
-function pageHaystack(page){
-  return [page.title,page.category,page.categoryLabel].concat(page.tags||[])
-    .concat((page.headings||[]).map(function(item){return item.title;}))
-    .join(' ').toLowerCase();
 }
 function bestMatch(page,q){
   if(!q)return {page:page,score:40,href:page.href,context:''};
@@ -2352,13 +2547,15 @@ function bestMatch(page,q){
   if(headingMatch)return {page:page,score:80,
     href:page.href.split('#')[0]+'#'+encodeURIComponent(headingMatch.id),
     context:'章节 · '+headingMatch.title};
+  if((page.description||'').toLowerCase().indexOf(q)>=0)
+    return {page:page,score:60,href:page.href,context:'摘要 · '+page.description};
   return {page:page,score:40,href:page.href,context:''};
 }
 function matches(page){
   var statusOk=state.status==='all'||page.status===state.status;
   var categoryOk=!state.category||page.category===state.category;
   var query=state.query.trim().toLowerCase();
-  return statusOk&&categoryOk&&(!query||pageHaystack(page).indexOf(query)>=0);
+  return statusOk&&categoryOk&&(!query||page._searchText.indexOf(query)>=0);
 }
 function makeResult(item){
   var page=item.page;
@@ -2552,6 +2749,7 @@ function resumeHref(record){
 }
 function renderResume(records){
   if(!resume||!resumeList)return;resumeList.textContent='';
+  resume.setAttribute('aria-busy','false');
   if(resumeCount)resumeCount.textContent='/ '+count(records.length);
   if(!records.length){
     var box=document.createElement('div');box.className='resume-empty-state';
@@ -2565,6 +2763,7 @@ function renderResume(records){
     resumeList.appendChild(box);resume.hidden=false;return;
   }
   records.forEach(function(record,index){
+    var row=document.createElement('div');row.className='resume-record-row';
     var link=document.createElement('a');
     link.className='resume-record'+(index===0?' resume-record-primary':'');
     link.href=resumeHref(record);
@@ -2578,7 +2777,22 @@ function renderResume(records){
     var fill=document.createElement('i');fill.style.width=
       Math.round((record.progress||record.scrollRatio||0)*100)+'%';
     meter.appendChild(fill);link.appendChild(number);link.appendChild(body);link.appendChild(meter);
-    resumeList.appendChild(link);
+    var remove=document.createElement('button');remove.type='button';
+    remove.className='resume-remove';remove.textContent='移除';
+    remove.setAttribute('aria-label','移除 '+(record.title||record.pageId)+' 的阅读记录');
+    remove.addEventListener('click',function(){
+      openReadingDb().then(function(db){
+        return new Promise(function(resolve,reject){
+          var request=db.transaction('readingState','readwrite')
+            .objectStore('readingState').delete(record.pageId);
+          request.onsuccess=resolve;request.onerror=function(){reject(request.error);};
+        }).finally(function(){db.close();});
+      }).then(function(){row.remove();
+        var remaining=resumeList.querySelectorAll('.resume-record-row').length;
+        if(resumeCount)resumeCount.textContent='/ '+count(remaining);
+      });
+    });
+    row.appendChild(link);row.appendChild(remove);resumeList.appendChild(row);
   });
   resume.hidden=false;
 }
@@ -2621,7 +2835,7 @@ openReadingDb().then(function(db){
      "<main id=\"main-content\" class=\"museum-index-shell\" tabindex=\"-1\">\n"
      "  <h1 class=\"sr-only\">Org Museum</h1>\n"
      "  <section class=\"museum-home-upper\">\n"
-     "    <section id=\"continue-reading\" class=\"museum-resume\" hidden>\n"
+     "    <section id=\"continue-reading\" class=\"museum-resume\" hidden aria-busy=\"true\">\n"
      "      <div class=\"museum-section-heading\"><h2>继续阅读</h2><span id=\"continue-reading-count\">/ 00</span></div>\n"
      "      <div id=\"continue-reading-list\"></div>\n"
      "    </section>\n"
@@ -3011,6 +3225,27 @@ Guards:
                   (re-search-forward pattern nil t))))))
      (buffer-list))))
 
+(defun org-museum--modified-file-link-buffer (target-file)
+  "Return a modified Org buffer containing a file link to TARGET-FILE."
+  (seq-find
+   (lambda (buffer)
+     (with-current-buffer buffer
+       (and buffer-file-name
+            (buffer-modified-p)
+            (string-match-p "\\.org\\'" buffer-file-name)
+            (save-excursion
+              (save-restriction
+                (widen)
+                (goto-char (point-min))
+                (let (found)
+                  (while (and (not found)
+                              (re-search-forward "\\[\\[file:\\([^]\n]+\\)\\]" nil t))
+                    (setq found
+                          (org-museum--file-link-refers-to-p
+                           (match-string 1) buffer-file-name target-file)))
+                  found))))))
+   (buffer-list)))
+
 (defun org-museum--rename-link-files (old-id)
   "Return Org files containing wiki, museum, or id links to OLD-ID."
   (let ((pattern (org-museum--rename-link-pattern old-id))
@@ -3021,6 +3256,62 @@ Guards:
               (insert-file-contents file)
               (re-search-forward pattern nil t))
         (push file matches)))))
+
+(defun org-museum--file-link-refers-to-p (raw source-file target-file)
+  "Return non-nil when RAW file link in SOURCE-FILE resolves to TARGET-FILE."
+  (let* ((parts (org-museum--file-link-parts raw))
+         (decoded (url-unhex-string (car parts)))
+         (resolved (expand-file-name decoded (file-name-directory source-file))))
+    (equal (org-museum--normalised-path resolved)
+           (org-museum--normalised-path target-file))))
+
+(defun org-museum--files-linking-to-path (target-file)
+  "Return scanned Org files containing a file link to TARGET-FILE."
+  (let (matches)
+    (dolist (file (org-museum--scan-files) (nreverse matches))
+      (when (with-temp-buffer
+              (insert-file-contents file)
+              (let (found)
+                (while (and (not found)
+                            (re-search-forward "\\[\\[file:\\([^]\n]+\\)\\]" nil t))
+                  (setq found (org-museum--file-link-refers-to-p
+                               (match-string 1) file target-file)))
+                found))
+        (push file matches)))))
+
+(defun org-museum--update-file-links-for-rename (old-path new-path &optional files)
+  "Rewrite file links from OLD-PATH to NEW-PATH in FILES; return file count."
+  (let ((count 0))
+    (dolist (file (or files (org-museum--scan-files)))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (let (modified)
+          (goto-char (point-min))
+          (while (re-search-forward "\\[\\[file:\\([^]\n]+\\)\\]" nil t)
+            (let* ((raw (match-string 1))
+                   (target-start (match-beginning 1))
+                   (target-end (match-end 1))
+                   (parts (org-museum--file-link-parts raw)))
+              (when (org-museum--file-link-refers-to-p raw file old-path)
+                (let* ((relative (replace-regexp-in-string
+                                  "\\\\" "/"
+                                  (file-relative-name new-path
+                                                      (file-name-directory file))))
+                       (path (if (string-match-p "%[[:xdigit:]][[:xdigit:]]" (car parts))
+                                 (replace-regexp-in-string
+                                  "%2F" "/" (url-hexify-string relative) t t)
+                               relative))
+                       (replacement (concat path
+                                            (when (cdr parts)
+                                              (concat "::" (cdr parts))))))
+                  (goto-char target-start)
+                  (delete-region target-start target-end)
+                  (insert replacement)
+                  (setq modified t)))))
+          (when modified
+            (write-region (point-min) (point-max) file nil 'silent)
+            (cl-incf count)))))
+    count))
 
 (defun org-museum--snapshot-files (files)
   "Return byte-for-byte snapshots of regular FILES."
@@ -3087,7 +3378,14 @@ Known limitation: does not handle custom_id property links."
                 (org-museum--modified-link-buffer old-id)))
       (error "Org Museum [Rename]: save referring page before renaming: %s"
              (buffer-file-name modified-referrer)))
-    (let* ((link-files (org-museum--rename-link-files old-id))
+    (when-let ((modified-referrer
+                (org-museum--modified-file-link-buffer old-path)))
+      (error "Org Museum [Rename]: save referring page before renaming: %s"
+             (buffer-file-name modified-referrer)))
+    (let* ((file-link-files (org-museum--files-linking-to-path old-path))
+           (link-files (delete-dups
+                        (append (org-museum--rename-link-files old-id)
+                                file-link-files)))
            (referrer-buffers
             (delq nil (mapcar #'get-file-buffer
                               (delete old-path (copy-sequence link-files)))))
@@ -3107,6 +3405,12 @@ Known limitation: does not handle custom_id property links."
             (org-museum--rewrite-page-id new-path new-id)
             (let ((count (org-museum--update-links-globally
                           old-id new-id update-files)))
+              (cl-incf count
+                        (org-museum--update-file-links-for-rename
+                         old-path new-path
+                         (mapcar (lambda (file)
+                                   (if (equal file old-path) new-path file))
+                                 file-link-files)))
               (org-museum-index-build t)
               (when (buffer-live-p page-buffer)
                 (with-current-buffer page-buffer
@@ -3574,51 +3878,63 @@ Applicable scope: org-museum-create-page (Fix-16)."
       (error value)))
    (t value)))
 
+(defun org-museum--org-roam-db-path ()
+  "Return the existing Org-roam database path used for graph relationships."
+  (let ((configured (and (boundp 'org-roam-db-location)
+                         (stringp org-roam-db-location)
+                         (expand-file-name org-roam-db-location))))
+    (cond
+     ((and configured (file-regular-p configured)) configured)
+     ((file-regular-p (expand-file-name "org-roam.db" org-museum-root-dir))
+      (expand-file-name "org-roam.db" org-museum-root-dir)))))
+
+(defun org-museum--with-org-roam-db (function)
+  "Call FUNCTION with the shared or a temporary Org-roam database connection."
+  (if org-museum--org-roam-db-connection
+      (funcall function org-museum--org-roam-db-connection)
+    (when-let ((db-path (org-museum--org-roam-db-path)))
+      (when (fboundp 'sqlite-open)
+        (let ((db (sqlite-open db-path)))
+          (unwind-protect (funcall function db)
+            (sqlite-close db)))))))
+
 (defun org-museum--org-roam-db-linked-page-ids (file pages-table aliases)
   "Return canonical page IDs linked from FILE according to org-roam.db."
-  (let ((db-path (expand-file-name "org-roam.db" org-museum-root-dir))
-        (result '()))
-    (when (and (fboundp 'sqlite-open)
-               (file-exists-p db-path))
-      (let ((db (sqlite-open db-path)))
-        (unwind-protect
-            (dolist (source-id (org-museum--page-node-ids
-                                (org-museum--find-page-by-path file pages-table)))
-              (dolist (source (list source-id (format "%S" source-id)))
-                (dolist (row (sqlite-select db
-                                            "select dest from links where source = ?"
-                                            (vector source)))
-                  (let* ((dest (org-museum--read-db-string (car row)))
-                         (page-id (org-museum--resolve-page-link-id
-                                   dest pages-table aliases)))
-                    (when page-id
-                      (cl-pushnew page-id result :test #'equal))))))
-          (sqlite-close db))))
+  (let ((result '()))
+    (org-museum--with-org-roam-db
+     (lambda (db)
+       (dolist (source-id (org-museum--page-node-ids
+                           (org-museum--find-page-by-path file pages-table)))
+         (dolist (source (list source-id (format "%S" source-id)))
+           (dolist (row (sqlite-select db
+                                       "select dest from links where source = ?"
+                                       (vector source)))
+             (let* ((dest (org-museum--read-db-string (car row)))
+                    (page-id (org-museum--resolve-page-link-id
+                              dest pages-table aliases)))
+               (when page-id
+                 (cl-pushnew page-id result :test #'equal))))))))
     result))
 (defun org-museum--org-roam-db-related-page-ids (file pages-table aliases)
   "Return canonical page IDs adjacent to FILE according to org-roam.db."
-  (let ((db-path (expand-file-name "org-roam.db" org-museum-root-dir))
-        (page (org-museum--find-page-by-path file pages-table))
+  (let ((page (org-museum--find-page-by-path file pages-table))
         (result '()))
-    (when (and page
-               (fboundp 'sqlite-open)
-               (file-exists-p db-path))
-      (let ((db (sqlite-open db-path)))
-        (unwind-protect
-            (dolist (node-id (org-museum--page-node-ids page))
-              (dolist (db-id (list node-id (format "%S" node-id)))
-                (dolist (row (sqlite-select db
-                                            "select source, dest from links where source = ? or dest = ?"
-                                            (vector db-id db-id)))
-                  (let* ((source (org-museum--read-db-string (nth 0 row)))
-                         (dest (org-museum--read-db-string (nth 1 row)))
-                         (other (if (equal source node-id) dest source))
-                         (page-id (org-museum--resolve-page-link-id
-                                   other pages-table aliases)))
-                    (when (and page-id
-                               (not (equal page-id (org-museum-page-id page))))
-                      (cl-pushnew page-id result :test #'equal))))))
-          (sqlite-close db))))
+    (when page
+      (org-museum--with-org-roam-db
+       (lambda (db)
+         (dolist (node-id (org-museum--page-node-ids page))
+           (dolist (db-id (list node-id (format "%S" node-id)))
+             (dolist (row (sqlite-select db
+                                         "select source, dest from links where source = ? or dest = ?"
+                                         (vector db-id db-id)))
+               (let* ((source (org-museum--read-db-string (nth 0 row)))
+                      (dest (org-museum--read-db-string (nth 1 row)))
+                      (other (if (equal source node-id) dest source))
+                      (page-id (org-museum--resolve-page-link-id
+                                other pages-table aliases)))
+                 (when (and page-id
+                            (not (equal page-id (org-museum-page-id page))))
+                   (cl-pushnew page-id result :test #'equal)))))))))
     result))
 (defun org-museum--build-page-id-aliases (pages-table)
   "Return a hash table mapping Org IDs and page IDs to canonical page IDs."
@@ -3908,6 +4224,18 @@ function persistRecoveredHeading(db,saved,target){
       .objectStore('readingState').put(saved);
   }catch(_error){}
 }
+function showRestoreNotice(){
+  if(location.hash)return;
+  var notice=document.createElement('div');notice.className='reading-restore-notice';
+  notice.setAttribute('role','status');notice.textContent='已恢复上次阅读位置';
+  var topButton=document.createElement('button');topButton.type='button';
+  topButton.textContent='回到开头';topButton.addEventListener('click',function(){
+    if(scroller===window)window.scrollTo({top:0,behavior:'smooth'});
+    else scroller.scrollTo({top:0,behavior:'smooth'});notice.remove();
+  });
+  notice.appendChild(topButton);document.body.appendChild(notice);
+  setTimeout(function(){notice.remove();},8000);
+}
 function record(){
   updateEngagement();
   var state=metrics(),engagedMs=currentEngagedMs(),progress=state.ratio;
@@ -3960,10 +4288,11 @@ function restore(){
       target=headingByTitle(saved.lastHeadingTitle);
       if(target)persistRecoveredHeading(db,saved,target);
     }
-    if(target)target.scrollIntoView({block:'start'});
+    if(target){target.scrollIntoView({block:'start'});showRestoreNotice();}
     else if(saved.scrollRatio>0)requestAnimationFrame(function(){
       var top=saved.scrollRatio*metrics().height;
       if(scroller===window)window.scrollTo(0,top);else scroller.scrollTop=top;
+      showRestoreNotice();
     });
   }).catch(function(){});
 }
@@ -4181,7 +4510,7 @@ Known limitation: category coloring ignores :node-color and :center-color."
     node.append('text').attr('dx',13).attr('dy','.35em')
       .text(function(d){return d.name;})
       .style('font-size','%s').style('fill','#f8f8f2')
-      .style('font-family','var(--font-sans)');
+      .style('font-family','var(--font-ui)');
   }
   if(%s){node.on('click',function(e,d){
     var target=d.url||(d.id+'.html');
@@ -4228,14 +4557,21 @@ Applicable scope: org-museum--generate-local-graph-html."
          (nodes      (list `((id . ,center-id)
                              (name . ,(org-museum-page-title page))
                              (center . t)
-                             (degree . 0)
+                             (degree . ,(length
+                                         (cl-union
+                                          (org-museum-page-links-to page)
+                                          (org-museum-page-linked-from page)
+                                          :test #'equal)))
                              (url . ,(org-museum--page-href center-id out-file)))))
          (links      '()))
     (dolist (nid capped)
       (when-let ((p (gethash nid pages)))
         (push `((id . ,nid)
                 (name . ,(org-museum-page-title p))
-                (degree . ,(length (org-museum-page-links-to p)))
+                (degree . ,(length
+                            (cl-union (org-museum-page-links-to p)
+                                      (org-museum-page-linked-from p)
+                                      :test #'equal)))
                 (url . ,(org-museum--page-href nid out-file)))
               nodes)
         (if (member nid (org-museum-page-links-to page))
@@ -4334,6 +4670,8 @@ Applicable scope: org-museum--generate-local-graph-html."
       </div>
     </details>
     <div class=\"graph-view-controls\">
+      <button type=\"button\" id=\"btn-zoom-in\" aria-label=\"放大图谱\">放大</button>
+      <button type=\"button\" id=\"btn-zoom-out\" aria-label=\"缩小图谱\">缩小</button>
       <button type=\"button\" id=\"btn-reset\">重置视图</button>
       <button type=\"button\" id=\"btn-freeze\">冻结布局</button>
       <small>拖动画布 · 滚轮缩放</small>
@@ -4344,7 +4682,8 @@ Applicable scope: org-museum--generate-local-graph-html."
     <div id=\"graph-canvas\"></div>
     <div id=\"graph-zero-notice\" hidden>
       <strong>尚未形成知识连线</strong>
-      <span>当前显示真实孤立节点，不推断关系。</span>
+      <span>在笔记中加入 <code>[[wiki:笔记ID][标题]]</code> 即可创建关系。</span>
+      <button type=\"button\" id=\"graph-zero-copy\">复制第一条 Wiki 链接</button>
     </div>
     <details id=\"graph-isolated-fallback\" hidden>
       <summary>孤立笔记 <span id=\"graph-isolated-count\">00</span></summary>
@@ -4355,7 +4694,7 @@ Applicable scope: org-museum--generate-local-graph-html."
       <strong id=\"tt-title\"></strong><span id=\"tt-meta\"></span>
     </div>
     <div class=\"graph-workspace-footer\">
-      <p id=\"graph-selection-prompt\">选择节点查看详情</p>
+      <p id=\"graph-selection-prompt\">悬停查看详情；单击打开文章，Space 固定详情</p>
       <div id=\"graph-selected-detail\" hidden><span></span><a href=\"index.html\">打开笔记 →</a>
         <button type=\"button\" id=\"btn-clear-selection\">清除选择</button>
       </div>
@@ -4381,9 +4720,12 @@ var selectionPrompt=document.getElementById('graph-selection-prompt');
 var matchStatus=document.getElementById('graph-match-status');
 var clearSelectionButton=document.getElementById('btn-clear-selection');
 var cats=Array.from(new Set(nodes.map(function(node){return node.group||'未分类';}))).sort();
-var focusId=new URLSearchParams(location.search).get('focus')||'';
+var graphParams=new URLSearchParams(location.search);
+var focusId=graphParams.get('focus')||'';
 var state={query:'',category:'*',selectedId:
   nodes.some(function(node){return node.id===focusId;})?focusId:''};
+state.query=(graphParams.get('q')||'').trim().toLowerCase();
+state.category=graphParams.get('category')||'*';
 var simulation=null;
 var frozen=false;
 var graphReady=false;
@@ -4403,6 +4745,15 @@ if(!Number.isFinite(tickLimit)||tickLimit<0)tickLimit=0;
 if(!Number.isFinite(preTicks)||preTicks<0)preTicks=0;
 
 function count(value){return String(value).padStart(2,'0');}
+if(search)search.value=state.query;
+function writeGraphUrl(mode){
+  var url=new URL(location.href);
+  ['q','category'].forEach(function(key){url.searchParams.delete(key);});
+  if(state.query)url.searchParams.set('q',state.query);
+  if(state.category!=='*')url.searchParams.set('category',state.category);
+  history[mode==='push'?'pushState':'replaceState'](
+    {},'',url.pathname+url.search+url.hash);
+}
 document.getElementById('stat-nodes').textContent=count(nodes.length);
 document.getElementById('stat-links').textContent=count(links.length);
 document.getElementById('stat-cats').textContent=count(cats.length);
@@ -4492,6 +4843,7 @@ function syncGraphCategoryControls(){
 }
 function setCategory(value){
   state.category=value||'*';syncGraphCategoryControls();
+  writeGraphUrl('push');
   if(graphReady)applyFilter();
   if(isZeroLinkGraph||!graphReady)renderFallbackList();
 }
@@ -4540,6 +4892,19 @@ function selectNode(node){
     ' / '+count(node.degree||0)+' 条关系';
   selectedDetail.querySelector('a').href=nodeHref(node);
 }
+function previewNode(node){
+  if(!selectedDetail||state.selectedId)return;
+  selectedDetail.hidden=false;if(selectionPrompt)selectionPrompt.hidden=true;
+  selectedDetail.querySelector('span').textContent=
+    String(nodes.indexOf(node)+1).padStart(2,'0')+' / '+(node.group||'未分类')+
+    ' / '+count(node.degree||0)+' 条关系';
+  selectedDetail.querySelector('a').href=nodeHref(node);
+}
+function clearPreview(){
+  if(state.selectedId)return;
+  if(selectedDetail)selectedDetail.hidden=true;
+  if(selectionPrompt)selectionPrompt.hidden=false;
+}
 function clearSelection(){
   state.selectedId='';activeNeighborhood=null;
   if(nodeSelection){
@@ -4567,11 +4932,17 @@ if(typeof d3==='undefined'||!canvas){
   if(viewControls)viewControls.hidden=true;
   renderFallbackList();
   if(search)search.addEventListener('input',function(){
-    state.query=search.value.trim().toLowerCase();renderFallbackList();
+    state.query=search.value.trim().toLowerCase();writeGraphUrl();renderFallbackList();
   });
   return;
 }
-if(isZeroLinkGraph)renderFallbackList();
+if(isZeroLinkGraph){
+  renderFallbackList();
+  var zeroCopy=document.getElementById('graph-zero-copy');
+  if(zeroCopy&&nodes[0])zeroCopy.addEventListener('click',function(){
+    copyWikiLink('[[wiki:'+nodes[0].id+']['+nodes[0].name+']]',zeroCopy);
+  });
+}
 var width=canvas.clientWidth||900;
 var height=canvas.clientHeight||760;
 var svg=d3.select(canvas).append('svg')
@@ -4587,6 +4958,12 @@ var zoom=d3.zoom().scaleExtent([0.35,5]).on('zoom',function(event){
   if(nodeSelection)nodeSelection.select('.graph-node-hit-target').attr('r',16/zoomScale);
 });
 svg.call(zoom);
+function zoomBy(factor){
+  var action=function(){svg.call(zoom.scaleBy,factor);};
+  if(reduceMotion)action();else svg.transition().duration(180).call(zoom.scaleBy,factor);
+}
+document.getElementById('btn-zoom-in').addEventListener('click',function(){zoomBy(1.25);});
+document.getElementById('btn-zoom-out').addEventListener('click',function(){zoomBy(0.8);});
 layer.classed('graph-labels-dense',true);
 var linkSelection=layer.append('g').attr('class','graph-links')
   .selectAll('line').data(links).enter().append('line');
@@ -4728,6 +5105,7 @@ var tooltip=document.getElementById('graph-tooltip');
 nodeSelection
   .on('mouseenter',function(event,node){
     activeNeighborhood=neighborhood(node);applyFilter();
+    previewNode(node);
     document.getElementById('tt-title').textContent=node.name;
     document.getElementById('tt-meta').textContent=(node.group||'未分类')+' · '+count(node.degree||0)+' 条关系';
     tooltip.classList.add('is-visible');
@@ -4737,10 +5115,13 @@ nodeSelection
   })
   .on('mouseleave',function(){
     tooltip.classList.remove('is-visible');
+    clearPreview();
     var selectedNode=nodes.find(function(node){return node.id===state.selectedId;});
     activeNeighborhood=selectedNode?neighborhood(selectedNode):null;applyFilter();
   })
   .on('click',function(_event,node){openNode(node);})
+  .on('focus',function(_event,node){previewNode(node);})
+  .on('blur',clearPreview)
   .on('keydown',function(event,node){
     if(event.key==='Enter'){event.preventDefault();openNode(node);}
     else if(event.key===' '){event.preventDefault();selectNode(node);}
@@ -4765,6 +5146,14 @@ if(motionQuery.addEventListener)motionQuery.addEventListener('change',syncMotion
 else if(motionQuery.addListener)motionQuery.addListener(syncMotionPreference);
 if(search)search.addEventListener('input',function(){
   state.query=search.value.trim().toLowerCase();applyFilter();
+  writeGraphUrl();
+  if(isZeroLinkGraph)renderFallbackList();
+});
+window.addEventListener('popstate',function(){
+  var params=new URLSearchParams(location.search);
+  state.query=(params.get('q')||'').trim().toLowerCase();
+  state.category=params.get('category')||'*';
+  if(search)search.value=state.query;syncGraphCategoryControls();applyFilter();
   if(isZeroLinkGraph)renderFallbackList();
 });
 applyFilter();
@@ -4924,7 +5313,7 @@ function initCodeBlocks(){
     var m=pre.className.match(/(?:^|\\s)src-([^\\s]+)/);
     return langMap[m?m[1]:'text']||(m?m[1]:'plaintext');
   }
-  function copyText(text,done){
+  function copyText(text,done,fail){
     if(navigator.clipboard&&navigator.clipboard.writeText){
       navigator.clipboard.writeText(text).then(done,function(){fallback();});
     }else{fallback();}
@@ -4933,8 +5322,9 @@ function initCodeBlocks(){
       ta.value=text;ta.setAttribute('readonly','');
       ta.style.position='fixed';ta.style.left='-9999px';
       document.body.appendChild(ta);ta.select();
-      try{document.execCommand('copy');}catch(e){}
-      document.body.removeChild(ta);done();
+      var copied=false;
+      try{copied=document.execCommand('copy')===true;}catch(e){copied=false;}
+      document.body.removeChild(ta);(copied?done:fail)();
     }
   }
   blocks.forEach(function(pre){
@@ -4961,12 +5351,16 @@ function initCodeBlocks(){
     var isLong=lineCount>18||code.getBoundingClientRect().height>320;
     var lbl=document.createElement('span');lbl.className='code-lang-label';
     lbl.textContent=(lang==='plaintext'?'TEXT':lang).toUpperCase();
-    var btn=document.createElement('button');btn.className='code-copy-btn';btn.textContent='COPY';
+    var btn=document.createElement('button');btn.className='code-copy-btn';btn.textContent='复制';
     btn.type='button';
+    btn.setAttribute('aria-label','复制代码');
     btn.onclick=function(){
       copyText(code.innerText||code.textContent,function(){
-        btn.textContent='COPIED!';btn.classList.add('copied');
-        setTimeout(function(){btn.textContent='COPY';btn.classList.remove('copied');},2000);
+        btn.textContent='已复制';btn.classList.add('copied');
+        setTimeout(function(){btn.textContent='复制';btn.classList.remove('copied');},2000);
+      },function(){
+        btn.textContent='复制失败';btn.classList.remove('copied');
+        setTimeout(function(){btn.textContent='复制';},2500);
       });
     };
     pre.insertBefore(lbl,pre.firstChild);
@@ -4975,12 +5369,14 @@ function initCodeBlocks(){
       var toggle=document.createElement('button');
       toggle.className='code-copy-btn code-toggle-btn';
       toggle.type='button';
-      toggle.textContent='EXPAND';
+      toggle.textContent='展开';
+      toggle.setAttribute('aria-label','展开代码块');
       toggle.setAttribute('aria-expanded','false');
       toggle.onclick=function(){
         var expanded=pre.classList.toggle('org-museum-code-expanded');
         pre.classList.toggle('org-museum-code-collapsed',!expanded);
-      toggle.textContent=expanded?'COLLAPSE':'EXPAND';
+      toggle.textContent=expanded?'收起':'展开';
+      toggle.setAttribute('aria-label',expanded?'收起代码块':'展开代码块');
       toggle.setAttribute('aria-expanded',expanded?'true':'false');
       scheduleCodeScrollAccess();
       };
@@ -5004,23 +5400,34 @@ function initCodeBlocks(){
   }
   scheduleCodeScrollAccess();
   window.addEventListener('resize',scheduleCodeScrollAccess,{passive:true});
-  function runHighlight(){
-    if(!window.hljs)return;
-    codes.forEach(function(code){
-      var lang=code.getAttribute('data-language')||'';
-      if(!code.dataset.highlighted&&(!lang||hljs.getLanguage(lang))){
-        hljs.highlightElement(code);
-      }else if(lang&&!hljs.getLanguage(lang)){
-        code.classList.add('no-highlight');
-      }
+  function reportHighlightFailure(message){
+    document.body.classList.add('org-museum-no-code-highlight');
+    codeBlocks.forEach(function(pre){
+      if(pre.querySelector('.code-highlight-status'))return;
+      var status=document.createElement('span');status.className='code-highlight-status';
+      status.setAttribute('role','status');status.textContent=message;
+      pre.appendChild(status);
     });
-    scheduleCodeScrollAccess();
+  }
+  function runHighlight(){
+    if(!window.hljs){reportHighlightFailure('语法高亮不可用，代码内容仍可阅读');return;}
+    try{
+      codes.forEach(function(code){
+        var lang=code.getAttribute('data-language')||'';
+        if(!code.dataset.highlighted&&(!lang||hljs.getLanguage(lang))){
+          hljs.highlightElement(code);
+        }else if(lang&&!hljs.getLanguage(lang)){
+          code.classList.add('no-highlight');
+        }
+      });
+      scheduleCodeScrollAccess();
+    }catch(_error){reportHighlightFailure('语法高亮执行失败，代码内容仍可阅读');}
   }
   function loadScript(src,done,fail){
     if(!src){(fail||function(){})();return;}
     var js=document.createElement('script');
     js.src=src;js.async=true;js.onload=done;
-    js.onerror=fail||function(){document.body.classList.add('org-museum-no-code-highlight');};
+    js.onerror=fail||function(){reportHighlightFailure('语法高亮资源加载失败，代码内容仍可阅读');};
     document.head.appendChild(js);
   }
   function runAfterLanguageModules(){
@@ -5270,11 +5677,13 @@ window.addEventListener('resize',rsz);
 function startMatrix(){
   if(!fxc)return;
   var ctx=fxc.getContext('2d'),w=fxc.width,h=fxc.height,fs=14,
+      codeFont=getComputedStyle(document.documentElement)
+        .getPropertyValue('--font-code').trim(),
       cols=Math.floor(w/fs),drps=[];
   for(var x=0;x<cols;x++)drps[x]=1;
   function draw(){
     ctx.fillStyle='rgba(39,40,34,0.05)';ctx.fillRect(0,0,w,h);
-    ctx.fillStyle='#66d9ef';ctx.font=fs+'px monospace';
+    ctx.fillStyle='#66d9ef';ctx.font=fs+'px '+codeFont;
     for(var i=0;i<drps.length;i++){
       var txt=String.fromCharCode(Math.floor(Math.random()*128));
       ctx.fillText(txt,i*fs,drps[i]*fs);
@@ -5543,6 +5952,29 @@ PAGES is used to exclude links that resolve to another indexed Wiki page."
                     records))))))
     (nreverse records)))
 
+(defun org-museum--page-self-links (page pages)
+  "Return literal links in PAGE that resolve back to PAGE itself."
+  (let ((source (org-museum-page-path page))
+        (page-id (org-museum-page-id page))
+        (aliases (org-museum--build-page-id-aliases pages))
+        self-links)
+    (when (file-readable-p source)
+      (with-temp-buffer
+        (insert-file-contents source)
+        (goto-char (point-min))
+        (while (re-search-forward
+                "\\[\\[\\(?:wiki\\|museum\\|id\\):\\([^]\n]+\\)\\]" nil t)
+          (when (equal page-id
+                       (org-museum--resolve-page-link-id
+                        (match-string-no-properties 1) pages aliases))
+            (push (match-string-no-properties 0) self-links)))
+        (goto-char (point-min))
+        (while (re-search-forward "\\[\\[file:\\([^]\n]+\\)\\]" nil t)
+          (when (org-museum--file-link-refers-to-p
+                 (match-string-no-properties 1) source source)
+            (push (match-string-no-properties 0) self-links)))))
+    (nreverse self-links)))
+
 (defun org-museum--health-heading-paths (page)
   "Return exportable H2--H4 outline paths for PAGE without building an AST.
 Selection-tag exports and non-default task filtering fall back to the canonical
@@ -5623,7 +6055,27 @@ Keys:
 Applicable scope: org-museum-status, org-museum-index-verify, CI checks."
   (let (ghost broken isolated isolated-published isolated-draft draft
               missing-description local-external local-missing
-              duplicate-heading-paths legacy-anchors)
+              duplicate-heading-paths legacy-anchors case-conflicts self-links)
+    (dolist (kind '(category tag))
+      (let ((groups (make-hash-table :test #'equal)))
+        (maphash
+         (lambda (id page)
+           (dolist (value (if (eq kind 'category)
+                              (list (org-museum-page-category page))
+                            (org-museum-page-tags page)))
+             (let* ((key (downcase (or value "")))
+                    (entry (gethash key groups)))
+               (puthash key
+                        (list (cl-adjoin value (car entry) :test #'equal)
+                              (cl-adjoin id (cadr entry) :test #'equal))
+                        groups))))
+         pages)
+        (maphash
+         (lambda (_key entry)
+           (when (> (length (car entry)) 1)
+             (push (list :kind kind :values (car entry) :page-ids (cadr entry))
+                   case-conflicts)))
+         groups)))
     (maphash
      (lambda (id page)
        (unless (file-exists-p (org-museum-page-path page))
@@ -5644,6 +6096,8 @@ Applicable scope: org-museum-status, org-museum-index-verify, CI checks."
        (when (string-empty-p (string-trim
                               (or (org-museum-page-description page) "")))
          (push id missing-description))
+       (dolist (literal (org-museum--page-self-links page pages))
+         (push (cons id literal) self-links))
        (dolist (record (org-museum--page-local-file-links page pages))
          (push record local-external)
          (unless (plist-get record :exists)
@@ -5660,6 +6114,8 @@ Applicable scope: org-museum-status, org-museum-index-verify, CI checks."
           :missing-description missing-description
           :local-external local-external
           :local-missing local-missing
+          :case-conflicts (nreverse case-conflicts)
+          :self-links (nreverse self-links)
           :duplicate-heading-paths (nreverse duplicate-heading-paths)
           :legacy-anchors (nreverse legacy-anchors))))
 
@@ -6041,44 +6497,79 @@ Applicable scope: daily editing workflow, discoverability."
 ;; Fix-02: debounced on-save via run-with-idle-timer.
 (defun org-museum--on-save ()
   "Incremental index update on buffer save.
-[Fix-02] Uses `run-with-idle-timer' to debounce rapid consecutive saves.
-Multiple saves within `org-museum-save-debounce-seconds' are coalesced into
-a single index update + flush, reducing unnecessary IO.
+[Fix-02] Uses one project-level idle timer to debounce consecutive saves.
+Multiple buffers are coalesced into one transactional index persistence.
 Guards:
   - org-museum-mode must be active
   - org-museum-root-dir must be set
   - File must be inside project root (G-1)
-  - File must have .org extension
-Known limitation: timer is per-buffer; simultaneous saves of different
-  project files each start their own timer.  Cross-file coalescing would
-  require a global timer, which is a future improvement."
+  - File must have .org extension"
   (when (and org-museum-mode
              org-museum-root-dir
              (buffer-file-name)
              (org-museum--file-in-project-p (buffer-file-name))
              (string-suffix-p ".org" (buffer-file-name)))
-    (when (timerp org-museum--save-timer)
-      (cancel-timer org-museum--save-timer)
-      (setq org-museum--save-timer nil))
-    (let ((file (buffer-file-name)))
-      (setq org-museum--save-timer
-            (run-with-idle-timer
-             org-museum-save-debounce-seconds nil
-             (lambda ()
-               (setq org-museum--save-timer nil)
-               (org-museum--on-save-flush file)))))))
+    (puthash (expand-file-name (buffer-file-name)) t
+             org-museum--pending-save-files)
+    (setq org-museum--project-save-retry-used nil)
+    (when (timerp org-museum--project-save-timer)
+      (cancel-timer org-museum--project-save-timer))
+    (setq org-museum--project-save-timer
+          (run-with-idle-timer
+           org-museum-save-debounce-seconds nil
+           #'org-museum--flush-pending-saves))))
 
-(defun org-museum--on-save-flush (file)
-  "Perform the actual index update for FILE after the debounce delay.
-[Fix-02] Called by the idle timer set up in `org-museum--on-save'.
-Applicable scope: debounced save-hook (Fix-02).
-Known limitation: ID-change detection uses a simple regex; see on-save
-  docstring for the full list of edge cases."
-  (let* ((pages  (when org-museum--index
-                   (org-museum-index-pages org-museum--index)))
-         (old-pg (when pages
-                   (org-museum--find-page-by-path file pages)))
-         (old-id (when old-pg (org-museum-page-id old-pg)))
+(defun org-museum--flush-pending-saves ()
+  "Apply all pending saves to one private index and persist it once."
+  (setq org-museum--project-save-timer nil)
+  (let (files)
+    (maphash (lambda (file _value) (push file files))
+             org-museum--pending-save-files)
+    (when files
+      (setq files (nreverse files))
+      (unless org-museum--index (org-museum-index-build))
+      (let* ((working (org-museum--alist-to-index
+                       (org-museum--index-to-alist org-museum--index)))
+             (source-snapshots
+              (org-museum--snapshot-files (org-museum--scan-files)))
+             (index-path (org-museum--index-file-path))
+             (index-existed (file-exists-p index-path))
+             (index-snapshot (org-museum--snapshot-files (list index-path)))
+             committed)
+        (condition-case err
+            (let ((org-museum--index working))
+              (dolist (file files)
+                (org-museum--on-save-handle-id-change file)
+                (org-museum--index-update-file-in-place file))
+              (org-museum--index-save working index-path)
+              (setq committed working))
+          (error
+           (org-museum--restore-file-snapshots source-snapshots)
+           (cond
+            (index-snapshot
+             (org-museum--restore-file-snapshots index-snapshot))
+            ((and (not index-existed) (file-regular-p index-path))
+             (delete-file index-path)))
+           (message "Org Museum [Index]: batched save update failed: %s"
+                    (error-message-string err))
+           (unless org-museum--project-save-retry-used
+             (setq org-museum--project-save-retry-used t
+                   org-museum--project-save-timer
+                   (run-with-idle-timer
+                    org-museum-save-debounce-seconds nil
+                    #'org-museum--flush-pending-saves)))))
+        (when committed
+          (setq org-museum--project-save-retry-used nil)
+          (setq org-museum--index committed)
+          (dolist (file files)
+            (remhash file org-museum--pending-save-files)))))))
+
+(defun org-museum--on-save-handle-id-change (file)
+  "Offer to update cross-links when FILE changed its WIKI_ID."
+  (let* ((pages (and org-museum--index
+                     (org-museum-index-pages org-museum--index)))
+         (old-page (and pages (org-museum--find-page-by-path file pages)))
+         (old-id (and old-page (org-museum-page-id old-page)))
          (new-id (with-temp-buffer
                    (insert-file-contents file)
                    (goto-char (point-min))
@@ -6086,18 +6577,19 @@ Known limitation: ID-change detection uses a simple regex; see on-save
                         "^#\\+WIKI_ID:\\s-*\\(\\S-+\\)\\s-*$" nil t)
                        (string-trim (match-string 1))
                      (org-museum--generate-id file)))))
-    (when (and old-id new-id
-               (not (string= old-id new-id))
-               pages)
+    (when (and old-id new-id (not (equal old-id new-id)) pages)
       (if (gethash new-id pages)
-          (message "Org Museum [Index]: ID [%s] already occupied — \
-rename aborted" new-id)
+          (error "Org Museum [Index]: ID [%s] is already occupied" new-id)
         (when (yes-or-no-p
-               (format "Org Museum: WIKI_ID changed %s → %s; \
-update all cross-links? " old-id new-id))
-          (let ((count (org-museum--update-links-globally old-id new-id)))
-            (message "Org Museum [Index]: updated %d file(s)." count)))))
-    (org-museum--index-update-file file)))
+               (format "Org Museum: WIKI_ID changed %s → %s; update all cross-links? "
+                       old-id new-id))
+          (org-museum--update-links-globally old-id new-id))))))
+
+(defun org-museum--on-save-flush (file)
+  "Compatibility entry point: enqueue FILE and flush the project batch now."
+  (puthash (expand-file-name file) t org-museum--pending-save-files)
+  (setq org-museum--project-save-retry-used nil)
+  (org-museum--flush-pending-saves))
 
 (provide 'org-museum)
 
