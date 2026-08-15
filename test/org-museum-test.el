@@ -18,6 +18,12 @@
             start (match-end 0)))
     count))
 
+(defun org-museum-test--file-string (file)
+  "Return FILE contents as a string for byte-preservation assertions."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (buffer-string)))
+
 (defun org-museum-test--page (id title modified &optional category tags status path)
   "Build a test page with ID, TITLE, and MODIFIED."
   (make-org-museum-page
@@ -71,6 +77,641 @@
                                     (error-message-string error-data)))
             (should (string-match-p "second\\.org"
                                     (error-message-string error-data)))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-create-page-saves-before-rebuilding-index ()
+  (let* ((root (make-temp-file "org-museum-create-page-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-open-browser-after-export nil)
+         (file (expand-file-name "pages/test/created-page.org" root))
+         created-buffer)
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "pages" root) t)
+          (org-museum-index-build t)
+          (org-museum-create-page "Created Page" "Test")
+          (setq created-buffer (current-buffer))
+          (should (equal (buffer-file-name) file))
+          (should (file-exists-p file))
+          (should-not (buffer-modified-p))
+          (should (gethash "created-page"
+                           (org-museum-index-pages org-museum--index)))
+          (should (= 1 (hash-table-count
+                        (org-museum-index-pages org-museum--index)))))
+      (when (buffer-live-p created-buffer)
+        (with-current-buffer created-buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer created-buffer))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-create-page-rejects-a-separator-only-derived-id ()
+  (let* ((root (make-temp-file "org-museum-create-id-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-open-browser-after-export nil)
+         (file (expand-file-name "pages/test/-.org" root)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "pages" root) t)
+          (org-museum-index-build t)
+          (should-error (org-museum-create-page "!!!" "Test"))
+          (should-not (file-exists-p file))
+          (should (= 0 (hash-table-count
+                        (org-museum-index-pages org-museum--index)))))
+      (when-let ((buffer (get-file-buffer file)))
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-create-page-rejects-a-separator-only-category ()
+  (let* ((root (make-temp-file "org-museum-create-category-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-open-browser-after-export nil)
+         (file (expand-file-name "pages/valid-page.org" root)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "pages" root) t)
+          (org-museum-index-build t)
+          (should-error (org-museum-create-page "Valid Page" "!!!"))
+          (should-not (file-exists-p file))
+          (should (= 0 (hash-table-count
+                        (org-museum-index-pages org-museum--index)))))
+      (when-let ((buffer (get-file-buffer file)))
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-create-page-rejects-reserved-path-components ()
+  "Reserved page and category names fail before touching the filesystem."
+  (let* ((root (make-temp-file "org-museum-create-path-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-open-browser-after-export nil)
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "pages" root) t)
+          (dolist (input '(("CON" "Test") ("Valid" "NUL")))
+            (let ((message
+                   (condition-case error-data
+                       (progn
+                         (org-museum-create-page (car input) (cadr input))
+                         nil)
+                     (error (error-message-string error-data)))))
+              (should (string-prefix-p "Org Museum [Create]:" message))))
+          (should (= 0 (hash-table-count
+                        (org-museum-index-pages org-museum--index))))
+          (should-not (get-file-buffer
+                       (expand-file-name "pages/test/con.org" root)))
+          (should-not (file-exists-p
+                       (expand-file-name "pages/nul/valid.org" root))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-create-page-rolls-back-when-index-persistence-fails ()
+  "A failed index write must not leave a page, buffer, or partial index."
+  (let* ((root (make-temp-file "org-museum-create-rollback-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-open-browser-after-export nil)
+         (file (expand-file-name "pages/test/created-page.org" root))
+         (index-path (expand-file-name ".org-museum-index.json" root))
+         (pages (make-hash-table :test 'equal))
+         (original-index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal)))
+         (org-museum--index original-index))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "pages" root) t)
+          ;; A directory at the cache path deterministically makes the final
+          ;; atomic rename fail after the page template has been saved.
+          (make-directory index-path)
+          (should-error (org-museum-create-page "Created Page" "Test"))
+          (should-not (file-exists-p file))
+          (should-not (get-file-buffer file))
+          (should (eq org-museum--index original-index))
+          (should (= 0 (hash-table-count
+                        (org-museum-index-pages org-museum--index)))))
+      (when-let ((buffer (get-file-buffer file)))
+        (with-current-buffer buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-rename-page-rejects-path-like-id-before-moving-file ()
+  (let* ((root (make-temp-file "org-museum-rename-id-test-" t))
+         (old-file (expand-file-name "pages/test/original.org" root))
+         (escaped-file (expand-file-name "pages/escaped.org" root))
+         (valid-file (expand-file-name "pages/test/新-id.org" root))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory old-file) t)
+          (with-temp-file old-file
+            (insert "#+TITLE: Original\n#+WIKI_ID: original\n#+CATEGORY: Test\n"))
+          (puthash "original"
+                   (org-museum-test--page
+                    "original" "Original" 1 "Test" nil "published" old-file)
+                   pages)
+          (should-error (org-museum-rename-page "original" "../escaped"))
+          (should-error (org-museum-rename-page "original" "bad?name"))
+          (should (file-exists-p old-file))
+          (should-not (file-exists-p escaped-file))
+          (with-temp-buffer
+            (insert-file-contents old-file)
+            (should (re-search-forward
+                     "^#\\+WIKI_ID: original$" nil t)))
+          (org-museum-rename-page "original" "新-id")
+          (should-not (file-exists-p old-file))
+          (should (file-exists-p valid-file))
+          (should (gethash "新-id"
+                           (org-museum-index-pages org-museum--index))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-rename-page-rejects-cross-platform-reserved-ids ()
+  "Reserved path components fail with Org Museum feedback before any move."
+  (let* ((root (make-temp-file "org-museum-rename-path-test-" t))
+         (old-file (expand-file-name "pages/test/original.org" root))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory old-file) t)
+          (with-temp-file old-file
+            (insert "#+TITLE: Original\n#+WIKI_ID: original\n#+CATEGORY: Test\n"))
+          (puthash "original"
+                   (org-museum-test--page
+                    "original" "Original" 1 "Test" nil "published" old-file)
+                   pages)
+          (dolist (invalid '("bad?name" "bad:name" "bad*name" "bad|name"
+                             "bad<name" "bad>name" "bad\"name" "trailing."
+                             "CON" "nul.txt"))
+            (let ((message
+                   (condition-case error-data
+                       (progn
+                         (org-museum-rename-page "original" invalid)
+                         nil)
+                     (error (error-message-string error-data)))))
+              (should (string-prefix-p
+                       "Org Museum [Rename]: new ID must be one non-empty path-safe name"
+                       message))
+              (should (file-exists-p old-file))
+              (should (gethash "original" pages)))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-rename-page-rolls-back-after-index-persistence-fails ()
+  "A late index failure restores the page identity and every rewritten link."
+  (let* ((root (make-temp-file "org-museum-rename-rollback-test-" t))
+         (old-file (expand-file-name "pages/test/original.org" root))
+         (new-file (expand-file-name "pages/test/renamed.org" root))
+         (ref-file (expand-file-name "pages/test/referrer.org" root))
+         (index-path (expand-file-name ".org-museum-index.json" root))
+         (old-content
+          "#+TITLE: Original\n#+WIKI_ID: original\n#+CATEGORY: Test\n")
+         (ref-content
+          "#+TITLE: Referrer\n#+WIKI_ID: referrer\n#+CATEGORY: Test\n[[wiki:original][Original]]\n")
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (pages (make-hash-table :test 'equal))
+         (original-index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal)))
+         (org-museum--index original-index))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory old-file) t)
+          (with-temp-file old-file (insert old-content))
+          (with-temp-file ref-file (insert ref-content))
+          (puthash "original"
+                   (org-museum-test--page
+                    "original" "Original" 1 "Test" nil "published" old-file)
+                   pages)
+          (puthash "referrer"
+                   (org-museum-test--page
+                    "referrer" "Referrer" 1 "Test" nil "published" ref-file)
+                   pages)
+          (make-directory index-path)
+          (should-error (org-museum-rename-page "original" "renamed"))
+          (should (file-exists-p old-file))
+          (should-not (file-exists-p new-file))
+          (should (equal (with-temp-buffer
+                           (insert-file-contents old-file)
+                           (buffer-string))
+                         old-content))
+          (should (equal (with-temp-buffer
+                           (insert-file-contents ref-file)
+                           (buffer-string))
+                         ref-content))
+          (should (eq org-museum--index original-index))
+          (should (gethash "original" pages))
+          (should-not (gethash "renamed" pages)))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-rename-page-keeps-an-open-page-buffer-consistent ()
+  "A successful rename keeps the user's existing page buffer on the new file."
+  (let* ((root (make-temp-file "org-museum-rename-buffer-test-" t))
+         (old-file (expand-file-name "pages/test/original.org" root))
+         (new-file (expand-file-name "pages/test/renamed.org" root))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal)))
+         page-buffer)
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory old-file) t)
+          (with-temp-file old-file
+            (insert "#+TITLE: Original\n#+WIKI_ID: original\n#+CATEGORY: Test\n"))
+          (puthash "original"
+                   (org-museum-test--page
+                    "original" "Original" 1 "Test" nil "published" old-file)
+                   pages)
+          (setq page-buffer (find-file-noselect old-file))
+          (org-museum-rename-page "original" "renamed")
+          (should (buffer-live-p page-buffer))
+          (with-current-buffer page-buffer
+            (should (equal (buffer-file-name) new-file))
+            (should-not (buffer-modified-p))
+            (goto-char (point-min))
+            (should (re-search-forward "^#\\+WIKI_ID: renamed$" nil t))))
+      (when (buffer-live-p page-buffer)
+        (with-current-buffer page-buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer page-buffer))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-rename-page-refuses-an-unsaved-page-buffer ()
+  "Rename must not move a file while its user buffer has unsaved content."
+  (let* ((root (make-temp-file "org-museum-rename-unsaved-test-" t))
+         (old-file (expand-file-name "pages/test/original.org" root))
+         (new-file (expand-file-name "pages/test/renamed.org" root))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal)))
+         page-buffer)
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory old-file) t)
+          (with-temp-file old-file
+            (insert "#+TITLE: Original\n#+WIKI_ID: original\n#+CATEGORY: Test\n"))
+          (puthash "original"
+                   (org-museum-test--page
+                    "original" "Original" 1 "Test" nil "published" old-file)
+                   pages)
+          (setq page-buffer (find-file-noselect old-file))
+          (with-current-buffer page-buffer
+            (goto-char (point-max))
+            (insert "Unsaved change\n"))
+          (let ((message
+                 (condition-case error-data
+                     (progn
+                       (org-museum-rename-page "original" "renamed")
+                       nil)
+                   (error (error-message-string error-data)))))
+            (should (string-prefix-p
+                     "Org Museum [Rename]: save the page before renaming"
+                     message)))
+          (should (file-exists-p old-file))
+          (should-not (file-exists-p new-file))
+          (with-current-buffer page-buffer
+            (should (equal (buffer-file-name) old-file))
+            (should (buffer-modified-p))))
+      (when (buffer-live-p page-buffer)
+        (with-current-buffer page-buffer
+          (set-buffer-modified-p nil))
+        (kill-buffer page-buffer))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-rename-page-preserves-an-unindexed-target-file ()
+  "A filesystem collision must not delete or overwrite an unrelated page."
+  (let* ((root (make-temp-file "org-museum-rename-collision-test-" t))
+         (old-file (expand-file-name "pages/test/original.org" root))
+         (new-file (expand-file-name "pages/test/renamed.org" root))
+         (old-content "#+TITLE: Original\n#+WIKI_ID: original\n#+CATEGORY: Test\n")
+         (target-content "unindexed user content\n")
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory old-file) t)
+          (with-temp-file old-file (insert old-content))
+          (with-temp-file new-file (insert target-content))
+          (puthash "original"
+                   (org-museum-test--page
+                    "original" "Original" 1 "Test" nil "published" old-file)
+                   pages)
+          (should-error (org-museum-rename-page "original" "renamed"))
+          (should (equal (org-museum-test--file-string old-file) old-content))
+          (should (equal (org-museum-test--file-string new-file) target-content)))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-rename-page-rejects-a-visiting-target-buffer-early ()
+  "A target path already visited by another buffer fails before Wiki scanning."
+  (let* ((root (make-temp-file "org-museum-rename-target-buffer-test-" t))
+         (old-file (expand-file-name "pages/test/original.org" root))
+         (new-file (expand-file-name "pages/test/renamed.org" root))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal)))
+         target-buffer
+         scan-called)
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory old-file) t)
+          (with-temp-file old-file
+            (insert "#+TITLE: Original\n#+WIKI_ID: original\n#+CATEGORY: Test\n"))
+          (puthash "original"
+                   (org-museum-test--page
+                    "original" "Original" 1 "Test" nil "published" old-file)
+                   pages)
+          (setq target-buffer (find-file-noselect new-file))
+          (cl-letf (((symbol-function 'org-museum--rename-link-files)
+                     (lambda (_old-id) (setq scan-called t) nil)))
+            (should-error (org-museum-rename-page "original" "renamed")))
+          (should-not scan-called)
+          (should (file-exists-p old-file))
+          (should-not (file-exists-p new-file)))
+      (when (buffer-live-p target-buffer)
+        (with-current-buffer target-buffer (set-buffer-modified-p nil))
+        (kill-buffer target-buffer))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-rename-page-refuses-an-unsaved-referrer-buffer ()
+  "Rename must not rewrite disk underneath an unsaved referring page buffer."
+  (let* ((root (make-temp-file "org-museum-rename-referrer-buffer-test-" t))
+         (old-file (expand-file-name "pages/test/original.org" root))
+         (new-file (expand-file-name "pages/test/renamed.org" root))
+         (ref-file (expand-file-name "pages/test/referrer.org" root))
+         (ref-content "#+TITLE: Referrer\n#+WIKI_ID: referrer\n[[wiki:original]]\n")
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal)))
+         ref-buffer)
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory old-file) t)
+          (with-temp-file old-file
+            (insert "#+TITLE: Original\n#+WIKI_ID: original\n#+CATEGORY: Test\n"))
+          (with-temp-file ref-file (insert ref-content))
+          (puthash "original"
+                   (org-museum-test--page
+                    "original" "Original" 1 "Test" nil "published" old-file)
+                   pages)
+          (setq ref-buffer (find-file-noselect ref-file))
+          (with-current-buffer ref-buffer
+            (goto-char (point-max))
+            (insert "unsaved note\n"))
+          (should-error (org-museum-rename-page "original" "renamed"))
+          (should (file-exists-p old-file))
+          (should-not (file-exists-p new-file))
+          (should (equal (org-museum-test--file-string ref-file) ref-content))
+          (with-current-buffer ref-buffer
+            (should (buffer-modified-p))
+            (goto-char (point-min))
+            (should (search-forward "unsaved note" nil t))))
+      (when (buffer-live-p ref-buffer)
+        (with-current-buffer ref-buffer (set-buffer-modified-p nil))
+        (kill-buffer ref-buffer))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-rename-page-detects-a-new-unsaved-buffer-link ()
+  "A link added only in an unsaved buffer must block rename before disk work."
+  (let* ((root (make-temp-file "org-museum-rename-new-buffer-link-test-" t))
+         (old-file (expand-file-name "pages/test/original.org" root))
+         (new-file (expand-file-name "pages/test/renamed.org" root))
+         (ref-file (expand-file-name "pages/test/referrer.org" root))
+         (disk-content "#+TITLE: Referrer\n#+WIKI_ID: referrer\n")
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal)))
+         ref-buffer)
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory old-file) t)
+          (with-temp-file old-file
+            (insert "#+TITLE: Original\n#+WIKI_ID: original\n#+CATEGORY: Test\n"))
+          (with-temp-file ref-file (insert disk-content))
+          (puthash "original"
+                   (org-museum-test--page
+                    "original" "Original" 1 "Test" nil "published" old-file)
+                   pages)
+          (setq ref-buffer (find-file-noselect ref-file))
+          (with-current-buffer ref-buffer
+            (goto-char (point-max))
+            (insert "[[wiki:original]]\n")
+            ;; Counterexample: the unsaved link exists outside the user's
+            ;; current narrowing and must still be protected.
+            (narrow-to-region
+             (point-min)
+             (save-excursion
+               (goto-char (point-min))
+               (line-end-position))))
+          (should-error (org-museum-rename-page "original" "renamed"))
+          (should (file-exists-p old-file))
+          (should-not (file-exists-p new-file))
+          (should (equal (org-museum-test--file-string ref-file) disk-content))
+          (with-current-buffer ref-buffer
+            (widen)
+            (goto-char (point-min))
+            (should (search-forward "[[wiki:original]]" nil t))
+            (should (buffer-modified-p))))
+      (when (buffer-live-p ref-buffer)
+        (with-current-buffer ref-buffer (set-buffer-modified-p nil))
+        (kill-buffer ref-buffer))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-rename-page-refreshes-an-open-referrer-buffer ()
+  "A clean referring buffer follows the link rewrite and cannot undo it later."
+  (let* ((root (make-temp-file "org-museum-rename-clean-referrer-test-" t))
+         (old-file (expand-file-name "pages/test/original.org" root))
+         (ref-file (expand-file-name "pages/test/referrer.org" root))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal)))
+         ref-buffer)
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory old-file) t)
+          (with-temp-file old-file
+            (insert "#+TITLE: Original\n#+WIKI_ID: original\n#+CATEGORY: Test\n"))
+          (with-temp-file ref-file
+            (insert "#+TITLE: Referrer\n#+WIKI_ID: referrer\n[[wiki:original]]\n"))
+          (puthash "original"
+                   (org-museum-test--page
+                    "original" "Original" 1 "Test" nil "published" old-file)
+                   pages)
+          (setq ref-buffer (find-file-noselect ref-file))
+          (org-museum-rename-page "original" "renamed")
+          (with-current-buffer ref-buffer
+            (should-not (buffer-modified-p))
+            (goto-char (point-min))
+            (should (search-forward "[[wiki:renamed]]" nil t))
+            (save-buffer))
+          (should (string-match-p
+                   (regexp-quote "[[wiki:renamed]]")
+                   (org-museum-test--file-string ref-file))))
+      (when (buffer-live-p ref-buffer)
+        (with-current-buffer ref-buffer (set-buffer-modified-p nil))
+        (kill-buffer ref-buffer))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-rename-page-restores-index-after-a-post-save-failure ()
+  "A failure after index persistence restores both the cache and page files."
+  (let* ((root (make-temp-file "org-museum-rename-late-rollback-test-" t))
+         (old-file (expand-file-name "pages/test/original.org" root))
+         (new-file (expand-file-name "pages/test/renamed.org" root))
+         (index-file (expand-file-name ".org-museum-index.json" root))
+         (old-content "#+TITLE: Original\n#+WIKI_ID: original\n#+CATEGORY: Test\n")
+         (cache-content "original cache bytes\n")
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (pages (make-hash-table :test 'equal))
+         (original-index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal)))
+         (org-museum--index original-index)
+         page-buffer
+         (fail-once t)
+         (real-set-visited-file-name (symbol-function 'set-visited-file-name)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory old-file) t)
+          (with-temp-file old-file (insert old-content))
+          (with-temp-file index-file (insert cache-content))
+          (puthash "original"
+                   (org-museum-test--page
+                    "original" "Original" 1 "Test" nil "published" old-file)
+                   pages)
+          (setq page-buffer (find-file-noselect old-file))
+          (cl-letf (((symbol-function 'set-visited-file-name)
+                     (lambda (&rest args)
+                       (if fail-once
+                           (progn
+                             (setq fail-once nil)
+                             (error "injected post-index failure"))
+                         (apply real-set-visited-file-name args)))))
+            (should-error (org-museum-rename-page "original" "renamed")))
+          (should (equal (org-museum-test--file-string index-file) cache-content))
+          (should (equal (org-museum-test--file-string old-file) old-content))
+          (should-not (file-exists-p new-file))
+          (should (eq org-museum--index original-index))
+          (with-current-buffer page-buffer
+            (should (equal (buffer-file-name) old-file))))
+      (when (buffer-live-p page-buffer)
+        (with-current-buffer page-buffer (set-buffer-modified-p nil))
+        (kill-buffer page-buffer))
       (delete-directory root t))))
 
 (ert-deftest org-museum-incremental-update-rolls-back-after-late-failure ()
@@ -403,6 +1044,57 @@
         (should (= calls 1)))
       (org-museum--hljs-assets)
       (should (= calls 2)))))
+
+(ert-deftest org-museum-highlight-bundle-covers-official-language-set ()
+  "The offline browser bundle includes languages outside the common build."
+  (let ((bundle (expand-file-name "resources/highlight.min.js"
+                                  org-museum-test--repo-root)))
+    (should (file-exists-p bundle))
+    (with-temp-buffer
+      (insert-file-contents-literally bundle)
+      ;; The common Highlight.js browser build has only 36 languages.  These
+      ;; official grammars deliberately span uncommon language families so a
+      ;; renamed common build cannot satisfy the capability by accident.
+      (dolist (needle '("brainfuck" "clojure" "fortran"
+                        "mathematica" "x86asm"))
+        (goto-char (point-min))
+        (should (search-forward needle nil t)))
+      (should (> (buffer-size) 500000)))))
+
+(ert-deftest org-museum-highlight-normalizes-punctuation-aliases ()
+  "Official aliases remain valid when encoded as CSS language classes."
+  (dolist (pair '(("x++" . "axapta")
+                  ("cmake.in" . "cmake")
+                  ("c++" . "cpp")
+                  ("h++" . "cpp")
+                  ("c#" . "csharp")
+                  ("f#" . "fsharp")
+                  ("html.hbs" . "handlebars")
+                  ("html.handlebars" . "handlebars")
+                  ("obj-c++" . "objectivec")
+                  ("objective-c++" . "objectivec")
+                  ("pf.conf" . "pf")))
+    (should (equal (org-museum--hljs-language-for-org (car pair))
+                   (cdr pair))))
+  (let ((org-museum-code-highlight-method 'hljs))
+    (with-temp-buffer
+      (insert "<pre class=\"src src-c++\"><code>int main(){}</code></pre>")
+      (org-museum--pp-inject-hljs-language-classes)
+      (should (string-search "class=\"language-cpp\"" (buffer-string)))
+      (should-not (string-search "language-c++" (buffer-string)))))
+  (let ((script
+         (cl-letf (((symbol-function 'org-museum--hljs-lisp-js-src)
+                    (lambda (_out-file) "resources/highlight-lisp.min.js"))
+                   ((symbol-function 'org-museum--hljs-css-src)
+                    (lambda (_out-file) "resources/highlight.monokai.min.css"))
+                   ((symbol-function 'org-museum--hljs-js-src)
+                    (lambda (_out-file) "resources/highlight.min.js")))
+           (org-museum--script-ui-core "article.html"))))
+    (dolist (mapping '("\"c++\":\"cpp\""
+                       "\"c#\":\"csharp\""
+                       "\"f#\":\"fsharp\""
+                       "\"x++\":\"axapta\""))
+      (should (string-search mapping script)))))
 
 (ert-deftest org-museum-reading-state-normalizes-corrupt-browser-values ()
   (let ((index-script (org-museum--script-index))
@@ -1429,6 +2121,48 @@
               "if(links.length===0)[[:space:]]*{[^}]*return;" html))))
       (delete-directory root t))))
 
+(ert-deftest org-museum-graph-deduplicates-reciprocal-page-connections ()
+  "Mutual page references render as one undirected visual connection."
+  (let* ((pages (make-hash-table :test 'equal))
+         (alpha (org-museum-test--page "alpha" "Alpha" 100))
+         (beta (org-museum-test--page "beta" "Beta" 90))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (setf (org-museum-page-links-to alpha) '("beta")
+          (org-museum-page-linked-from alpha) '("beta")
+          (org-museum-page-links-to beta) '("alpha")
+          (org-museum-page-linked-from beta) '("alpha"))
+    (puthash "alpha" alpha pages)
+    (puthash "beta" beta pages)
+    (let* ((json-array-type 'list)
+           (json-object-type 'alist)
+           (data (json-read-from-string (org-museum--generate-graph-json)))
+           (links (alist-get 'links data))
+           (nodes (alist-get 'nodes data)))
+      (should (= 1 (length links)))
+      (should (equal '("alpha" "beta")
+                     (sort (list (alist-get 'source (car links))
+                                 (alist-get 'target (car links)))
+                           #'string<)))
+      (should (equal '(1 1)
+                     (sort (mapcar (lambda (node) (alist-get 'degree node)) nodes)
+                           #'<))))))
+
+(ert-deftest org-museum-graph-opens-an-article-on-the-first-click ()
+  "A mouse click has the same direct-navigation result as Enter."
+  (let ((graph (org-museum--build-graph-html
+                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                "resources/org-museum.css" "resources/d3.v7.min.js")))
+    (should (string-search
+             ".on('click',function(_event,node){openNode(node);})" graph))
+    (should (string-search
+             "if(event.key==='Enter'){event.preventDefault();openNode(node);}" graph))
+    (should-not (string-search ".on('dblclick'" graph))))
+
 (ert-deftest org-museum-full-export-keeps-heading-anchors-stable ()
   "Repeated full exports keep public section links stable and unique."
   (let* ((root (make-temp-file "org-museum-stable-anchor-test-" t))
@@ -1557,7 +2291,10 @@
              "#+CATEGORY: Emacs\n"
              "#+FILETAGS: :中文:special:\n\n"
              "* 第一节\n正文。\n\n"
-             "** 长标题 & 代码\n#+begin_src emacs-lisp\n(message \"ok\")\n#+end_src\n"))
+             "** 长标题 & 代码\n#+begin_src emacs-lisp\n(message \"ok\")\n#+end_src\n\n"
+             "#+begin_src c++\nint main() { return 0; }\n#+end_src\n\n"
+             "#+begin_src f#\nlet answer = 42\n#+end_src\n\n"
+             "[[wiki:beta][Open Beta]]\n"))
           (with-temp-buffer
             (insert-file-contents (expand-file-name "alpha.org" pages-dir))
             (goto-char (point-max))
@@ -1616,6 +2353,14 @@
               (insert-file-contents alpha-file)
               (should (search-forward "data-page-id=\"alpha\"" nil t))
               (goto-char (point-min))
+              (should (search-forward "class=\"language-cpp\"" nil t))
+              (goto-char (point-min))
+              (should (search-forward "class=\"language-fsharp\"" nil t))
+              (goto-char (point-min))
+              (should-not (search-forward "language-c++" nil t))
+              (goto-char (point-min))
+              (should-not (search-forward "language-f#" nil t))
+              (goto-char (point-min))
               (should-not (search-forward "<script>" nil t))
               (goto-char (point-min))
               (should (re-search-forward
@@ -1662,6 +2407,21 @@
             (with-temp-buffer
               (insert-file-contents graph-file)
               (should (search-forward "museum-graph-shell" nil t))
+              (goto-char (point-min))
+              (should (re-search-forward
+                       "<script type=\"application/json\" id=\"graph-data\">\\([^\n]+\\)</script>"
+                       nil t))
+              (let* ((json-array-type 'list)
+                     (json-object-type 'alist)
+                     (data (json-read-from-string
+                            (match-string-no-properties 1)))
+                     (links (alist-get 'links data)))
+                (should (= 1 (length links)))
+                (should
+                 (equal '("alpha" "beta")
+                        (sort (list (alist-get 'source (car links))
+                                    (alist-get 'target (car links)))
+                              #'string<))))
               (goto-char (point-min))
               (should-not (search-forward "<script>" nil t))
               (goto-char (point-min))
@@ -1928,14 +2688,13 @@
       (delete-directory root t))))
 
 (ert-deftest org-museum-topbars-share-one-accessible-theme-control ()
-  "Home, article, and graph navigation expose the same theme action."
+  "Theme actions name their target without contradictory pressed state."
   (dolist (kind '(home article graph))
     (let ((topbar (org-museum--build-topbar "index.html" kind)))
       (should (= (length (split-string topbar "data-theme-toggle" t)) 2))
       (should (string-match-p
                (regexp-quote "aria-label=\"切换为浅色主题\"") topbar))
-      (should (string-match-p
-               (regexp-quote "aria-pressed=\"false\"") topbar)))))
+      (should-not (string-match-p "aria-pressed=" topbar)))))
 
 (ert-deftest org-museum-article-topbar-exposes-one-drawer-trigger ()
   "Only article pages expose the existing mobile notes drawer."
@@ -1980,7 +2739,9 @@
                               "data-theme-toggle"
                               "DOMContentLoaded"))
               (goto-char (point-min))
-              (should (search-forward needle nil t)))))
+              (should (search-forward needle nil t)))
+            (goto-char (point-min))
+            (should-not (search-forward "aria-pressed" nil t))))
       (delete-directory root t))))
 
 (provide 'org-museum-test)

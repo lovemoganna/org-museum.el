@@ -31,7 +31,6 @@
   function updateControls(theme) {
     var light = theme === "light";
     document.querySelectorAll("[data-theme-toggle]").forEach(function (button) {
-      button.setAttribute("aria-pressed", light ? "true" : "false");
       button.setAttribute("aria-label", light ? "切换为深色主题" : "切换为浅色主题");
       var label = button.querySelector("[data-theme-label]");
       var icon = button.querySelector("[data-theme-icon]");

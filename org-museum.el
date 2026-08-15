@@ -1,7 +1,7 @@
 ;;; org-museum.el --- Org Mode Wiki Generator -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2026
-;; Version: 2.4.1
+;; Version: 2.4.2
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: wiki, org-mode, hypermedia
 
@@ -1812,6 +1812,14 @@ the htmlize colour definitions that make code highlighting work."
       ((or "emacs-lisp" "elisp" "lisp-data") "lisp")
       ((or "sh" "shell" "bash" "zsh") "bash")
       ((or "duckdb" "sqlite" "postgres" "postgresql") "sql")
+      ("x++" "axapta")
+      ("cmake.in" "cmake")
+      ((or "c++" "h++") "cpp")
+      ((or "c#" "cs") "csharp")
+      ((or "f#" "fs") "fsharp")
+      ((or "html.hbs" "html.handlebars") "handlebars")
+      ((or "obj-c++" "objective-c++") "objectivec")
+      ("pf.conf" "pf")
       ("js" "javascript")
       ("ts" "typescript")
       ("py" "python")
@@ -2232,7 +2240,7 @@ KIND is one of `home', `article', or `graph'."
       "    <a class=\"museum-topbar-link\" href=\"%s\">%s</a>\n"
       "%s"
       "    <button type=\"button\" class=\"museum-theme-toggle\" "
-      "data-theme-toggle aria-label=\"切换为浅色主题\" aria-pressed=\"false\">"
+      "data-theme-toggle aria-label=\"切换为浅色主题\">"
       "<span aria-hidden=\"true\" data-theme-icon>☀</span>"
       "<span data-theme-label>浅色</span></button>\n"
       "  </nav>\n"
@@ -2725,6 +2733,7 @@ Applicable scope: graph.html generation."
          (nodes    '())
          (links    '())
          (degree   (make-hash-table :test 'equal))
+         (seen-edges (make-hash-table :test 'equal))
          (excluded (make-hash-table :test 'equal)))
     ;; Phase 1: exclude-by-tag / exclude-by-id-regexp
     (maphash
@@ -2738,9 +2747,17 @@ Applicable scope: graph.html generation."
        (unless (gethash id excluded)
          (dolist (target (org-museum-page-links-to page))
            (unless (gethash target excluded)
-             (cl-incf (gethash id     degree 0))
-             (cl-incf (gethash target degree 0))
-             (push `((source . ,id) (target . ,target) (value . 1)) links)))))
+             (let* ((source (if (string< id target) id target))
+                    (destination (if (string< id target) target id))
+                    (edge-key (cons source destination)))
+               (unless (gethash edge-key seen-edges)
+                 (puthash edge-key t seen-edges)
+                 (cl-incf (gethash source      degree 0))
+                 (cl-incf (gethash destination degree 0))
+                 (push `((source . ,source)
+                         (target . ,destination)
+                         (value . 1))
+                       links)))))))
      pages)
     ;; Phase 3: optionally exclude orphans after filtering links, but never
     ;; collapse the whole graph to an empty canvas.
@@ -2831,6 +2848,19 @@ Applicable scope: graph.html generation."
 ;; §17  PAGE MANAGEMENT  [Fix-11 + Fix-16]
 ;; ============================================================
 
+(defun org-museum--path-component-safe-p (value)
+  "Return non-nil when VALUE is a portable single path component."
+  (and (stringp value)
+       (not (string-empty-p value))
+       (string= value (string-trim value))
+       (not (member value '("." "..")))
+       (not (string-suffix-p "." value))
+       (not (string-match-p "[[:cntrl:]<>:\"/\\\\|?*]" value))
+       (let ((case-fold-search t))
+         (not (string-match-p
+               "\\`\\(?:con\\|prn\\|aux\\|nul\\|com[1-9]\\|lpt[1-9]\\)\\(?:\\..*\\)?\\'"
+               value)))))
+
 ;;;###autoload
 (defun org-museum-create-page (title &optional category)
   "Create a new Org Museum page with TITLE filed under a category subdirectory.
@@ -2883,6 +2913,17 @@ Guards:
          (target-dir (expand-file-name cat-dir base-dir))
          (filepath   (expand-file-name (concat id ".org") target-dir)))
 
+    ;; A punctuation-only title normalises to "-", which is not a meaningful
+    ;; page identity and is almost impossible to recognise in links or search.
+    (unless (string-match-p "[a-z0-9一-鿿]" id)
+      (error "Org Museum [Create]: title must contain a letter, digit, or CJK character"))
+    (unless (org-museum--path-component-safe-p id)
+      (error "Org Museum [Create]: title produces a reserved page path"))
+    (when (string-empty-p cat-dir)
+      (error "Org Museum [Create]: category must contain a letter, digit, or CJK character"))
+    (unless (org-museum--path-component-safe-p cat-dir)
+      (error "Org Museum [Create]: category produces a reserved directory path"))
+
     ;; ── Guard 1: file path collision ─────────────────────────────
     (when (file-exists-p filepath)
       (error "Org Museum [Create]: file already exists: %s"
@@ -2895,9 +2936,15 @@ Guards:
 (possibly a duplicate title in another category)" id))
 
     ;; ── Create subdirectory + file ────────────────────────────────
-    (make-directory target-dir t)
-    (find-file filepath)
-    (insert (format "\
+    (let ((original-index org-museum--index)
+          (target-dir-existed (file-directory-p target-dir))
+          created-buffer)
+      (condition-case error-data
+          (progn
+            (make-directory target-dir t)
+            (find-file filepath)
+            (setq created-buffer (current-buffer))
+            (insert (format "\
 #+TITLE:       %s
 #+WIKI_ID:     %s
 #+CATEGORY:    %s
@@ -2913,16 +2960,101 @@ Guards:
 
 ** References
 "
-                    title id cat
-                    (format-time-string "%Y-%m-%d")
-                    cat-dir   ; use normalised dir name as tag (no spaces)
-                    title))
+                            title id cat
+                            (format-time-string "%Y-%m-%d")
+                            cat-dir   ; use normalised dir name as tag (no spaces)
+                            title))
 
-    ;; ── Rebuild index + confirm ───────────────────────────────────
-    (org-museum-index-build t)
-    (message "Org Museum [Create]: '%s' → %s"
-             title
-             (file-relative-name filepath org-museum-root-dir))))
+            ;; The index scans files on disk.  Persist the initial template
+            ;; before rebuilding so the page itself is indexed.
+            (save-buffer)
+
+            ;; ── Rebuild index + confirm ───────────────────────────
+            (org-museum-index-build t)
+            (message "Org Museum [Create]: '%s' → %s"
+                     title
+                     (file-relative-name filepath org-museum-root-dir)))
+        (error
+         (setq org-museum--index original-index)
+         (when (buffer-live-p created-buffer)
+           (with-current-buffer created-buffer
+             (set-buffer-modified-p nil))
+           (kill-buffer created-buffer))
+         (when (file-exists-p filepath)
+           (delete-file filepath))
+         (when (and (not target-dir-existed)
+                    (file-directory-p target-dir)
+                    (directory-empty-p target-dir))
+           (delete-directory target-dir))
+         (signal (car error-data) (cdr error-data)))))))
+
+(defun org-museum--rename-link-pattern (old-id)
+  "Return a regexp matching supported links to OLD-ID."
+  (format "\\[\\[\\(wiki\\|museum\\|id\\):%s\\(\\]\\|\\[\\)"
+          (regexp-quote old-id)))
+
+(defun org-museum--modified-link-buffer (old-id)
+  "Return a modified Wiki buffer containing a supported link to OLD-ID."
+  (let ((root (file-name-as-directory (expand-file-name (org-museum--scan-root))))
+        (pattern (org-museum--rename-link-pattern old-id)))
+    (seq-find
+     (lambda (buffer)
+       (with-current-buffer buffer
+         (and buffer-file-name
+              (buffer-modified-p)
+              (string-match-p "\\.org\\'" buffer-file-name)
+              (file-in-directory-p (expand-file-name buffer-file-name) root)
+              (save-excursion
+                (save-restriction
+                  (widen)
+                  (goto-char (point-min))
+                  (re-search-forward pattern nil t))))))
+     (buffer-list))))
+
+(defun org-museum--rename-link-files (old-id)
+  "Return Org files containing wiki, museum, or id links to OLD-ID."
+  (let ((pattern (org-museum--rename-link-pattern old-id))
+        matches)
+    (dolist (file (directory-files-recursively (org-museum--scan-root) "\\.org$")
+                  (nreverse matches))
+      (when (with-temp-buffer
+              (insert-file-contents file)
+              (re-search-forward pattern nil t))
+        (push file matches)))))
+
+(defun org-museum--snapshot-files (files)
+  "Return byte-for-byte snapshots of regular FILES."
+  (let (snapshots)
+    (dolist (file (delete-dups (copy-sequence files)) (nreverse snapshots))
+      (when (file-regular-p file)
+        (with-temp-buffer
+          (set-buffer-multibyte nil)
+          (insert-file-contents-literally file)
+          (push (list file (buffer-string) (file-modes file)) snapshots))))))
+
+(defun org-museum--restore-file-snapshots (snapshots)
+  "Restore byte-for-byte file SNAPSHOTS created for a page rename."
+  (dolist (snapshot snapshots)
+    (pcase-let ((`(,file ,contents ,modes) snapshot))
+      (make-directory (file-name-directory file) t)
+      (with-temp-buffer
+        (set-buffer-multibyte nil)
+        (insert contents)
+        (let ((coding-system-for-write 'no-conversion))
+          (write-region (point-min) (point-max) file nil 'silent)))
+      (when modes
+        (set-file-modes file modes)))))
+
+(defun org-museum--rewrite-page-id (file new-id)
+  "Rewrite FILE's WIKI_ID to NEW-ID without creating a visiting buffer."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (if (re-search-forward "^#\\+WIKI_ID:\\s-.*$" nil t)
+        (replace-match (format "#+WIKI_ID: %s" new-id))
+      (goto-char (point-min))
+      (insert (format "#+WIKI_ID: %s\n" new-id)))
+    (write-region (point-min) (point-max) file nil 'silent)))
 
 ;;;###autoload
 (defun org-museum-rename-page (old-id new-id)
@@ -2933,27 +3065,87 @@ Known limitation: does not handle custom_id property links."
    (let* ((ids (hash-table-keys (org-museum-index-pages org-museum--index)))
           (old (completing-read "Page ID to rename: " ids nil t)))
      (list old (read-string (format "New ID (was: %s): " old) old))))
+  (unless (org-museum--path-component-safe-p new-id)
+    (error "Org Museum [Rename]: new ID must be one non-empty path-safe name"))
   (let* ((page     (or (gethash old-id (org-museum-index-pages org-museum--index))
                        (error "Page not found: %s" old-id)))
          (old-path (expand-file-name (org-museum-page-path page)))
          (new-path (expand-file-name
-                    (concat new-id ".org") (file-name-directory old-path))))
+                    (concat new-id ".org") (file-name-directory old-path)))
+         (page-buffer (get-file-buffer old-path))
+         (original-index org-museum--index))
     (when (gethash new-id (org-museum-index-pages org-museum--index))
       (error "ID already exists: %s" new-id))
-    (rename-file old-path new-path)
-    (with-current-buffer (find-file-noselect new-path)
-      (goto-char (point-min))
-      (if (re-search-forward "^#\\+WIKI_ID:\\s-.*$" nil t)
-          (replace-match (format "#+WIKI_ID: %s" new-id))
-        (goto-char (point-min))
-        (insert (format "#+WIKI_ID: %s\n" new-id)))
-      (save-buffer) (kill-buffer))
-    (let ((count (org-museum--update-links-globally old-id new-id)))
-      (org-museum-index-build t)
-      (message "Renamed %s → %s; %d files updated." old-id new-id count))))
+    (when (file-exists-p new-path)
+      (error "Org Museum [Rename]: target file already exists: %s" new-path))
+    (when (get-file-buffer new-path)
+      (error "Org Museum [Rename]: target path is already visited: %s" new-path))
+    (when (and (buffer-live-p page-buffer)
+               (buffer-modified-p page-buffer))
+      (error "Org Museum [Rename]: save the page before renaming"))
+    (when-let ((modified-referrer
+                (org-museum--modified-link-buffer old-id)))
+      (error "Org Museum [Rename]: save referring page before renaming: %s"
+             (buffer-file-name modified-referrer)))
+    (let* ((link-files (org-museum--rename-link-files old-id))
+           (referrer-buffers
+            (delq nil (mapcar #'get-file-buffer
+                              (delete old-path (copy-sequence link-files)))))
+           (snapshots (org-museum--snapshot-files (cons old-path link-files)))
+           (index-path (org-museum--index-file-path))
+           (index-existed (file-exists-p index-path))
+           (index-snapshot (org-museum--snapshot-files (list index-path)))
+           (update-files
+            (mapcar (lambda (file)
+                      (if (equal file old-path) new-path file))
+                    link-files))
+           moved-p)
+      (condition-case error-data
+          (progn
+            (rename-file old-path new-path)
+            (setq moved-p t)
+            (org-museum--rewrite-page-id new-path new-id)
+            (let ((count (org-museum--update-links-globally
+                          old-id new-id update-files)))
+              (org-museum-index-build t)
+              (when (buffer-live-p page-buffer)
+                (with-current-buffer page-buffer
+                  (set-visited-file-name new-path t)
+                  (revert-buffer t t)))
+              (dolist (buffer referrer-buffers)
+                (when (buffer-live-p buffer)
+                  (with-current-buffer buffer
+                    (revert-buffer t t))))
+              (message "Renamed %s → %s; %d files updated."
+                       old-id new-id count)))
+        (error
+         (setq org-museum--index original-index)
+         (when (and moved-p (file-exists-p new-path))
+           (delete-file new-path))
+         (org-museum--restore-file-snapshots snapshots)
+         (cond
+          (index-snapshot
+           (org-museum--restore-file-snapshots index-snapshot))
+          ((and (not index-existed) (file-regular-p index-path))
+           (delete-file index-path)))
+         (when (buffer-live-p page-buffer)
+           (with-current-buffer page-buffer
+             (condition-case nil
+                 (progn
+                   (unless (equal (buffer-file-name) old-path)
+                     (set-visited-file-name old-path t))
+                   (revert-buffer t t))
+               (error nil))))
+         (dolist (buffer referrer-buffers)
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (condition-case nil
+                   (revert-buffer t t)
+                 (error nil)))))
+         (signal (car error-data) (cdr error-data)))))))
 
 ;; Fix-11: now handles wiki:, museum:, and id: link formats.
-(defun org-museum--update-links-globally (old-id new-id)
+(defun org-museum--update-links-globally (old-id new-id &optional files)
   "Replace all wiki/museum/id links to OLD-ID with NEW-ID; return file count.
 [Fix-11] Three link formats are handled:
   [[wiki:OLD-ID]]    → [[wiki:NEW-ID]]
@@ -2962,9 +3154,10 @@ Known limitation: does not handle custom_id property links."
 Applicable scope: org-museum-rename-page, on-save ID change detection.
 Known limitation: CUSTOM_ID property links are not rewritten."
   (let ((count 0)
-        (pattern (format "\\[\\[\\(wiki\\|museum\\|id\\):%s\\(\\]\\|\\[\\)"
-                         (regexp-quote old-id))))
-    (dolist (file (directory-files-recursively (org-museum--scan-root) "\\.org$"))
+        (pattern (org-museum--rename-link-pattern old-id)))
+    (dolist (file (or files
+                      (directory-files-recursively
+                       (org-museum--scan-root) "\\.org$")))
       (with-temp-buffer
         (insert-file-contents file)
         (let (modified)
@@ -4547,8 +4740,7 @@ nodeSelection
     var selectedNode=nodes.find(function(node){return node.id===state.selectedId;});
     activeNeighborhood=selectedNode?neighborhood(selectedNode):null;applyFilter();
   })
-  .on('click',function(_event,node){selectNode(node);})
-  .on('dblclick',function(_event,node){openNode(node);})
+  .on('click',function(_event,node){openNode(node);})
   .on('keydown',function(event,node){
     if(event.key==='Enter'){event.preventDefault();openNode(node);}
     else if(event.key===' '){event.preventDefault();selectNode(node);}
@@ -4719,6 +4911,10 @@ function initCodeBlocks(){
     \"shell\":\"bash\",\"sh\":\"bash\",\"bash\":\"bash\",\"zsh\":\"bash\",
     \"js\":\"javascript\",\"ts\":\"typescript\",\"py\":\"python\",
     \"duckdb\":\"sql\",\"sqlite\":\"sql\",\"postgres\":\"sql\",\"postgresql\":\"sql\",
+    \"x++\":\"axapta\",\"cmake.in\":\"cmake\",\"c++\":\"cpp\",\"h++\":\"cpp\",
+    \"c#\":\"csharp\",\"cs\":\"csharp\",\"f#\":\"fsharp\",\"fs\":\"fsharp\",
+    \"html.hbs\":\"handlebars\",\"html.handlebars\":\"handlebars\",
+    \"obj-c++\":\"objectivec\",\"objective-c++\":\"objectivec\",\"pf.conf\":\"pf\",
     \"conf\":\"ini\",\"text\":\"plaintext\",\"example\":\"plaintext\"
   };
   var codes=[];
