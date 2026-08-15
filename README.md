@@ -2,7 +2,7 @@
 
 A MECE-refactored static wiki generator based on Org Mode, featuring a Monokai theme, D3.js graph visualization, and Zen writing mode.
 
-**Version:** 2.4.1
+**Version:** 2.4.2
 
 ## Installation
 
@@ -35,7 +35,7 @@ git clone https://github.com/lovemoganna/org-museum.el.git
 
 ### Stable Source and Canonical Local Checkout
 
-The remote Git tag `v2.4.1` is the stable source of truth. On this workstation,
+The remote Git tag `v2.4.2` is the stable source of truth. On this workstation,
 the canonical runtime checkout fetched from that remote is:
 
 ```text
@@ -332,6 +332,14 @@ Not:
 Verify that `org-museum-css-file` points to a valid path relative to the plugin directory.
 
 ## Version History
+
+### v2.4.2
+
+- Bundles the complete Highlight.js 11.10.0 browser language set for offline code highlighting
+- Normalizes punctuation-bearing language aliases such as C++, C#, F#, and X++
+- Deduplicates reciprocal page references into one graph connection
+- Opens graph articles with one click while preserving keyboard navigation and theme state
+- Makes page creation and rename failures transactional and keeps theme controls semantically consistent
 
 ### v2.4.1
 
