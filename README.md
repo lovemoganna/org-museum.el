@@ -108,6 +108,32 @@ A full export opens `index.html` by default.  Set
 `org-museum-open-page-after-export` to `graph` to open the graph instead, or to
 `nil` to leave the browser untouched.
 
+### 5. Publish with GitHub Pages
+
+Publishing is deliberately split into two reviewable stages:
+
+```elisp
+M-x org-museum-publish-sync    ; export, privacy-check, and update the local mirror
+M-x org-museum-publish-deploy  ; commit managed files, push, and configure Pages
+```
+
+Configure a dedicated checkout outside the Wiki root:
+
+```elisp
+(setq org-museum-publish-directory "~/org-notes/")
+(setq org-museum-publish-repository "your-account/org-notes")
+(setq org-museum-publish-branch "main")
+(setq org-museum-publish-remote "origin")
+```
+
+The first deploy shows the public repository name and asks before creating it
+with the authenticated GitHub CLI. Later deploys refuse unexpected uncommitted
+files, remote-ahead or diverged history, symbolic links, and exported local
+filesystem paths. Only files recorded in the publish manifest are staged;
+repository-owned files such as `CNAME` and `README.md` are preserved. Resolve a
+reported dirty file or remote history difference manually and rerun the command.
+The local export-only `.org-museum-manifest.json` is never published.
+
 ## Project Structure
 
 ```
@@ -178,6 +204,10 @@ The main index (`index.html`) includes a small local graph for each page's immed
 | `org-museum-root-dir` | `nil` | Root directory of your wiki |
 | `org-museum-export-dir` | `"exports/html/pages"` | Page export location |
 | `org-museum-shared-export-dir` | `"exports/html"` | Shared resources location |
+| `org-museum-publish-directory` | `nil` | Dedicated local Git checkout for the public site |
+| `org-museum-publish-repository` | `nil` | GitHub target in `OWNER/REPOSITORY` form |
+| `org-museum-publish-branch` | `"main"` | GitHub Pages source branch |
+| `org-museum-publish-remote` | `"origin"` | Git remote used for publishing |
 | `org-museum-css-file` | `"resources/org-museum.css"` | CSS file path |
 | `org-museum-open-browser-after-export` | `t` | Auto-open browser after export |
 | `org-museum-open-page-after-export` | `index` | Page opened after export: `index`, `graph`, or `nil` |
@@ -201,6 +231,8 @@ symbolic links.
   (org-museum-root-dir "~/wiki/")
   (org-museum-export-dir "output/pages")
   (org-museum-shared-export-dir "output")
+  (org-museum-publish-directory "~/org-notes/")
+  (org-museum-publish-repository "your-account/org-notes")
   (org-museum-css-file "themes/custom.css")
   (org-museum-open-browser-after-export t)
   (org-museum-open-page-after-export 'index)
@@ -340,6 +372,7 @@ Verify that `org-museum-css-file` points to a valid path relative to the plugin 
 - Deduplicates reciprocal page references into one graph connection
 - Opens graph articles with one click while preserving keyboard navigation and theme state
 - Makes page creation and rename failures transactional and keeps theme controls semantically consistent
+- Adds guarded two-stage GitHub Pages publishing with managed-file and privacy checks
 
 ### v2.4.1
 

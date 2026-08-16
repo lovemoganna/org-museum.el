@@ -3083,6 +3083,594 @@
             (should-not (search-forward "aria-pressed" nil t))))
       (delete-directory root t))))
 
+(ert-deftest org-museum-publish-sync-builds-a-managed-mirror ()
+  "Publishing replaces managed output while preserving repository-owned files."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-sync-test-" t)))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-publish-directory
+          (expand-file-name "../published-site" root))
+         (export-root (expand-file-name "exports/html" root))
+         (old-page (expand-file-name "pages/old.html"
+                                     org-museum-publish-directory))
+         (extra-file (expand-file-name "CNAME"
+                                        org-museum-publish-directory))
+         (readme (expand-file-name "README.md" org-museum-publish-directory))
+         (git-config (expand-file-name ".git/config"
+                                       org-museum-publish-directory)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "pages/topic" export-root) t)
+          (make-directory (expand-file-name "resources" export-root) t)
+          (make-directory (file-name-directory old-page) t)
+          (with-temp-file (expand-file-name "index.html" export-root)
+            (insert "INDEX"))
+          (with-temp-file (expand-file-name "graph.html" export-root)
+            (insert "GRAPH"))
+          (with-temp-file (expand-file-name "pages/topic/new.html" export-root)
+            (insert "NEW"))
+          (with-temp-file (expand-file-name "resources/site.js" export-root)
+            (insert "SCRIPT"))
+          (with-temp-file (expand-file-name ".org-museum-manifest.json"
+                                            export-root)
+            (insert "{\"pagesRoot\":\"C:/Users/private/wiki\"}"))
+          (with-temp-file old-page (insert "OLD"))
+          (with-temp-file extra-file (insert "notes.example"))
+          (with-temp-file readme (insert "Repository notes"))
+          (make-directory (file-name-directory git-config) t)
+          (with-temp-file git-config (insert "[core]"))
+          (with-temp-file
+              (expand-file-name ".org-museum-publish-manifest.json"
+                                org-museum-publish-directory)
+            (insert "{\"schemaVersion\":1,\"files\":[\"pages/old.html\"]}"))
+          (cl-letf (((symbol-function 'org-museum-export-all) #'ignore))
+            (org-museum-publish-sync)
+            (org-museum-publish-sync))
+          (should-not (file-exists-p old-page))
+          (should (equal (org-museum-test--file-string extra-file)
+                         "notes.example"))
+          (should (equal (org-museum-test--file-string readme)
+                         "Repository notes"))
+          (should (equal (org-museum-test--file-string git-config) "[core]"))
+          (should (equal
+                   (org-museum-test--file-string
+                    (expand-file-name "pages/topic/new.html"
+                                      org-museum-publish-directory))
+                   "NEW"))
+          (should (file-exists-p
+                   (expand-file-name ".nojekyll"
+                                     org-museum-publish-directory)))
+          (should-not
+           (file-exists-p
+            (expand-file-name ".org-museum-manifest.json"
+                              org-museum-publish-directory)))
+          (let ((manifest
+                 (org-museum-test--file-string
+                  (expand-file-name ".org-museum-publish-manifest.json"
+                                    org-museum-publish-directory))))
+            (should (string-match-p "pages/topic/new\\.html" manifest))
+            (should-not (string-match-p "[A-Za-z]:[/\\\\]" manifest))))
+      (delete-directory root t)
+      (when (file-directory-p org-museum-publish-directory)
+        (delete-directory org-museum-publish-directory t)))))
+
+(ert-deftest org-museum-publish-deploy-refuses-unmanaged-dirty-files ()
+  "Deployment never stages or pushes repository-owned work."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-git-test-" t)))
+         (org-museum-publish-directory root)
+         (org-museum-publish-repository "example/org-notes")
+         (org-museum-publish-branch "main")
+         (org-museum-publish-remote "origin")
+         (default-directory root))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "index.html" root)
+            (insert "ORIGINAL"))
+          (with-temp-file (expand-file-name ".nojekyll" root))
+          (with-temp-file
+              (expand-file-name ".org-museum-publish-manifest.json" root)
+            (insert "{\"schemaVersion\":1,"
+                    "\"files\":[\".nojekyll\",\"index.html\"]}"))
+          (should (= 0 (call-process "git" nil nil nil "init" "-b" "main")))
+          (should (= 0 (call-process "git" nil nil nil "add" "--all" "--")))
+          (should (= 0 (call-process "git" nil nil nil
+                                     "commit" "-m" "Initial publish")))
+          (with-temp-file (expand-file-name "index.html" root)
+            (insert "UPDATED"))
+          (with-temp-file (expand-file-name "private-notes.txt" root)
+            (insert "DO NOT PUBLISH"))
+          (let ((error-data
+                 (should-error (org-museum-publish-deploy)
+                               :type 'org-museum-publish-error)))
+            (should (string-match-p "private-notes\\.txt"
+                                    (error-message-string error-data))))
+          (should-not
+           (string-match-p "private-notes\\.txt"
+                           (with-temp-buffer
+                             (call-process "git" nil t nil
+                                           "diff" "--cached" "--name-only")
+                             (buffer-string)))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-publish-sync-blocks-windows-absolute-paths ()
+  "A Windows absolute path aborts before the publish checkout is changed."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-private-test-" t)))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-publish-directory
+          (expand-file-name "../private-publish-site" root))
+         (export-root (expand-file-name "exports/html" root)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "pages" export-root) t)
+          (make-directory (expand-file-name "resources" export-root) t)
+          (with-temp-file (expand-file-name "index.html" export-root)
+            (insert "<code>path:C:/private/secret.txt</code>"))
+          (with-temp-file (expand-file-name "graph.html" export-root)
+            (insert "GRAPH"))
+          (cl-letf (((symbol-function 'org-museum-export-all) #'ignore))
+            (should-error (org-museum-publish-sync)
+                          :type 'org-museum-publish-error))
+          (should-not (file-directory-p org-museum-publish-directory)))
+      (delete-directory root t)
+      (when (file-directory-p org-museum-publish-directory)
+        (delete-directory org-museum-publish-directory t)))))
+
+(ert-deftest org-museum-publish-privacy-scan-distinguishes-unc-from-javascript ()
+  "UNC paths are private, while bundled regular-expression syntax is safe."
+  (let ((unc-file (make-temp-file "org-museum-publish-unc-" nil ".js"))
+        (drive-file (make-temp-file "org-museum-publish-drive-" nil ".js"))
+        (syntax-file (make-temp-file "org-museum-publish-js-" nil ".js")))
+    (unwind-protect
+        (progn
+          (with-temp-file unc-file (insert "open('\\\\server\\share\\note.org')"))
+          (with-temp-file drive-file (insert "source:C:/$private/secret.txt"))
+          (with-temp-file syntax-file
+            (insert "\\\\\\*{2}[^\\n]*? begin:/HTTP\\\\/ ?o:/[%p]"))
+          (should (equal (org-museum--publish-privacy-violations
+                          (list unc-file drive-file syntax-file))
+                         (list unc-file drive-file))))
+      (delete-file unc-file)
+      (delete-file drive-file)
+      (delete-file syntax-file))))
+
+(ert-deftest org-museum-publish-rejects-a-linked-export-tree-root ()
+  "The pages/resources roots themselves cannot redirect the source walk."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-source-link-test-" t)))
+         (pages (expand-file-name "pages" root))
+         (original-link (symbol-function 'file-symlink-p)))
+    (unwind-protect
+        (progn
+          (make-directory pages t)
+          (cl-letf (((symbol-function 'file-symlink-p)
+                     (lambda (path)
+                       (if (equal (expand-file-name path) pages)
+                           "outside"
+                         (funcall original-link path)))))
+            (should-error (org-museum--publish-tree-files root "pages")
+                          :type 'org-museum-publish-error)))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-publish-sync-rolls-back-installation-failures ()
+  "A failed mirror installation restores the prior published bytes."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-rollback-test-" t)))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-publish-directory
+          (expand-file-name "../rollback-publish-site" root))
+         (export-root (expand-file-name "exports/html" root))
+         (published-index (expand-file-name "index.html"
+                                             org-museum-publish-directory))
+         (original-copy-file (symbol-function 'copy-file)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "pages" export-root) t)
+          (make-directory (expand-file-name "pages/nested" export-root) t)
+          (make-directory (expand-file-name "resources" export-root) t)
+          (make-directory org-museum-publish-directory t)
+          (with-temp-file (expand-file-name "index.html" export-root)
+            (insert "NEW INDEX"))
+          (with-temp-file (expand-file-name "graph.html" export-root)
+            (insert "GRAPH"))
+          (with-temp-file (expand-file-name "pages/nested/new.html" export-root)
+            (insert "NESTED"))
+          (with-temp-file published-index (insert "OLD INDEX"))
+          (with-temp-file
+              (expand-file-name ".org-museum-publish-manifest.json"
+                                org-museum-publish-directory)
+            (insert "{\"schemaVersion\":1,\"files\":[\"index.html\"]}"))
+          (cl-letf (((symbol-function 'org-museum-export-all) #'ignore)
+                    ((symbol-function 'copy-file)
+                     (lambda (source destination &rest args)
+                        (if (and
+                             (string-prefix-p
+                              (file-name-as-directory
+                               (expand-file-name org-museum-publish-directory))
+                              (expand-file-name destination))
+                             (string-suffix-p
+                              "pages/nested/new.html"
+                              (replace-regexp-in-string
+                               "\\\\" "/" (expand-file-name destination))))
+                            (error "fixture install failure")
+                          (apply original-copy-file source destination args)))))
+            (should-error (org-museum-publish-sync)
+                          :type 'org-museum-publish-error))
+          (should (equal (org-museum-test--file-string published-index)
+                         "OLD INDEX"))
+          (should-not
+           (file-directory-p
+            (expand-file-name "pages/nested" org-museum-publish-directory))))
+      (delete-directory root t)
+      (when (file-directory-p org-museum-publish-directory)
+        (delete-directory org-museum-publish-directory t)))))
+
+(ert-deftest org-museum-publish-sync-rejects-linked-destinations ()
+  "A managed destination link cannot redirect writes outside the checkout."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-link-test-" t)))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-publish-directory (expand-file-name "publish" root))
+         (export-root (expand-file-name "exports/html" root))
+         (outside (expand-file-name "outside" root))
+         (linked-pages (expand-file-name "pages" org-museum-publish-directory))
+         (original-file-symlink-p (symbol-function 'file-symlink-p)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "pages" export-root) t)
+          (make-directory (expand-file-name "resources" export-root) t)
+          (make-directory org-museum-publish-directory t)
+          (make-directory outside t)
+          (make-directory linked-pages t)
+          (with-temp-file (expand-file-name "index.html" export-root)
+            (insert "INDEX"))
+          (with-temp-file (expand-file-name "graph.html" export-root)
+            (insert "GRAPH"))
+          (with-temp-file (expand-file-name "pages/new.html" export-root)
+            (insert "NEW"))
+          (cl-letf (((symbol-function 'org-museum-export-all) #'ignore)
+                    ((symbol-function 'file-symlink-p)
+                     (lambda (path)
+                       (if (equal (directory-file-name (expand-file-name path))
+                                  (directory-file-name linked-pages))
+                           outside
+                         (funcall original-file-symlink-p path)))))
+            (should-error (org-museum-publish-sync)
+                          :type 'org-museum-publish-error))
+          (should-not (file-exists-p (expand-file-name "new.html" outside))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-publish-sync-removes-a-new-root-after-failure ()
+  "A failed first installation leaves no newly-created publish checkout."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-new-root-test-" t)))
+         (staging (expand-file-name "staging" root))
+         (publish (expand-file-name "publish" root)))
+    (unwind-protect
+        (progn
+          (make-directory staging t)
+          (with-temp-file (expand-file-name "index.html" staging)
+            (insert "INDEX"))
+          (cl-letf (((symbol-function 'copy-file)
+                     (lambda (&rest _) (error "fixture copy failure"))))
+            (should-error
+             (org-museum--publish-apply-staging
+              staging publish '("index.html") nil)
+             :type 'org-museum-publish-error))
+          (should-not (file-exists-p publish)))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-publish-rejects-a-dangling-managed-link ()
+  "A dangling target link is refused even though `file-exists-p' is nil."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-dangling-test-" t)))
+         (target (expand-file-name "pages/dangling.html" root))
+         (original-exists (symbol-function 'file-exists-p))
+         (original-link (symbol-function 'file-symlink-p)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'file-exists-p)
+                   (lambda (path)
+                     (if (equal (expand-file-name path) target)
+                         nil
+                       (funcall original-exists path))))
+                  ((symbol-function 'file-symlink-p)
+                   (lambda (path)
+                     (if (equal (expand-file-name path) target)
+                         "missing-target"
+                       (funcall original-link path)))))
+          (should-error
+           (org-museum--publish-validate-destination-paths root (list target))
+           :type 'org-museum-publish-error))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-publish-directory-overlap-uses-real-paths ()
+  "A linked spelling cannot hide overlap with the wiki or export tree."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-overlap-test-" t)))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-publish-directory (expand-file-name "outside" root))
+         (export-root (expand-file-name "exports/html" root))
+         (original-truename (symbol-function 'file-truename)))
+    (unwind-protect
+        (progn
+          (make-directory export-root t)
+          (cl-letf (((symbol-function 'file-truename)
+                     (lambda (path &rest args)
+                       (if (equal (directory-file-name (expand-file-name path))
+                                  (directory-file-name
+                                   org-museum-publish-directory))
+                           (expand-file-name "pages" root)
+                         (apply original-truename path args)))))
+            (should-error (org-museum--publish-validate-directories)
+                          :type 'org-museum-publish-error)))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-publish-deploy-commits-pushes-and-enables-pages ()
+  "A clean managed update is committed, pushed, and configured for Pages."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-deploy-test-" t)))
+         (org-museum-publish-directory root)
+         (org-museum-publish-repository "example/org-notes")
+         (org-museum-publish-branch "main")
+         (org-museum-publish-remote "origin")
+         (manifest-json
+          "{\"schemaVersion\":1,\"files\":[\".nojekyll\",\"index.html\"]}")
+         calls)
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name ".git" root) t)
+          (with-temp-file (expand-file-name "index.html" root) (insert "INDEX"))
+          (with-temp-file (expand-file-name ".nojekyll" root))
+          (with-temp-file
+              (expand-file-name ".org-museum-publish-manifest.json" root)
+            (insert manifest-json))
+          (cl-letf
+              (((symbol-function 'org-museum--publish-run)
+                (lambda (program arguments &optional _accepted)
+                  (push (cons program arguments) calls)
+                  (cond
+                   ((equal arguments
+                           '("show" "HEAD:.org-museum-publish-manifest.json"))
+                    (cons 0 manifest-json))
+                   ((equal arguments
+                           '("status" "--porcelain=v1" "-z"
+                             "--untracked-files=all"))
+                    (cons 0 (concat " M index.html\0"
+                                    " M .org-museum-publish-manifest.json\0")))
+                   ((equal arguments '("remote" "get-url" "origin"))
+                    (cons 0 "https://github.com/example/org-notes.git\n"))
+                   ((equal arguments
+                           '("symbolic-ref" "--quiet" "--short" "HEAD"))
+                    (cons 0 "main\n"))
+                   ((equal (car arguments) "ls-remote") (cons 2 ""))
+                   ((equal arguments '("diff" "--cached" "--quiet"))
+                    (cons 1 ""))
+                   ((and (equal program "gh")
+                          (equal (car arguments) "api")
+                          (not (member "-X" arguments)))
+                     (cons 1 "not found"))
+                    ((equal arguments '("rev-parse" "HEAD"))
+                     (cons 0 "0123456789abcdef\n"))
+                    (t (cons 0 ""))))))
+            (should (equal (org-museum-publish-deploy)
+                           "https://example.github.io/org-notes/")))
+          (should (cl-find-if
+                   (lambda (call)
+                     (equal call '("git" "push" "-u" "origin" "main")))
+                   calls))
+          (should (cl-find-if
+                   (lambda (call)
+                     (and (equal (car call) "gh")
+                           (member "POST" (cdr call))
+                           (member "source[path]=/" (cdr call))))
+                    calls))
+          (with-current-buffer "*Org Museum Publish*"
+            (should (string-match-p "0123456789abcdef" (buffer-string)))
+            (should (string-match-p
+                     "https://github.com/example/org-notes"
+                     (buffer-string)))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-publish-deploy-rejects-a-lookalike-remote-host ()
+  "A repository-shaped path on a non-GitHub host is never pushed."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-remote-test-" t)))
+         (org-museum-publish-directory root)
+         (org-museum-publish-repository "example/org-notes")
+         (org-museum-publish-branch "main")
+         (org-museum-publish-remote "origin")
+         (manifest-json
+          "{\"schemaVersion\":1,\"files\":[\".nojekyll\",\"index.html\"]}"))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name ".git" root) t)
+          (with-temp-file (expand-file-name "index.html" root) (insert "INDEX"))
+          (with-temp-file (expand-file-name ".nojekyll" root))
+          (with-temp-file
+              (expand-file-name ".org-museum-publish-manifest.json" root)
+            (insert manifest-json))
+          (cl-letf
+              (((symbol-function 'org-museum--publish-run)
+                (lambda (_program arguments &optional _accepted)
+                  (cond
+                   ((equal arguments
+                           '("show" "HEAD:.org-museum-publish-manifest.json"))
+                    (cons 0 manifest-json))
+                   ((equal (car arguments) "status") (cons 0 ""))
+                   ((equal (car arguments) "get-url")
+                    (cons 0 "https://attacker.example/example/org-notes.git"))
+                   ((equal arguments '("remote" "get-url" "origin"))
+                    (cons 0 "https://attacker.example/example/org-notes.git"))
+                   (t (cons 0 ""))))))
+            (should-error (org-museum-publish-deploy)
+                          :type 'org-museum-publish-error)))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-publish-git-status-parses-worktree-renames ()
+  "Either porcelain status column can introduce the second rename path."
+  (cl-letf (((symbol-function 'org-museum--publish-run)
+             (lambda (&rest _)
+               (cons 0 (concat " R pages/new.html\0pages/old.html\0")))))
+    (should (equal (org-museum--publish-git-status-paths)
+                   '("pages/old.html" "pages/new.html")))))
+
+(ert-deftest org-museum-publish-command-output-redacts-url-credentials ()
+  "Persistent publish logs never retain URL userinfo or GitHub tokens."
+  (let ((redacted
+         (org-museum--publish-redact-command-output
+          "https://gho_secret@github.com/example/org-notes.git github_pat_token")))
+    (should-not (string-match-p "gho_secret\|github_pat_token" redacted))
+    (should (string-match-p "https://\\*\\*\\*@github.com" redacted))))
+
+(ert-deftest org-museum-publish-run-keeps-raw-output-for-machine-parsing ()
+  "Only the persistent log is redacted; callers receive exact process bytes."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-output-test-" t)))
+         (org-museum-publish-directory root)
+         (payload " M pages/ghp_legitimate-name.html\0"))
+    (unwind-protect
+        (progn
+          (when (get-buffer "*Org Museum Publish*")
+            (kill-buffer "*Org Museum Publish*"))
+          (cl-letf (((symbol-function 'executable-find) (lambda (_) t))
+                    ((symbol-function 'process-file)
+                     (lambda (_program _in destination _display &rest _args)
+                       (with-current-buffer destination (insert payload))
+                       0)))
+            (should (equal (cdr (org-museum--publish-run "git" '("status")))
+                           payload)))
+          (with-current-buffer "*Org Museum Publish*"
+            (should-not (search-forward "ghp_legitimate" nil t))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-publish-run-reports-a-missing-executable ()
+  "Deployment prerequisites fail before any subprocess is attempted."
+  (cl-letf (((symbol-function 'executable-find) (lambda (_program) nil)))
+    (should-error (org-museum--publish-run "missing-publisher" nil)
+                  :type 'org-museum-publish-error)))
+
+(ert-deftest org-museum-publish-bootstrap-requires-explicit-confirmation ()
+  "First-time public repository creation is cancelled without consent."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'org-museum--publish-confirm-bootstrap)
+               (lambda (&rest _) nil))
+              ((symbol-function 'org-museum--publish-run)
+               (lambda (&rest _) (setq called t))))
+      (should-error
+       (org-museum--publish-bootstrap-repository
+        "C:/publish/" "example/org-notes" "main")
+       :type 'org-museum-publish-error)
+      (should-not called))))
+
+(ert-deftest org-museum-publish-bootstrap-creates-a-public-main-repository ()
+  "Confirmed first-time setup initialises Git and requests a public repository."
+  (let ((org-museum-publish-remote "origin") calls)
+    (cl-letf (((symbol-function 'org-museum--publish-confirm-bootstrap)
+               (lambda (&rest _) t))
+              ((symbol-function 'org-museum--publish-run)
+               (lambda (program arguments &optional _accepted)
+                 (push (cons program arguments) calls)
+                 (cons 0 ""))))
+      (org-museum--publish-bootstrap-repository
+       "C:/publish/" "example/org-notes" "main")
+      (should (member '("git" "init" "-b" "main") calls))
+      (should (cl-find-if
+               (lambda (call)
+                 (and (equal (car call) "gh")
+                      (member "--public" (cdr call))
+                      (member "example/org-notes" (cdr call))))
+               calls)))))
+
+(ert-deftest org-museum-publish-deploy-stops-when-gh-is-unauthenticated ()
+  "An unauthenticated GitHub CLI cannot initialise or push the checkout."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-auth-test-" t)))
+         (org-museum-publish-directory root)
+         (org-museum-publish-repository "example/org-notes")
+         (org-museum-publish-branch "main")
+         (org-museum-publish-remote "origin")
+         (bootstrapped nil))
+    (unwind-protect
+        (progn
+          (with-temp-file
+              (expand-file-name ".org-museum-publish-manifest.json" root)
+            (insert "{\"schemaVersion\":1,\"files\":[\"index.html\"]}"))
+          (with-temp-file (expand-file-name "index.html" root) (insert "INDEX"))
+          (cl-letf (((symbol-function 'org-museum--publish-run)
+                     (lambda (program arguments &optional _accepted)
+                       (if (and (equal program "gh")
+                                (equal arguments '("auth" "status")))
+                           (signal 'org-museum-publish-error
+                                   '("GitHub CLI is not authenticated"))
+                         (cons 0 ""))))
+                    ((symbol-function 'org-museum--publish-bootstrap-repository)
+                     (lambda (&rest _) (setq bootstrapped t))))
+            (should-error (org-museum-publish-deploy)
+                          :type 'org-museum-publish-error)
+            (should-not bootstrapped)))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-publish-rejects-remote-ahead-or-diverged-history ()
+  "A fetched remote commit not contained in HEAD requires manual recovery."
+  (cl-letf (((symbol-function 'org-museum--publish-run)
+             (lambda (_program arguments &optional _accepted)
+               (cond
+                ((equal (car arguments) "ls-remote") (cons 0 "remote"))
+                ((equal (car arguments) "fetch") (cons 0 ""))
+                ((equal arguments '("rev-parse" "--verify" "HEAD"))
+                 (cons 0 "head"))
+                ((equal (car arguments) "merge-base") (cons 1 ""))
+                (t (cons 0 ""))))))
+    (should-error (org-museum--publish-check-remote-history "main")
+                  :type 'org-museum-publish-error)))
+
+(ert-deftest org-museum-publish-unchanged-tree-does-not-create-a-commit ()
+  "An unchanged managed tree finishes without an empty Git commit."
+  (let (calls)
+    (cl-letf (((symbol-function 'org-museum--publish-run)
+               (lambda (program arguments &optional _accepted)
+                 (push (cons program arguments) calls)
+                 (cons 0 ""))))
+      (should-not (org-museum--publish-stage-and-commit nil))
+      (should-not (cl-find-if
+                   (lambda (call) (member "commit" (cdr call))) calls)))))
+
+(ert-deftest org-museum-publish-pages-api-failure-is-not-hidden ()
+  "A Pages update failure remains a deployment error after a successful push."
+  (cl-letf (((symbol-function 'org-museum--publish-run)
+             (lambda (_program arguments &optional _accepted)
+               (if (member "-X" arguments)
+                   (signal 'org-museum-publish-error '("Pages update failed"))
+                 (cons 0 "{}")))))
+    (should-error
+     (org-museum--publish-configure-pages "example/org-notes" "main")
+     :type 'org-museum-publish-error)))
+
+(ert-deftest org-museum-publish-commands-have-daily-workflow-bindings ()
+  "Both publishing stages are reachable without requiring Transient."
+  (should (eq (lookup-key org-museum-mode-map (kbd "C-c w p"))
+              #'org-museum-publish-sync))
+  (should (eq (lookup-key org-museum-mode-map (kbd "C-c w P"))
+               #'org-museum-publish-deploy))
+  (let ((fallback (prin1-to-string
+                   (symbol-function 'org-museum--dispatch-minibuffer))))
+    (should (string-match-p "org-museum-publish-sync" fallback))
+    (should (string-match-p "org-museum-publish-deploy" fallback)))
+  (with-temp-buffer
+    (insert-file-contents (expand-file-name "org-museum.el"
+                                            org-museum-test--repo-root))
+    (should (search-forward
+             "(\"p\" \"Sync Publish Site\" org-museum-publish-sync)" nil t))
+    (should (search-forward
+             "(\"P\" \"Deploy to GitHub\"  org-museum-publish-deploy)"
+             nil t))))
+
 (provide 'org-museum-test)
 
 ;;; org-museum-test.el ends here

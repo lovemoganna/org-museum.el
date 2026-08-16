@@ -48,6 +48,12 @@
 (defconst org-museum--index-schema-version 3
   "Version of the persisted index and parsing/link-resolution rules.")
 
+(defconst org-museum--publish-manifest-name
+  ".org-museum-publish-manifest.json"
+  "Relative manifest name used to track files managed in a publish checkout.")
+
+(define-error 'org-museum-publish-error "Org Museum publish failed")
+
 ;; ============================================================
 ;; §2  CUSTOMISATION
 ;; ============================================================
@@ -69,6 +75,27 @@
 
 (defcustom org-museum-shared-export-dir "exports/html"
   "Shared export directory (index.html, graph.html, resources/)."
+  :type 'string
+  :group 'org-museum)
+
+(defcustom org-museum-publish-directory nil
+  "Local Git working directory used to publish the exported static site.
+This directory must be outside `org-museum-root-dir' and its export tree."
+  :type '(choice (const :tag "Not configured" nil) directory)
+  :group 'org-museum)
+
+(defcustom org-museum-publish-repository nil
+  "GitHub repository receiving the published site, as OWNER/REPOSITORY."
+  :type '(choice (const :tag "Not configured" nil) string)
+  :group 'org-museum)
+
+(defcustom org-museum-publish-branch "main"
+  "Git branch used as the GitHub Pages publishing source."
+  :type 'string
+  :group 'org-museum)
+
+(defcustom org-museum-publish-remote "origin"
+  "Git remote used by `org-museum-publish-deploy'."
   :type 'string
   :group 'org-museum)
 
@@ -2223,6 +2250,651 @@ export would remove."
   (interactive)
   (org-museum--run-with-current-runtime
    'org-museum-export-all nil #'org-museum--export-all-current))
+
+(defun org-museum--publish-normalise-relative-path (path)
+  "Return PATH with portable separators, or nil when it is unsafe."
+  (let ((normalised (replace-regexp-in-string "\\\\" "/" path)))
+    (when (and (not (file-name-absolute-p path))
+               (not (string-prefix-p "/" normalised))
+               (not (member ".." (split-string normalised "/" t))))
+      normalised)))
+
+(defun org-museum--publish-managed-relative-path-p (path)
+  "Return non-nil when relative PATH is owned by Org Museum publishing."
+  (when-let ((relative (org-museum--publish-normalise-relative-path path)))
+    (or (member relative '("index.html" "graph.html" ".nojekyll"))
+        (string-prefix-p "pages/" relative)
+        (string-prefix-p "resources/" relative))))
+
+(defun org-museum--publish-path-key (path)
+  "Return a comparison key for absolute PATH on the current platform."
+  (let ((key (file-name-as-directory (expand-file-name path))))
+    (if (memq system-type '(windows-nt ms-dos cygwin))
+        (downcase key)
+      key)))
+
+(defun org-museum--publish-validate-directories ()
+  "Validate and return (EXPORT-ROOT PUBLISH-ROOT)."
+  (unless (and org-museum-publish-directory
+               (not (string-empty-p org-museum-publish-directory)))
+    (signal 'org-museum-publish-error
+            '("org-museum-publish-directory is not configured")))
+  (let* ((export-root (file-name-as-directory
+                       (expand-file-name (org-museum--shared-root))))
+         (publish-root (file-name-as-directory
+                        (expand-file-name org-museum-publish-directory)))
+         (root-key (org-museum--publish-path-key org-museum-root-dir))
+         (export-key (org-museum--publish-path-key export-root))
+         (publish-key (org-museum--publish-path-key publish-root))
+         (true-root-key
+          (org-museum--publish-path-key (file-truename org-museum-root-dir)))
+         (true-export-key
+          (org-museum--publish-path-key (file-truename export-root)))
+         (true-publish-key
+          (org-museum--publish-path-key (file-truename publish-root))))
+    (unless (file-directory-p export-root)
+      (signal 'org-museum-publish-error
+              (list (format "Export directory does not exist: %s" export-root))))
+    (when (or (string-prefix-p root-key publish-key)
+              (string-prefix-p publish-key root-key)
+              (string-prefix-p export-key publish-key)
+              (string-prefix-p publish-key export-key)
+              (string-prefix-p true-root-key true-publish-key)
+              (string-prefix-p true-publish-key true-root-key)
+              (string-prefix-p true-export-key true-publish-key)
+              (string-prefix-p true-publish-key true-export-key))
+      (signal 'org-museum-publish-error
+              (list "Publish directory must not overlap the wiki or export directory")))
+    (list export-root publish-root)))
+
+(defun org-museum--publish-tree-files (root relative)
+  "Return regular files below ROOT/RELATIVE, rejecting symbolic links."
+  (let ((start (expand-file-name relative root))
+        files)
+    (when (or (file-symlink-p start)
+              (and (file-exists-p start)
+                   (not (equal (org-museum--publish-path-key start)
+                               (org-museum--publish-path-key
+                                (file-truename start))))))
+      (signal 'org-museum-publish-error
+              (list (format "Linked export directory cannot be published: %s"
+                            start))))
+    (unless (file-directory-p start)
+      (signal 'org-museum-publish-error
+              (list (format "Required export directory is missing: %s" start))))
+    (cl-labels
+        ((walk
+          (directory)
+          (dolist (entry (directory-files directory t nil t))
+            (unless (member (file-name-nondirectory entry) '("." ".."))
+              (when (file-symlink-p entry)
+                (signal 'org-museum-publish-error
+                        (list (format "Symbolic links cannot be published: %s"
+                                      entry))))
+              (cond
+               ((file-directory-p entry) (walk entry))
+               ((file-regular-p entry) (push entry files))
+               (t
+                (signal 'org-museum-publish-error
+                        (list (format "Unsupported export entry: %s" entry)))))))))
+      (walk start))
+    (nreverse files)))
+
+(defun org-museum--publish-source-files (export-root)
+  "Return the complete public file set below EXPORT-ROOT."
+  (when (or (file-symlink-p export-root)
+            (not (equal (org-museum--publish-path-key export-root)
+                        (org-museum--publish-path-key
+                         (file-truename export-root)))))
+    (signal 'org-museum-publish-error
+            (list (format "Linked export root cannot be published: %s"
+                          export-root))))
+  (let ((required (mapcar (lambda (name) (expand-file-name name export-root))
+                          '("index.html" "graph.html"))))
+    (dolist (file required)
+      (when (or (file-symlink-p file) (not (file-regular-p file)))
+        (signal 'org-museum-publish-error
+                (list (format "Required export file is missing or unsafe: %s"
+                              file)))))
+    (append required
+            (org-museum--publish-tree-files export-root "pages")
+            (org-museum--publish-tree-files export-root "resources"))))
+
+(defun org-museum--publish-text-file-p (file)
+  "Return non-nil when FILE should be scanned for local paths."
+  (member (downcase (or (file-name-extension file) ""))
+          '("html" "htm" "css" "js" "json" "xml" "svg" "txt" "map")))
+
+(defun org-museum--publish-privacy-violations (files)
+  "Return FILES containing user paths, Windows paths, or local file URLs."
+  (let* ((profile (or (getenv "USERPROFILE") (expand-file-name "~")))
+         (slash-profile (replace-regexp-in-string "\\\\" "/" profile))
+         (backslash-profile (replace-regexp-in-string "/" "\\\\" profile))
+         violations)
+    (dolist (file files (nreverse violations))
+      (when (org-museum--publish-text-file-p file)
+        (with-temp-buffer
+          (insert-file-contents file)
+          (goto-char (point-min))
+          (let ((case-fold-search t))
+            (when (or (search-forward slash-profile nil t)
+                    (progn
+                      (goto-char (point-min))
+                      (search-forward backslash-profile nil t))
+                    (progn
+                      (goto-char (point-min))
+                      (re-search-forward "file:///[[:alpha:]]:[/\\\\]" nil t))
+                    (progn
+                      (goto-char (point-min))
+                      (re-search-forward
+                       "data-local-path=\\\"[[:alpha:]]:[/\\\\]" nil t))
+                    (progn
+                      (goto-char (point-min))
+                      (re-search-forward
+                       "\\(?:\\`\\|[^[:alnum:]?]\\)[[:alpha:]]:[/\\\\][^<>:\"/\\\\|?*\n\r]"
+                       nil t))
+                    (progn
+                      (goto-char (point-min))
+                      (re-search-forward
+                       "\\(?:\\`\\|[^\\\\]\\)\\\\\\\\[[:alnum:]][[:alnum:]._-]+\\\\[[:alnum:]][^\\\\/[:space:]\\\"']*"
+                       nil t)))
+              (push file violations))))))))
+
+(defun org-museum--publish-read-managed-files (publish-root)
+  "Read safe managed relative paths from PUBLISH-ROOT's manifest."
+  (let ((manifest (expand-file-name org-museum--publish-manifest-name
+                                    publish-root)))
+    (if (not (file-regular-p manifest))
+        nil
+      (condition-case err
+          (with-temp-buffer
+            (insert-file-contents manifest)
+            (org-museum--publish-manifest-files-from-string
+             (buffer-string) "Publish manifest"))
+        (error
+         (signal 'org-museum-publish-error
+                 (list (format "Cannot read publish manifest: %s"
+                               (error-message-string err)))))))))
+
+(defun org-museum--publish-write-manifest (publish-root files)
+  "Write relative managed FILES under PUBLISH-ROOT."
+  (let ((manifest (expand-file-name org-museum--publish-manifest-name
+                                    publish-root))
+        (coding-system-for-write 'utf-8-unix))
+    (with-temp-file manifest
+      (insert (json-encode
+               `((schemaVersion . 1)
+                 (files . ,(vconcat (sort (copy-sequence files) #'string<))))))
+      (insert "\n"))))
+
+(defun org-museum--publish-copy-to-staging (files export-root staging-root)
+  "Copy public FILES from EXPORT-ROOT into STAGING-ROOT and return relatives."
+  (let (relative-files)
+    (dolist (source files (nreverse relative-files))
+      (let* ((relative (org-museum--publish-normalise-relative-path
+                        (file-relative-name source export-root)))
+             (destination (and relative
+                               (expand-file-name relative staging-root))))
+        (unless (and relative
+                     (org-museum--publish-managed-relative-path-p relative)
+                     (file-in-directory-p source export-root))
+          (signal 'org-museum-publish-error
+                  (list (format "Export file escapes the public tree: %s" source))))
+        (make-directory (file-name-directory destination) t)
+        (copy-file source destination t t t)
+        (push relative relative-files)))))
+
+(defun org-museum--publish-validate-root-ancestors (publish-root)
+  "Reject linked or dangling ancestors of PUBLISH-ROOT before creation."
+  (let ((probe (directory-file-name
+                (file-name-as-directory (expand-file-name publish-root)))))
+    ;; Validate every existing ancestor before creating the checkout.  This
+    ;; also catches a dangling link, for which `file-exists-p' is nil.
+    (while (and probe (not (file-exists-p probe)))
+      (when (file-symlink-p probe)
+        (signal 'org-museum-publish-error
+                (list (format "Publish path contains a dangling link: %s"
+                              probe))))
+      (let ((parent (directory-file-name (file-name-directory probe))))
+        (setq probe (unless (equal parent probe) parent))))
+    (when (and probe
+               (or (file-symlink-p probe)
+                   (not (equal (org-museum--publish-path-key probe)
+                               (org-museum--publish-path-key
+                                (file-truename probe))))))
+      (signal 'org-museum-publish-error
+              (list (format "Publish directory resolves through a link: %s"
+                            publish-root))))))
+
+(defun org-museum--publish-validate-destination-paths (publish-root targets)
+  "Reject links and paths escaping PUBLISH-ROOT among TARGETS."
+  (let ((root (file-name-as-directory (expand-file-name publish-root))))
+    (org-museum--publish-validate-root-ancestors root)
+    (unless (file-directory-p root)
+      (signal 'org-museum-publish-error
+              (list (format "Publish directory is not ready: %s" root))))
+    (let ((true-root (file-name-as-directory (file-truename root))))
+      (dolist (target targets)
+        (let ((cursor (expand-file-name target)))
+          (unless (file-in-directory-p cursor root)
+            (signal 'org-museum-publish-error
+                    (list (format "Publish destination escapes checkout: %s"
+                                  cursor))))
+          (while (and (file-in-directory-p cursor root)
+                      (not (equal (org-museum--publish-path-key cursor)
+                                  (org-museum--publish-path-key root))))
+            (when (file-symlink-p cursor)
+              (signal 'org-museum-publish-error
+                      (list (format "Linked publish destination is unsafe: %s"
+                                    cursor))))
+            (when (file-exists-p cursor)
+              (let ((true-cursor (file-truename cursor)))
+                (unless (or (equal (org-museum--publish-path-key true-cursor)
+                                   (org-museum--publish-path-key true-root))
+                            (file-in-directory-p true-cursor true-root))
+                  (signal 'org-museum-publish-error
+                          (list (format
+                                 "Publish destination resolves outside checkout: %s"
+                                 cursor))))))
+            (setq cursor
+                  (directory-file-name (file-name-directory cursor)))))))))
+
+(defun org-museum--publish-apply-staging
+    (staging-root publish-root relative-files old-files)
+  "Transactionally install RELATIVE-FILES and remove stale OLD-FILES."
+  (let* ((managed-files (cons ".nojekyll" relative-files))
+         (stale (cl-set-difference old-files managed-files :test #'equal))
+         (manifest-relative org-museum--publish-manifest-name)
+         (targets
+          (delete-dups
+           (mapcar (lambda (relative) (expand-file-name relative publish-root))
+                   (append managed-files stale (list manifest-relative)))))
+         (root-existed (file-directory-p publish-root))
+         snapshots preexisting preexisting-directories)
+    (org-museum--publish-validate-root-ancestors publish-root)
+    (condition-case err
+        (progn
+          (make-directory publish-root t)
+          (org-museum--publish-validate-destination-paths publish-root targets)
+          (setq snapshots (org-museum--snapshot-files targets)
+                preexisting
+                (mapcar (lambda (file) (cons file (file-exists-p file)))
+                        targets)
+                preexisting-directories
+                (mapcar
+                 (lambda (directory)
+                   (cons directory (file-directory-p directory)))
+                 (sort
+                  (delete-dups
+                   (cl-loop for target in targets
+                            append
+                            (let ((cursor (directory-file-name
+                                           (file-name-directory target)))
+                                  directories)
+                              (while (and (file-in-directory-p cursor publish-root)
+                                          (not (equal
+                                                (org-museum--publish-path-key cursor)
+                                                (org-museum--publish-path-key
+                                                 publish-root))))
+                                (push cursor directories)
+                                (setq cursor
+                                      (directory-file-name
+                                       (file-name-directory cursor))))
+                              directories)))
+                  (lambda (left right) (> (length left) (length right))))))
+          (dolist (relative relative-files)
+            (let ((source (expand-file-name relative staging-root))
+                  (destination (expand-file-name relative publish-root)))
+              (make-directory (file-name-directory destination) t)
+              (copy-file source destination t t t)))
+          (with-temp-file (expand-file-name ".nojekyll" publish-root))
+          (dolist (relative stale)
+            (let ((file (expand-file-name relative publish-root)))
+              (when (and (org-museum--publish-managed-relative-path-p relative)
+                         (file-regular-p file)
+                         (not (file-symlink-p file)))
+                (delete-file file))))
+          (org-museum--publish-write-manifest publish-root managed-files)
+          managed-files)
+      ((error quit)
+       (org-museum--restore-file-snapshots snapshots)
+       (dolist (entry preexisting)
+         (when (and (not (cdr entry)) (file-regular-p (car entry)))
+           (delete-file (car entry))))
+       (dolist (entry preexisting-directories)
+         (when (and (not (cdr entry)) (file-directory-p (car entry)))
+           (ignore-errors (delete-directory (car entry)))))
+       (unless root-existed
+         (when (file-directory-p publish-root)
+           (delete-directory publish-root t)))
+       (signal 'org-museum-publish-error
+               (list (format "Publish sync rolled back: %s"
+                             (error-message-string err))))))))
+
+;;;###autoload
+(defun org-museum-publish-sync ()
+  "Export the complete site and safely mirror it to the publish directory."
+  (interactive)
+  (org-museum-export-all)
+  (pcase-let* ((`(,export-root ,publish-root)
+                (org-museum--publish-validate-directories))
+               (source-files (org-museum--publish-source-files export-root))
+               (old-files (org-museum--publish-read-managed-files publish-root))
+               (staging-root (make-temp-file "org-museum-publish-" t)))
+    (unwind-protect
+        (let ((relative-files
+               (org-museum--publish-copy-to-staging
+                source-files export-root staging-root)))
+          (let* ((staged-files
+                  (mapcar (lambda (relative)
+                            (expand-file-name relative staging-root))
+                          relative-files))
+                 (violations
+                  (org-museum--publish-privacy-violations staged-files)))
+            (when violations
+              (signal 'org-museum-publish-error
+                      (list (format "Local paths remain in publishable files: %s"
+                                    (mapconcat
+                                     (lambda (file)
+                                       (file-relative-name file staging-root))
+                                     violations ", "))))))
+          (org-museum--publish-apply-staging
+           staging-root publish-root relative-files old-files)
+          (message "Org Museum publish sync complete: %s" publish-root)
+          publish-root)
+      (when (file-directory-p staging-root)
+        (delete-directory staging-root t)))))
+
+(defun org-museum--publish-redact-command-output (output)
+  "Remove credentials and token-shaped secrets from process OUTPUT."
+  (let ((redacted (replace-regexp-in-string
+                   "\\(https?://\\)[^/@[:space:]]+@" "\\1***@" output t)))
+    (setq redacted
+          (replace-regexp-in-string
+           "\\(?:gh[opsu]_[[:alnum:]_]+\\|github_pat_[[:alnum:]_]+\\)"
+           "[REDACTED]" redacted t))
+    (replace-regexp-in-string
+     "\\([Aa]uthorization:[[:space:]]*\\(?:[Bb]earer[[:space:]]+\\)?\\)[^[:space:]]+"
+     "\\1[REDACTED]" redacted t)))
+
+(defun org-museum--publish-run (program arguments &optional accepted-statuses)
+  "Run PROGRAM with ARGUMENTS in the publish directory.
+Return (STATUS . OUTPUT).  Signal unless STATUS is in ACCEPTED-STATUSES,
+which defaults to (0)."
+  (unless (executable-find program)
+    (signal 'org-museum-publish-error
+            (list (format "Required executable was not found: %s" program))))
+  (let* ((default-directory
+          (file-name-as-directory (expand-file-name org-museum-publish-directory)))
+         (buffer (get-buffer-create "*Org Museum Publish*"))
+         (process-buffer (generate-new-buffer " *Org Museum Publish Process*"))
+         (accepted (or accepted-statuses '(0)))
+         status raw-output log-output)
+    (unwind-protect
+        (progn
+          (setq status (apply #'process-file program nil process-buffer t arguments))
+          (with-current-buffer process-buffer
+            (setq raw-output (buffer-string)
+                  log-output
+                  (org-museum--publish-redact-command-output raw-output)))
+          (with-current-buffer buffer
+            (goto-char (point-max))
+            (insert (org-museum--publish-redact-command-output
+                     (format "\n$ %s %s\n" program
+                             (mapconcat #'shell-quote-argument arguments " "))))
+            (insert log-output)))
+      (kill-buffer process-buffer))
+    (unless (memq status accepted)
+      (signal 'org-museum-publish-error
+              (list (format "%s failed (%s): %s"
+                            program status (string-trim log-output)))))
+    (cons status raw-output)))
+
+(defun org-museum--publish-manifest-files-from-string (contents context)
+  "Return validated managed paths from JSON CONTENTS, labelled by CONTEXT."
+  (condition-case err
+      (let ((json-object-type 'alist)
+            (json-array-type 'list)
+            (json-key-type 'symbol))
+        (with-temp-buffer
+          (insert contents)
+          (goto-char (point-min))
+          (let* ((data (json-read))
+                 (files (alist-get 'files data)))
+            (unless (and (= (or (alist-get 'schemaVersion data) 0) 1)
+                         (listp files)
+                         (cl-every #'stringp files)
+                         (cl-every #'org-museum--publish-managed-relative-path-p
+                                   files))
+              (signal 'org-museum-publish-error
+                      (list (format "%s contains unsafe entries" context))))
+            files)))
+    (error
+     (if (eq (car err) 'org-museum-publish-error)
+         (signal (car err) (cdr err))
+       (signal 'org-museum-publish-error
+               (list (format "Cannot parse %s: %s"
+                             context (error-message-string err))))))))
+
+(defun org-museum--publish-head-managed-files ()
+  "Return managed files recorded by the current Git HEAD, if any."
+  (pcase-let ((`(,status . ,output)
+               (org-museum--publish-run
+                "git" (list "show" (concat "HEAD:" org-museum--publish-manifest-name))
+                '(0 128))))
+    (if (= status 0)
+        (org-museum--publish-manifest-files-from-string output "HEAD publish manifest")
+      nil)))
+
+(defun org-museum--publish-git-status-paths ()
+  "Return changed paths from porcelain Git status without shell parsing."
+  (let* ((result (org-museum--publish-run
+                  "git" '("status" "--porcelain=v1" "-z"
+                          "--untracked-files=all")))
+         (records (split-string (cdr result) "\0" t))
+         paths)
+    (while records
+      (let* ((record (pop records))
+             (status (substring record 0 (min 2 (length record))))
+             (path (if (> (length record) 3) (substring record 3) "")))
+        (when (or (member (substring status 0 1) '("R" "C"))
+                  (and (> (length status) 1)
+                       (member (substring status 1 2) '("R" "C"))))
+          (when records (push (pop records) paths)))
+        (unless (string-empty-p path)
+          (push path paths))))
+    (delete-dups (nreverse paths))))
+
+(defun org-museum--publish-validate-dirty-paths (paths current previous)
+  "Reject PATHS not owned by CURRENT or PREVIOUS publish manifests."
+  (let* ((allowed (delete-dups
+                   (append current previous
+                           (list org-museum--publish-manifest-name))))
+         (unexpected
+          (cl-remove-if
+           (lambda (path)
+             (member (org-museum--publish-normalise-relative-path path)
+                     allowed))
+           paths)))
+    (when unexpected
+      (signal 'org-museum-publish-error
+              (list (format "Unmanaged repository changes must be resolved: %s"
+                            (mapconcat #'identity unexpected ", ")))))))
+
+(defun org-museum--publish-repository-config ()
+  "Validate publishing configuration and return (DIRECTORY REPOSITORY BRANCH)."
+  (unless (and org-museum-publish-directory
+               (file-directory-p org-museum-publish-directory))
+    (signal 'org-museum-publish-error
+            '("Run org-museum-publish-sync before deploying")))
+  (unless (and (stringp org-museum-publish-repository)
+               (string-match-p
+                "\\`[[:alnum:]_.-]+/[[:alnum:]_.-]+\\'"
+                org-museum-publish-repository))
+    (signal 'org-museum-publish-error
+            '("org-museum-publish-repository must be OWNER/REPOSITORY")))
+  (unless (and (stringp org-museum-publish-branch)
+               (not (string-empty-p org-museum-publish-branch)))
+    (signal 'org-museum-publish-error '("Publish branch is not configured")))
+  (unless (and (stringp org-museum-publish-remote)
+               (not (string-empty-p org-museum-publish-remote)))
+    (signal 'org-museum-publish-error '("Publish remote is not configured")))
+  (list (file-name-as-directory
+         (expand-file-name org-museum-publish-directory))
+        org-museum-publish-repository
+        org-museum-publish-branch))
+
+(defun org-museum--publish-confirm-bootstrap (repository directory)
+  "Confirm creation of public REPOSITORY backed by DIRECTORY."
+  (y-or-n-p
+   (format "Create PUBLIC GitHub repository %s from %s? " repository directory)))
+
+(defun org-museum--publish-bootstrap-repository (directory repository branch)
+  "Initialise DIRECTORY and create public GitHub REPOSITORY on BRANCH."
+  (unless (org-museum--publish-confirm-bootstrap repository directory)
+    (signal 'org-museum-publish-error '("GitHub repository creation cancelled")))
+  (org-museum--publish-run "git" (list "init" "-b" branch))
+  (org-museum--publish-run
+   "gh" (list "repo" "create" repository "--public"
+              "--description" "Org Museum published notes"
+              "--source" directory "--remote" org-museum-publish-remote)))
+
+(defun org-museum--publish-remote-url-valid-p (url repository)
+  "Return non-nil when GitHub URL canonically names REPOSITORY."
+  (let ((trimmed (string-trim url))
+        (repo (regexp-quote repository)))
+    (or (string-match-p
+         (concat "\\`https://github\\.com/" repo "\\(?:\\.git\\)?\\'")
+         trimmed)
+        (string-match-p
+         (concat "\\`git@github\\.com:" repo "\\(?:\\.git\\)?\\'")
+         trimmed)
+        (string-match-p
+         (concat "\\`ssh://git@github\\.com/" repo "\\(?:\\.git\\)?\\'")
+         trimmed))))
+
+(defun org-museum--publish-ensure-remote (repository)
+  "Verify that the configured remote targets REPOSITORY."
+  (pcase-let ((`(,status . ,output)
+               (org-museum--publish-run
+                "git" (list "remote" "get-url" org-museum-publish-remote)
+                '(0 2))))
+    (unless (and (= status 0)
+                 (org-museum--publish-remote-url-valid-p output repository))
+      (signal 'org-museum-publish-error
+              (list (format "Remote %s does not target %s"
+                            org-museum-publish-remote repository))))))
+
+(defun org-museum--publish-ensure-current-branch (branch)
+  "Refuse to publish unless the checked-out Git branch is BRANCH."
+  (let ((current
+         (string-trim
+          (cdr (org-museum--publish-run
+                "git" '("symbolic-ref" "--quiet" "--short" "HEAD"))))))
+    (unless (equal current branch)
+      (signal 'org-museum-publish-error
+              (list (format "Publish checkout is on %s, expected %s"
+                            (if (string-empty-p current) "detached HEAD" current)
+                            branch))))))
+
+(defun org-museum--publish-check-remote-history (branch)
+  "Fetch BRANCH and refuse remote-ahead or diverged history."
+  (pcase-let ((`(,remote-status . ,_)
+               (org-museum--publish-run
+                "git" (list "ls-remote" "--exit-code" "--heads"
+                            org-museum-publish-remote branch)
+                '(0 2))))
+    (when (= remote-status 0)
+      (org-museum--publish-run
+       "git" (list "fetch" org-museum-publish-remote branch))
+      (pcase-let ((`(,head-status . ,_)
+                   (org-museum--publish-run
+                    "git" '("rev-parse" "--verify" "HEAD") '(0 128))))
+        (when (or (/= head-status 0)
+                  (/= 0 (car (org-museum--publish-run
+                              "git"
+                              (list "merge-base" "--is-ancestor"
+                                    (format "%s/%s"
+                                            org-museum-publish-remote branch)
+                                    "HEAD")
+                              '(0 1)))))
+          (signal 'org-museum-publish-error
+                  '("Remote branch is ahead or diverged; resolve it manually")))))))
+
+(defun org-museum--publish-stage-and-commit (paths)
+  "Stage validated PATHS and commit them; return non-nil when committed."
+  (when paths
+    (org-museum--publish-run "git" (append '("add" "-A" "--") paths)))
+  (let ((diff-status
+         (car (org-museum--publish-run
+               "git" '("diff" "--cached" "--quiet") '(0 1)))))
+    (when (= diff-status 1)
+      (org-museum--publish-run
+       "git" (list "commit" "-m"
+                   (format-time-string "Publish Org Museum %Y-%m-%d %H:%M")))
+      t)))
+
+(defun org-museum--publish-configure-pages (repository branch)
+  "Create or correct GitHub Pages for REPOSITORY on BRANCH root."
+  (pcase-let ((`(,status . ,output)
+               (org-museum--publish-run
+                "gh" (list "api" (format "repos/%s/pages" repository))
+                '(0 1))))
+    (when (and (= status 1)
+               (not (string-match-p "\\(?:404\\|[Nn]ot [Ff]ound\\)" output)))
+      (signal 'org-museum-publish-error
+              (list (format "Cannot inspect GitHub Pages: %s"
+                            (string-trim output)))))
+    (org-museum--publish-run
+     "gh" (append
+           (list "api" "-X" (if (= status 0) "PUT" "POST")
+                 (format "repos/%s/pages" repository)
+                 "-f" "build_type=legacy"
+                 "-f" (format "source[branch]=%s" branch)
+                 "-f" "source[path]=/")))))
+
+;;;###autoload
+(defun org-museum-publish-deploy ()
+  "Commit the managed publish mirror, push it, and configure GitHub Pages."
+  (interactive)
+  (pcase-let* ((`(,directory ,repository ,branch)
+                (org-museum--publish-repository-config))
+               (current (org-museum--publish-read-managed-files directory)))
+    (unless current
+      (signal 'org-museum-publish-error
+              '("Publish manifest is missing or empty; run publish sync")))
+    (unless (file-directory-p (expand-file-name ".git" directory))
+      (org-museum--publish-run "gh" '("auth" "status"))
+      (org-museum--publish-bootstrap-repository directory repository branch))
+    (let* ((previous (org-museum--publish-head-managed-files))
+           (dirty (org-museum--publish-git-status-paths)))
+      (org-museum--publish-validate-dirty-paths dirty current previous)
+      (org-museum--publish-run "gh" '("auth" "status"))
+      (org-museum--publish-ensure-remote repository)
+      (org-museum--publish-ensure-current-branch branch)
+      (org-museum--publish-check-remote-history branch)
+      (let ((committed (org-museum--publish-stage-and-commit dirty)))
+        ;; Always push: this also safely retries a commit left ahead after a
+        ;; previous network failure.  Git is a no-op when both sides match.
+        (org-museum--publish-run
+         "git" (list "push" "-u" org-museum-publish-remote branch))
+        (org-museum--publish-configure-pages repository branch)
+        (let* ((sha (string-trim
+                     (cdr (org-museum--publish-run
+                           "git" '("rev-parse" "HEAD")))))
+               (repository-url (format "https://github.com/%s" repository))
+               (owner-and-repo (split-string repository "/" t))
+               (url (format "https://%s.github.io/%s/"
+                            (car owner-and-repo) (cadr owner-and-repo))))
+          (with-current-buffer (get-buffer-create "*Org Museum Publish*")
+            (goto-char (point-max))
+            (insert (format
+                     "\nDeploy complete%s\nCommit: %s\nRepository: %s\nSite: %s\n"
+                     (if committed "" " (no content changes)")
+                     sha repository-url url)))
+          (message "Org Museum deploy complete%s: %s (%s)"
+                   (if committed "" " (no content changes)") url sha)
+          url)))))
 
 (defun org-museum--export-all-current ()
   "Transactionally export the complete site using the current runtime."
@@ -6410,6 +7082,8 @@ When nil:
             ("e  Export This Page" . org-museum-export-page)
             ("E  Export All"       . org-museum-export-all)
             ("g  Export Graph"     . org-museum-export-graph)
+            ("p  Sync Publish Site" . org-museum-publish-sync)
+            ("P  Deploy to GitHub"  . org-museum-publish-deploy)
             ("r  Rename Page"      . org-museum-rename-page)
             ("i  Rebuild Index"    . org-museum-index-build)
             ("v  Verify Index"     . org-museum-index-verify)
@@ -6456,7 +7130,9 @@ Applicable scope: daily editing workflow, discoverability."
        ["Export"
         ("e" "Export This Page" org-museum-export-page)
         ("E" "Export All"       org-museum-export-all)
-        ("g" "Export Graph"     org-museum-export-graph)]
+        ("g" "Export Graph"     org-museum-export-graph)
+        ("p" "Sync Publish Site" org-museum-publish-sync)
+        ("P" "Deploy to GitHub"  org-museum-publish-deploy)]
        ["Index"
         ("i" "Rebuild Index"    org-museum-index-build)
         ("v" "Verify & Repair"  org-museum-index-verify)
@@ -6473,6 +7149,8 @@ Applicable scope: daily editing workflow, discoverability."
     (define-key map (kbd "C-c w e")   #'org-museum-export-page)
     (define-key map (kbd "C-c w E")   #'org-museum-export-all)
     (define-key map (kbd "C-c w g")   #'org-museum-export-graph)
+    (define-key map (kbd "C-c w p")   #'org-museum-publish-sync)
+    (define-key map (kbd "C-c w P")   #'org-museum-publish-deploy)
     (define-key map (kbd "C-c w r")   #'org-museum-rename-page)
     (define-key map (kbd "C-c w i")   #'org-museum-index-build)
     (define-key map (kbd "C-c w v")   #'org-museum-index-verify)
