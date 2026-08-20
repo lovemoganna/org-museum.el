@@ -52,7 +52,9 @@
   ".org-museum-publish-manifest.json"
   "Relative manifest name used to track files managed in a publish checkout.")
 
-(define-error 'org-museum-publish-error "Org Museum publish failed")
+(define-error 'org-museum-publish-error
+  "Org Museum publish stopped"
+  'user-error)
 
 ;; ============================================================
 ;; §2  CUSTOMISATION
@@ -2593,7 +2595,10 @@ export would remove."
                   (org-museum--publish-privacy-violations staged-files)))
             (when violations
               (signal 'org-museum-publish-error
-                      (list (format "Local paths remain in publishable files: %s"
+                      (list (format
+                             (concat
+                              "Publishing stopped to protect local paths in: %s. "
+                              "Replace those absolute/file:/// references, then retry")
                                     (mapconcat
                                      (lambda (file)
                                        (file-relative-name file staging-root))

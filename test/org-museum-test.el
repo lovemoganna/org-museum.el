@@ -3219,6 +3219,11 @@
       (when (file-directory-p org-museum-publish-directory)
         (delete-directory org-museum-publish-directory t)))))
 
+(ert-deftest org-museum-publish-safety-refusal-is-a-user-error ()
+  "An expected privacy refusal must not enter the debugger."
+  (should (memq 'user-error
+                (get 'org-museum-publish-error 'error-conditions))))
+
 (ert-deftest org-museum-publish-privacy-scan-distinguishes-unc-from-javascript ()
   "UNC paths are private, while bundled regular-expression syntax is safe."
   (let ((unc-file (make-temp-file "org-museum-publish-unc-" nil ".js"))
