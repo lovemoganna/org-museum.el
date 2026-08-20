@@ -2405,9 +2405,12 @@ export would remove."
   "Return a comparison-ready local path extracted from matched VALUE."
   (let ((path (or value "")))
     (setq path
-          (if (string-match "\\`file:\\(////+\\)\\(.*\\)" path)
-              (concat "//" (match-string 2 path))
-            (replace-regexp-in-string "\\`file:/+" "" path t t)))
+          (cond
+           ((string-match "\\`file://\\([^/]+\\)/\\(.*\\)" path)
+            (concat "//" (match-string 1 path) "/" (match-string 2 path)))
+           ((string-match "\\`file:\\(////+\\)\\(.*\\)" path)
+            (concat "//" (match-string 2 path)))
+           (t (replace-regexp-in-string "\\`file:/+" "" path t t))))
     (setq path (replace-regexp-in-string
                 "\\`data-local-path=\\\"\\|\\\"\\'" "" path t))
     (dolist (entity '(("&amp;" . "&") ("&quot;" . "\"")
@@ -2470,6 +2473,8 @@ export would remove."
   (let ((specs
          '((file-unc-url
             "file:////+[^/[:space:]\"']+/[^<>\"'\n\r]+" 0)
+           (file-unc-authority
+            "file://[^/[:space:]\"']+/[^<>\"'\n\r]+" 0)
            (data-unc-path
             "data-local-path=\\\"\\(//[^/[:space:]\"']+/[^\"\n\r]+\\)\\\"" 1)
            (file-url
@@ -2479,9 +2484,7 @@ export would remove."
            (windows-path
             "\\(?:\\`\\|[^[:alnum:]?]\\)\\([[:alpha:]]:[/\\\\][^<>:\"/\\\\|?*\n\r][^<>\"'\n\r[:space:]]*\\)" 1)
            (unc-path
-            "\\(?:\\`\\|[^\\\\]\\)\\(\\\\\\\\[[:alnum:]][[:alnum:]._-]+\\\\[[:alnum:]][^\\\\/[:space:]\"']*\\)" 1)
-           (forward-unc-path
-            "\\(?:\\`\\|[^[:alnum:]:/]\\)\\(//[[:alnum:]][[:alnum:]._-]*/[^<>:\"|?*\n\r[:space:]]+\\)" 1)))
+            "\\(?:\\`\\|[^\\\\]\\)\\(\\\\\\\\[[:alnum:]][[:alnum:]._-]+\\\\[[:alnum:]][^\\\\/[:space:]\"']*\\)" 1)))
         candidates selected)
     (with-temp-buffer
       (insert-file-contents file)
@@ -2709,7 +2712,32 @@ export would remove."
 
 (defun org-museum--publish-validate-ready-candidate (root managed-files)
   "Revalidate READY content in ROOT named by MANAGED-FILES before deployment."
-  (let (files placeholders)
+  (let* ((root-files
+          (cl-loop for relative in
+                   (list "index.html" "graph.html" ".nojekyll"
+                         org-museum--publish-status-name)
+                   for file = (expand-file-name relative root)
+                   when (or (file-exists-p file) (file-symlink-p file))
+                   collect relative))
+         (tree-files
+          (cl-loop for relative in '("pages" "resources")
+                   for tree = (expand-file-name relative root)
+                   when (or (file-exists-p tree) (file-symlink-p tree))
+                   append
+                   (mapcar
+                    (lambda (file)
+                      (org-museum--publish-normalise-relative-path
+                       (file-relative-name file root)))
+                    (org-museum--publish-tree-files root relative))))
+         (namespace-files (append root-files tree-files))
+         (omitted (cl-set-difference namespace-files managed-files
+                                     :test #'equal))
+         files placeholders)
+    (when omitted
+      (signal 'org-museum-publish-error
+              (list (format
+                     "Publish manifest omits managed candidate files: %s; rerun publish sync"
+                     (mapconcat #'identity (sort omitted #'string<) ", ")))))
     (dolist (relative managed-files)
       (let ((file (expand-file-name relative root)))
         (unless (and (file-regular-p file) (not (file-symlink-p file)))

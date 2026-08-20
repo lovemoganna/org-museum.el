@@ -3322,6 +3322,17 @@
                    (should-error (org-museum-publish-deploy)
                                  :type 'org-museum-publish-error)))
               (should (string-match-p "local paths"
+                                      (error-message-string error-data))))
+            ;; Removing the unsafe managed page from the mutable manifest must
+            ;; not make the existing checkout eligible for deployment.
+            (with-temp-file
+                (expand-file-name ".org-museum-publish-manifest.json" root)
+              (insert "{\"schemaVersion\":1,\"files\":["
+                      "\".org-museum-publish-status.json\",\"index.html\"]}"))
+            (let ((error-data
+                   (should-error (org-museum-publish-deploy)
+                                 :type 'org-museum-publish-error)))
+              (should (string-match-p "manifest"
                                       (error-message-string error-data)))))
           (should-not process-called))
       (delete-directory root t))))
@@ -3534,7 +3545,11 @@
   "UNC paths are private, while bundled regular-expression syntax is safe."
   (let ((unc-file (make-temp-file "org-museum-publish-unc-" nil ".js"))
         (unc-url-file (make-temp-file "org-museum-publish-unc-url-" nil ".html"))
+        (unc-authority-file
+         (make-temp-file "org-museum-publish-unc-authority-" nil ".html"))
         (drive-file (make-temp-file "org-museum-publish-drive-" nil ".js"))
+        (public-url-file
+         (make-temp-file "org-museum-publish-public-url-" nil ".html"))
         (syntax-file (make-temp-file "org-museum-publish-js-" nil ".js")))
     (unwind-protect
         (progn
@@ -3542,15 +3557,24 @@
           (with-temp-file unc-url-file
             (insert "<a href=\"file:////server/share/note.org\" "
                     "data-local-path=\"//server/share/note.org\">Local</a>"))
+          (with-temp-file unc-authority-file
+            (insert "<a href=\"file://server/share/A&amp;B note.org\">"
+                    "Authority UNC</a>"))
           (with-temp-file drive-file (insert "source:C:/$private/secret.txt"))
+          (with-temp-file public-url-file
+            (insert "<script src=\"//cdn.example.com/app.js\"></script>"))
           (with-temp-file syntax-file
             (insert "\\\\\\*{2}[^\\n]*? begin:/HTTP\\\\/ ?o:/[%p]"))
           (should (equal (org-museum--publish-privacy-violations
-                          (list unc-file unc-url-file drive-file syntax-file))
-                         (list unc-file unc-url-file drive-file))))
+                          (list unc-file unc-url-file unc-authority-file
+                                drive-file public-url-file syntax-file))
+                         (list unc-file unc-url-file unc-authority-file
+                               drive-file))))
       (delete-file unc-file)
       (delete-file unc-url-file)
+      (delete-file unc-authority-file)
       (delete-file drive-file)
+      (delete-file public-url-file)
       (delete-file syntax-file))))
 
 (ert-deftest org-museum-publish-sync-keeps-old-mirror-on-preview-build-failure ()
@@ -3611,6 +3635,53 @@
         (delete-directory root t)
         (when (file-directory-p org-museum-publish-directory)
           (delete-directory org-museum-publish-directory t))))))
+
+(ert-deftest org-museum-publish-sync-keeps-old-mirror-on-staging-copy-failure ()
+  "A partial temporary candidate copy never reaches the existing mirror."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-staging-copy-failure-" t)))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-publish-directory (expand-file-name "../publish" root))
+         (export-root (expand-file-name "exports/html" root))
+         (original-copy-file (symbol-function 'copy-file))
+         (copy-count 0))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "pages" export-root) t)
+          (make-directory (expand-file-name "resources" export-root) t)
+          (make-directory org-museum-publish-directory t)
+          (with-temp-file (expand-file-name "index.html" export-root)
+            (insert "NEW INDEX"))
+          (with-temp-file (expand-file-name "graph.html" export-root)
+            (insert "GRAPH"))
+          (with-temp-file (expand-file-name "index.html"
+                                            org-museum-publish-directory)
+            (insert "OLD INDEX"))
+          (with-temp-file
+              (expand-file-name ".org-museum-publish-manifest.json"
+                                org-museum-publish-directory)
+            (insert "{\"schemaVersion\":1,\"files\":[\"index.html\"]}"))
+          (cl-letf (((symbol-function 'org-museum-export-all) #'ignore)
+                    ((symbol-function 'copy-file)
+                     (lambda (source destination &rest args)
+                       (if (and (file-in-directory-p source export-root)
+                                (= (cl-incf copy-count) 2))
+                           (error "fixture staging copy failure")
+                         (apply original-copy-file source destination args)))))
+            (should-error (org-museum-publish-sync)))
+          (should (equal
+                   (org-museum-test--file-string
+                    (expand-file-name "index.html"
+                                      org-museum-publish-directory))
+                   "OLD INDEX"))
+          (should-not
+           (file-exists-p
+            (expand-file-name ".org-museum-publish-status.json"
+                              org-museum-publish-directory))))
+      (delete-directory root t)
+      (when (file-directory-p org-museum-publish-directory)
+        (delete-directory org-museum-publish-directory t)))))
 
 (ert-deftest org-museum-publish-rejects-a-linked-export-tree-root ()
   "The pages/resources roots themselves cannot redirect the source walk."
