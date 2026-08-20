@@ -126,13 +126,26 @@ Configure a dedicated checkout outside the Wiki root:
 (setq org-museum-publish-remote "origin")
 ```
 
-The first deploy shows the public repository name and asks before creating it
-with the authenticated GitHub CLI. Later deploys refuse unexpected uncommitted
-files, remote-ahead or diverged history, symbolic links, and exported local
-filesystem paths. Only files recorded in the publish manifest are staged;
-repository-owned files such as `CNAME` and `README.md` are preserved. Resolve a
-reported dirty file or remote history difference manually and rerun the command.
-The local export-only `.org-museum-manifest.json` is never published.
+Sync always builds a privacy-safe local preview. If an exported page contains a
+Windows path, UNC path, or local `file:///` reference, its public candidate is
+replaced with a neutral placeholder and `*Org Museum Privacy Report*` opens with
+the source Org file, line number, matched text, and a suggested repair. Non-HTML
+text resources with findings are omitted. The detailed report stays in Emacs;
+the managed `.org-museum-publish-status.json` records only `ready` or `blocked`
+and safe relative filenames.
+
+Deployment refuses a `blocked` preview before running Git or GitHub commands.
+Fix the reported source links, rerun sync, and confirm the status becomes
+`ready`; the next sync replaces every placeholder with the real page. Do not
+copy the original unsafe exports into the publish checkout or bypass the status
+file.
+
+The first ready deploy shows the public repository name and asks before creating
+it with the authenticated GitHub CLI. Later deploys refuse unexpected
+uncommitted files, remote-ahead or diverged history, and symbolic links. Only
+files recorded in the publish manifest are staged; repository-owned files such
+as `CNAME` and `README.md` are preserved. The local export-only
+`.org-museum-manifest.json` and the detailed privacy report are never published.
 
 ## Project Structure
 

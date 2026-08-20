@@ -2174,6 +2174,49 @@
                        3))))
       (delete-directory root t))))
 
+(ert-deftest org-museum-wiki-links-remain-relative-publish-links ()
+  "A generated Wiki page link is not reinterpreted as a local file link."
+  (let* ((root (make-temp-file "org-museum-wiki-export-test-" t))
+         (source (expand-file-name "pages/source.org" root))
+         (target (expand-file-name "pages/target.org" root))
+         (out-file (expand-file-name "exports/html/pages/source.html" root))
+         (pages (make-hash-table :test 'equal))
+         (org-museum-root-dir root)
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory source) t)
+          (with-temp-file source
+            (insert "[[wiki:target][Target]]\n"))
+          (with-temp-file target
+            (insert "#+TITLE: Target\n#+WIKI_ID: target\n"))
+          (puthash "source"
+                   (org-museum-test--page
+                    "source" "Source" 1 nil nil "published" source)
+                   pages)
+          (puthash "target"
+                   (org-museum-test--page
+                    "target" "Target" 1 nil nil "published" target)
+                   pages)
+          (with-temp-buffer
+            (setq buffer-file-name source)
+            (insert "[[wiki:target][Target]]\n")
+            (org-museum--rewrite-org-museum-links
+             (current-buffer) out-file source)
+            (should (string-match-p
+                     (regexp-quote "[[file:target.html][Target]]")
+                     (buffer-string)))
+            (should-not (string-match-p "[A-Za-z]:[/\\\\]"
+                                        (buffer-string)))))
+      (delete-directory root t))))
+
 (ert-deftest org-museum-stale-export-preview-and-cleanup-stay-in-pages-root ()
   (let* ((root (make-temp-file "org-museum-cleanup-test-" t))
          (org-museum-root-dir root)
@@ -3170,9 +3213,14 @@
             (insert "ORIGINAL"))
           (with-temp-file (expand-file-name ".nojekyll" root))
           (with-temp-file
+              (expand-file-name ".org-museum-publish-status.json" root)
+            (insert "{\"schemaVersion\":1,\"state\":\"ready\","
+                    "\"blockedPages\":[]}"))
+          (with-temp-file
               (expand-file-name ".org-museum-publish-manifest.json" root)
             (insert "{\"schemaVersion\":1,"
-                    "\"files\":[\".nojekyll\",\"index.html\"]}"))
+                    "\"files\":[\".nojekyll\","
+                    "\".org-museum-publish-status.json\",\"index.html\"]}"))
           (should (= 0 (call-process "git" nil nil nil "init" "-b" "main")))
           (should (= 0 (call-process "git" nil nil nil "add" "--all" "--")))
           (should (= 0 (call-process "git" nil nil nil
@@ -3194,35 +3242,207 @@
                              (buffer-string)))))
       (delete-directory root t))))
 
-(ert-deftest org-museum-publish-sync-blocks-windows-absolute-paths ()
-  "A Windows absolute path aborts before the publish checkout is changed."
+(ert-deftest org-museum-publish-deploy-refuses-a-blocked-preview-first ()
+  "A blocked privacy status stops deployment before Git or GitHub runs."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-blocked-deploy-" t)))
+         (org-museum-publish-directory root)
+         (org-museum-publish-repository "example/org-notes")
+         (org-museum-publish-branch "main")
+         (org-museum-publish-remote "origin")
+         process-called)
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "index.html" root)
+            (insert "SAFE PREVIEW"))
+          (with-temp-file
+              (expand-file-name ".org-museum-publish-status.json" root)
+            (insert "{\"schemaVersion\":1,\"state\":\"blocked\","
+                    "\"blockedPages\":[\"pages/private.html\"]}"))
+          (with-temp-file
+              (expand-file-name ".org-museum-publish-manifest.json" root)
+            (insert "{\"schemaVersion\":1,\"files\":["
+                    "\".org-museum-publish-status.json\",\"index.html\"]}"))
+          (cl-letf (((symbol-function 'org-museum--publish-run)
+                     (lambda (&rest _args)
+                       (setq process-called t)
+                       (cons 0 ""))))
+            (let ((error-data
+                   (should-error (org-museum-publish-deploy)
+                                 :type 'org-museum-publish-error)))
+              (should (string-match-p "privacy"
+                                      (error-message-string error-data)))))
+          (should-not process-called))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-publish-sync-builds-safe-preview-for-private-pages ()
+  "A private page becomes a safe preview placeholder with a local report."
   (let* ((root (file-name-as-directory
                 (make-temp-file "org-museum-publish-private-test-" t)))
          (org-museum-root-dir root)
          (org-museum-shared-export-dir "exports/html")
          (org-museum-publish-directory
           (expand-file-name "../private-publish-site" root))
-         (export-root (expand-file-name "exports/html" root)))
+         (export-root (expand-file-name "exports/html" root))
+         (source (expand-file-name "pages/private.org" root))
+         (page-output (expand-file-name "pages/private.html" export-root))
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
     (unwind-protect
         (progn
           (make-directory (expand-file-name "pages" export-root) t)
           (make-directory (expand-file-name "resources" export-root) t)
+          (make-directory (file-name-directory source) t)
+          (with-temp-file source
+            (insert "#+TITLE: Private\n"
+                    "Local example: C:/private/secret.txt\n"))
+          (puthash "private"
+                   (org-museum-test--page
+                    "private" "Private" 1 nil nil "published" source)
+                   pages)
           (with-temp-file (expand-file-name "index.html" export-root)
-            (insert "<code>path:C:/private/secret.txt</code>"))
+            (insert "INDEX"))
           (with-temp-file (expand-file-name "graph.html" export-root)
             (insert "GRAPH"))
+          (with-temp-file page-output
+            (insert "<code>path:C:/private/secret.txt</code>"))
+          (with-temp-file (expand-file-name "resources/private.js" export-root)
+            (insert "source:C:/private/app.js"))
           (cl-letf (((symbol-function 'org-museum-export-all) #'ignore))
-            (should-error (org-museum-publish-sync)
-                          :type 'org-museum-publish-error))
-          (should-not (file-directory-p org-museum-publish-directory)))
+            (should-not (org-museum-publish-sync)))
+          (should (file-directory-p org-museum-publish-directory))
+          (let ((preview
+                 (org-museum-test--file-string
+                  (expand-file-name "pages/private.html"
+                                    org-museum-publish-directory)))
+                (status
+                 (org-museum-test--file-string
+                  (expand-file-name ".org-museum-publish-status.json"
+                                    org-museum-publish-directory)))
+                (manifest
+                 (org-museum-test--file-string
+                  (expand-file-name ".org-museum-publish-manifest.json"
+                                    org-museum-publish-directory))))
+            (should (string-match-p "privacy review" preview))
+            (should-not (string-match-p "C:/private" preview))
+            (should (string-match-p "\\\"state\\\":\\\"blocked\\\"" status))
+            (should (string-match-p "pages/private\\.html" status))
+            (should (string-match-p "resources/private\\.js" status))
+            (should-not (string-match-p "[A-Za-z]:[/\\\\]" status))
+            (should (string-match-p
+                     "\\.org-museum-publish-status\\.json" manifest)))
+          (should-not
+           (file-exists-p
+            (expand-file-name "resources/private.js"
+                              org-museum-publish-directory)))
+          (with-current-buffer "*Org Museum Privacy Report*"
+            (should (derived-mode-p 'special-mode))
+            (should (string-match-p "private\\.org:2" (buffer-string)))
+            (should (string-match-p "C:/private/secret\\.txt"
+                                    (buffer-string)))
+            (should (button-at (point-min)))
+            (let* ((position
+                    (text-property-any (point-min) (point-max)
+                                       'org-museum-source source))
+                   (source-button (and position (button-at position))))
+              (should source-button)
+              (button-activate source-button)))
+          (let ((source-buffer (get-file-buffer source)))
+            (should source-buffer)
+            (with-current-buffer source-buffer
+              (should (= 2 (line-number-at-pos))))
+            (kill-buffer source-buffer))
+          (with-temp-file source
+            (insert "#+TITLE: Private\nPortable example\n"))
+          (with-temp-file page-output
+            (insert "PUBLIC PAGE"))
+          (with-temp-file (expand-file-name "resources/private.js" export-root)
+            (insert "PUBLIC SCRIPT"))
+          (cl-letf (((symbol-function 'org-museum-export-all) #'ignore))
+            (should (equal (org-museum-publish-sync)
+                           (file-name-as-directory
+                            (expand-file-name org-museum-publish-directory)))))
+          (should (equal
+                   (org-museum-test--file-string
+                    (expand-file-name "pages/private.html"
+                                      org-museum-publish-directory))
+                   "PUBLIC PAGE"))
+          (should (equal
+                   (org-museum-test--file-string
+                    (expand-file-name "resources/private.js"
+                                      org-museum-publish-directory))
+                   "PUBLIC SCRIPT"))
+          (should (string-match-p
+                   "\\\"state\\\":\\\"ready\\\""
+                   (org-museum-test--file-string
+                    (expand-file-name ".org-museum-publish-status.json"
+                                      org-museum-publish-directory))))
+          (with-current-buffer "*Org Museum Privacy Report*"
+            (should (string-match-p "未发现隐私材料" (buffer-string)))))
       (delete-directory root t)
       (when (file-directory-p org-museum-publish-directory)
-        (delete-directory org-museum-publish-directory t)))))
+        (delete-directory org-museum-publish-directory t))
+      (when (get-buffer "*Org Museum Privacy Report*")
+        (kill-buffer "*Org Museum Privacy Report*")))))
 
 (ert-deftest org-museum-publish-safety-refusal-is-a-user-error ()
   "An expected privacy refusal must not enter the debugger."
   (should (memq 'user-error
                 (get 'org-museum-publish-error 'error-conditions))))
+
+(ert-deftest org-museum-publish-report-locates-every-source-reference ()
+  "The local report maps direct and relative-file findings to source lines."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-report-test-" t)))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-export-dir "exports/html/pages")
+         (source (expand-file-name "pages/topic.org" root))
+         (output (expand-file-name "exports/html/pages/topic.html" root))
+         (external (expand-file-name "outside.sql" root))
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory source) t)
+          (make-directory (file-name-directory output) t)
+          (with-temp-file source
+            (insert "#+TITLE: Topic\n"
+                    "Code path: C:/private/code.el\n"
+                    "[[file:../outside.sql][Query]]\n"))
+          (puthash "topic"
+                   (org-museum-test--page
+                    "topic" "Topic" 1 nil nil "published" source)
+                   pages)
+          (with-temp-file output
+            (insert "<code>C:/private/code.el</code>\n"
+                    (format
+                     (concat "<a href=\"file:///%s\" "
+                             "data-local-path=\"%s\">Query</a>\n")
+                     (replace-regexp-in-string "\\\\" "/" external)
+                     (replace-regexp-in-string "\\\\" "/" external))))
+          (let ((findings
+                 (org-museum--publish-privacy-findings
+                  (list output) (expand-file-name "exports/html" root))))
+            (should (= 2 (length findings)))
+            (should (equal '(2 3)
+                           (sort (mapcar #'org-museum-publish-finding-line
+                                         findings)
+                                 #'<)))
+            (let ((kinds (mapcar #'org-museum-publish-finding-kind findings)))
+              (should (memq 'absolute-path kinds))
+              (should (memq 'local-file-link kinds)))))
+      (delete-directory root t))))
 
 (ert-deftest org-museum-publish-privacy-scan-distinguishes-unc-from-javascript ()
   "UNC paths are private, while bundled regular-expression syntax is safe."
@@ -3425,13 +3645,19 @@
          (org-museum-publish-branch "main")
          (org-museum-publish-remote "origin")
          (manifest-json
-          "{\"schemaVersion\":1,\"files\":[\".nojekyll\",\"index.html\"]}")
+          (concat
+           "{\"schemaVersion\":1,\"files\":[\".nojekyll\","
+           "\".org-museum-publish-status.json\",\"index.html\"]}"))
          calls)
     (unwind-protect
         (progn
           (make-directory (expand-file-name ".git" root) t)
           (with-temp-file (expand-file-name "index.html" root) (insert "INDEX"))
           (with-temp-file (expand-file-name ".nojekyll" root))
+          (with-temp-file
+              (expand-file-name ".org-museum-publish-status.json" root)
+            (insert "{\"schemaVersion\":1,\"state\":\"ready\","
+                    "\"blockedPages\":[]}"))
           (with-temp-file
               (expand-file-name ".org-museum-publish-manifest.json" root)
             (insert manifest-json))
