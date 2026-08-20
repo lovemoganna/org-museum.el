@@ -3481,6 +3481,300 @@
       (when (get-buffer "*Org Museum Privacy Report*")
         (kill-buffer "*Org Museum Privacy Report*")))))
 
+(ert-deftest org-museum-publish-full-sync-copies-unresolved-content-for-review ()
+  "Full sync keeps raw selected bytes locally but does not make them deployable."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-full-test-" t)))
+         (user-emacs-directory root)
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-publish-directory (expand-file-name "../full-publish" root))
+         (org-museum-publish-policy-file
+          (expand-file-name "org-museum-publish-policy.json" root))
+         (export-root (expand-file-name "exports/html" root))
+         (source (expand-file-name "pages/private.org" root))
+         (page-output (expand-file-name "pages/private.html" export-root))
+         (resource-output (expand-file-name "resources/private.js" export-root))
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory source) t)
+          (make-directory (file-name-directory page-output) t)
+          (make-directory (file-name-directory resource-output) t)
+          (with-temp-file source
+            (insert "#+TITLE: Private\nPath C:/private/note.org\n"))
+          (puthash "private"
+                   (org-museum-test--page
+                    "private" "Private" 1 nil nil "published" source)
+                   pages)
+          (with-temp-file (expand-file-name "index.html" export-root)
+            (insert "INDEX"))
+          (with-temp-file (expand-file-name "graph.html" export-root)
+            (insert "GRAPH"))
+          (with-temp-file page-output
+            (insert "<code>C:/private/note.org</code>"))
+          (with-temp-file resource-output
+            (insert "const local = 'C:/private/app.js';"))
+          (cl-letf (((symbol-function 'org-museum-export-all) #'ignore)
+                    ((symbol-function 'read-string)
+                     (lambda (&rest _args) "COPY PRIVATE EXPORTS"))
+                    ((symbol-function 'pop-to-buffer) #'ignore))
+            (call-interactively #'org-museum-publish-sync-full))
+          (should (equal
+                   (org-museum-test--file-string
+                    (expand-file-name "pages/private.html"
+                                      org-museum-publish-directory))
+                   "<code>C:/private/note.org</code>"))
+          (should (equal
+                   (org-museum-test--file-string
+                    (expand-file-name "resources/private.js"
+                                      org-museum-publish-directory))
+                   "const local = 'C:/private/app.js';"))
+          (let ((status
+                 (org-museum-test--file-string
+                  (expand-file-name ".org-museum-publish-status.json"
+                                    org-museum-publish-directory))))
+            (should (string-match-p
+                     "\"state\":\"review-required\"" status)))
+          (should (get-buffer "*Org Museum Full Sync Preview*"))
+          (with-current-buffer "*Org Museum Full Sync Preview*"
+            (let ((position (point-min)) buttons)
+              (while (setq position
+                           (text-property-any
+                            position (point-max)
+                            'org-museum-policy-action 'authorize))
+                (push (button-at position) buttons)
+                (setq position
+                      (or (next-single-property-change
+                           position 'org-museum-policy-action nil (point-max))
+                          (point-max))))
+              (should (= 2 (length buttons)))
+              (cl-letf (((symbol-function 'read-string)
+                         (lambda (&rest _args) "Approved public example")))
+                (dolist (button buttons) (button-activate button)))))
+          (let ((policy-text
+                 (org-museum-test--file-string
+                  org-museum-publish-policy-file)))
+            (should (string-match-p "authorizations" policy-text))
+            (should-not (string-match-p "C:/private" policy-text)))
+          (cl-letf (((symbol-function 'org-museum-export-all) #'ignore)
+                    ((symbol-function 'read-string)
+                     (lambda (&rest _args) "COPY PRIVATE EXPORTS"))
+                    ((symbol-function 'pop-to-buffer) #'ignore))
+            (call-interactively #'org-museum-publish-sync-full))
+          (should (string-match-p
+                   "\"state\":\"ready\""
+                   (org-museum-test--file-string
+                    (expand-file-name ".org-museum-publish-status.json"
+                                      org-museum-publish-directory))))
+          (let ((manifest
+                 (org-museum--publish-read-manifest
+                  org-museum-publish-directory))
+                (status
+                 (org-museum--publish-read-status
+                  org-museum-publish-directory)))
+            (org-museum--publish-validate-manifest-integrity
+             org-museum-publish-directory manifest)
+            (org-museum--publish-validate-full-ready-candidate
+             org-museum-publish-directory manifest status))
+          (with-temp-file resource-output
+            (insert "const local = 'C:/private/changed.js';"))
+          (cl-letf (((symbol-function 'org-museum-export-all) #'ignore)
+                    ((symbol-function 'read-string)
+                     (lambda (&rest _args) "COPY PRIVATE EXPORTS"))
+                    ((symbol-function 'pop-to-buffer) #'ignore))
+            (call-interactively #'org-museum-publish-sync-full))
+          (should (string-match-p
+                   "\"state\":\"review-required\""
+                   (org-museum-test--file-string
+                    (expand-file-name ".org-museum-publish-status.json"
+                                      org-museum-publish-directory))))
+          (with-current-buffer "*Org Museum Full Sync Preview*"
+            (let ((position (point-min)) target)
+              (while (and (not target)
+                          (setq position
+                                (text-property-any
+                                 position (point-max)
+                                 'org-museum-policy-action 'exclude)))
+                (let ((button (button-at position)))
+                  (if (equal (button-get button 'org-museum-relative)
+                             "resources/private.js")
+                      (setq target button)
+                    (setq position
+                          (or (next-single-property-change
+                               position 'org-museum-policy-action nil
+                               (point-max))
+                              (point-max))))))
+              (should target)
+              (button-activate target)))
+          (cl-letf (((symbol-function 'org-museum-export-all) #'ignore)
+                    ((symbol-function 'read-string)
+                     (lambda (&rest _args) "COPY PRIVATE EXPORTS"))
+                    ((symbol-function 'pop-to-buffer) #'ignore))
+            (call-interactively #'org-museum-publish-sync-full))
+          (should-not (file-exists-p
+                       (expand-file-name "resources/private.js"
+                                         org-museum-publish-directory)))
+          (should (string-match-p
+                   "\"state\":\"ready\""
+                   (org-museum-test--file-string
+                    (expand-file-name ".org-museum-publish-status.json"
+                                      org-museum-publish-directory))))
+          (should-not (lookup-key org-museum-mode-map (kbd "C-c w !"))))
+      (delete-directory root t)
+      (when (file-directory-p org-museum-publish-directory)
+        (delete-directory org-museum-publish-directory t))
+      (when (get-buffer "*Org Museum Full Sync Preview*")
+        (kill-buffer "*Org Museum Full Sync Preview*")))))
+
+(ert-deftest org-museum-publish-full-sync-refuses-managed-file-conflicts ()
+  "A full sync records hashes and never overwrites a post-sync manual edit."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-full-conflict-" t)))
+         (user-emacs-directory root)
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-publish-directory (expand-file-name "../full-conflict" root))
+         (org-museum-publish-policy-file
+          (expand-file-name "org-museum-publish-policy.json" root))
+         (export-root (expand-file-name "exports/html" root))
+         (source-page (expand-file-name "pages/topic.html" export-root))
+         (published-page
+          (expand-file-name "pages/topic.html" org-museum-publish-directory)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory source-page) t)
+          (make-directory (expand-file-name "resources" export-root) t)
+          (with-temp-file (expand-file-name "index.html" export-root)
+            (insert "INDEX"))
+          (with-temp-file (expand-file-name "graph.html" export-root)
+            (insert "GRAPH"))
+          (with-temp-file source-page (insert "VERSION ONE"))
+          (with-temp-file (expand-file-name "resources/site.css" export-root)
+            (insert "CSS"))
+          (cl-letf (((symbol-function 'org-museum-export-all) #'ignore)
+                    ((symbol-function 'read-string)
+                     (lambda (&rest _args) "COPY PRIVATE EXPORTS"))
+                    ((symbol-function 'pop-to-buffer) #'ignore))
+            (call-interactively #'org-museum-publish-sync-full))
+          (let ((manifest
+                 (org-museum-test--file-string
+                  (expand-file-name ".org-museum-publish-manifest.json"
+                                    org-museum-publish-directory))))
+            (should (string-match-p "\"schemaVersion\":2" manifest))
+            (should (string-match-p "\"sha256\"" manifest))
+            (should (string-match-p
+                     "[[:xdigit:]]\\{64\\}" manifest))
+            (should-not (string-match-p "VERSION ONE" manifest)))
+          (with-temp-file published-page (insert "LOCAL MANUAL EDIT"))
+          (with-temp-file source-page (insert "VERSION TWO"))
+          (let ((confirmation-called nil))
+            (cl-letf (((symbol-function 'org-museum-export-all) #'ignore)
+                      ((symbol-function 'read-string)
+                       (lambda (&rest _args)
+                         (setq confirmation-called t)
+                         "COPY PRIVATE EXPORTS"))
+                      ((symbol-function 'pop-to-buffer) #'ignore))
+              (should-error
+               (call-interactively #'org-museum-publish-sync-full)
+               :type 'org-museum-publish-error))
+            (should-not confirmation-called))
+          (should (equal (org-museum-test--file-string published-page)
+                         "LOCAL MANUAL EDIT")))
+      (delete-directory root t)
+      (when (file-directory-p org-museum-publish-directory)
+        (delete-directory org-museum-publish-directory t))
+      (when (get-buffer "*Org Museum Full Sync Preview*")
+        (kill-buffer "*Org Museum Full Sync Preview*")))))
+
+(ert-deftest org-museum-publish-full-deploy-rejects-policy-drift-before-processes ()
+  "Changing the local sharing policy invalidates a ready full-sync review."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-policy-drift-" t)))
+         (user-emacs-directory root)
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum-publish-directory (expand-file-name "../policy-drift" root))
+         (org-museum-publish-policy-file
+          (expand-file-name "org-museum-publish-policy.json" root))
+         (org-museum-publish-repository "owner/notes")
+         (org-museum-publish-branch "main")
+         (org-museum-publish-remote "origin")
+         (export-root (expand-file-name "exports/html" root))
+         (process-called nil))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "pages" export-root) t)
+          (make-directory (expand-file-name "resources" export-root) t)
+          (dolist (entry '(("index.html" . "INDEX")
+                           ("graph.html" . "GRAPH")
+                           ("pages/topic.html" . "TOPIC")
+                           ("resources/site.css" . "CSS")))
+            (with-temp-file (expand-file-name (car entry) export-root)
+              (insert (cdr entry))))
+          (cl-letf (((symbol-function 'org-museum-export-all) #'ignore)
+                    ((symbol-function 'read-string)
+                     (lambda (&rest _args) "COPY PRIVATE EXPORTS"))
+                    ((symbol-function 'pop-to-buffer) #'ignore))
+            (call-interactively #'org-museum-publish-sync-full))
+          (let ((policy (org-museum--publish-default-policy)))
+            (setf (plist-get policy :exclude) '("pages/unused.html"))
+            (org-museum--publish-write-policy policy))
+          (cl-letf (((symbol-function 'org-museum--publish-run)
+                     (lambda (&rest _args)
+                       (setq process-called t)
+                       (cons 0 ""))))
+            (should-error (org-museum-publish-deploy)
+                          :type 'org-museum-publish-error))
+          (should-not process-called))
+      (delete-directory root t)
+      (when (file-directory-p org-museum-publish-directory)
+        (delete-directory org-museum-publish-directory t))
+      (when (get-buffer "*Org Museum Full Sync Preview*")
+        (kill-buffer "*Org Museum Full Sync Preview*")))))
+
+(ert-deftest org-museum-publish-policy-supports-scope-and-custom-detectors ()
+  "Policy globs select scope and supplemental rules produce named findings."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-custom-detector-" t)))
+         (org-museum-publish-policy-file (expand-file-name "policy.json" root))
+         (file (expand-file-name "pages/topic.html" root))
+         (policy
+          (list :include '("pages/**" "resources/**")
+                :exclude '("pages/private/**")
+                :authorizations nil
+                :detectors
+                '(((name . "account marker")
+                   (regexp . "ACCOUNT-[[:digit:]]+")
+                   (group . 0)
+                   (suggestion . "Replace it with a public example."))))))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory file) t)
+          (with-temp-file file (insert "ACCOUNT-42"))
+          (org-museum--publish-write-policy policy)
+          (let ((read-policy (org-museum--publish-read-policy)))
+            (should (org-museum--publish-policy-selected-p
+                     read-policy "pages/topic.html"))
+            (should-not (org-museum--publish-policy-selected-p
+                         read-policy "pages/private/topic.html"))
+            (let ((findings
+                   (org-museum--publish-privacy-findings
+                    (list file) root (plist-get read-policy :detectors))))
+              (should (= 1 (length findings)))
+              (should (eq 'custom-account-marker
+                          (org-museum-publish-finding-kind (car findings))))
+              (should (equal "Replace it with a public example."
+                             (org-museum-publish-finding-suggestion
+                              (car findings)))))))
+      (delete-directory root t))))
+
 (ert-deftest org-museum-publish-safety-refusal-is-a-user-error ()
   "An expected privacy refusal must not enter the debugger."
   (should (memq 'user-error

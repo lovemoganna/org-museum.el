@@ -126,20 +126,80 @@ Configure a dedicated checkout outside the Wiki root:
 (setq org-museum-publish-remote "origin")
 ```
 
-Sync always builds a privacy-safe local preview. If an exported page contains a
-Windows path, UNC path, or local `file:///` reference, its public candidate is
-replaced with a neutral placeholder and `*Org Museum Privacy Report*` opens with
-the source Org file, line number, matched text, and a suggested repair. Non-HTML
-text resources with findings are omitted. The detailed report stays in Emacs;
-the managed `.org-museum-publish-status.json` records only `ready` or `blocked`
-and safe relative filenames.
+The normal sync is conservative. If an exported page contains a Windows path,
+UNC path, local `file:///` reference, or another detected local value, its
+public candidate is replaced with a neutral placeholder and `*Org Museum
+Privacy Report*` opens with the source Org file, line number, matched text, and
+a suggested repair. Non-HTML text resources with findings are omitted. The
+detailed report stays in Emacs; the managed status file contains only safe
+relative filenames.
 
-Deployment refuses a `blocked` preview before running Git or GitHub commands.
-It also requires a current status file and rechecks every managed candidate for
-local paths and privacy placeholders, so editing `blocked` to `ready` cannot
-bypass the gate. Fix the reported source links, rerun sync, and confirm the
-status becomes `ready`; the next sync replaces every placeholder with the real
-page. Do not copy the original unsafe exports into the publish checkout.
+When you intentionally need a byte-for-byte local mirror, use the separate
+high-risk workflow:
+
+```elisp
+M-x org-museum-publish-sync-full
+```
+
+This command never silently removes or rewrites selected exported content. It
+shows `*Org Museum Full Sync Preview*`, including the effective sharing scope,
+files to add/overwrite/delete, unknown hash baselines, conflicts, and every
+privacy finding. A conflict means a managed file was manually changed after the
+last sync; the command stops with zero changes rather than overwriting or
+deleting that edit. With no conflict, installation requires entering exactly
+`COPY PRIVATE EXPORTS`. An incorrect or cancelled confirmation also leaves the
+old mirror untouched.
+
+Full-sync scope and decisions are controlled by a local policy that is never
+copied into the publish checkout:
+
+```elisp
+(setq org-museum-publish-policy-file
+      (expand-file-name "org-museum-publish-policy.json"
+                        user-emacs-directory))
+```
+
+```json
+{
+  "schemaVersion": 1,
+  "include": ["index.html", "graph.html", "pages/**", "resources/**"],
+  "exclude": ["pages/private/**"],
+  "authorizations": [],
+  "detectors": [
+    {
+      "name": "internal account marker",
+      "regexp": "ACCOUNT-[0-9]+",
+      "group": 0,
+      "suggestion": "Replace it with a public example."
+    }
+  ]
+}
+```
+
+Missing policy means the complete export tree, with no exclusions or
+authorisations. You can resolve each finding in one of three explicit ways:
+
+- edit the source and re-export until the finding disappears (`fixed`);
+- exclude its published relative path so the file is absent (`excluded`);
+- use the preview button to authorise that exact content (`authorized`).
+
+An authorisation stores a SHA-256 fingerprint, relative paths, reason, and time;
+it never stores the matched private text. The fingerprint includes the source
+line context and occurrence number, so changed content or context automatically
+becomes `unresolved` again. Preview buttons can open the source line, exclude a
+file, authorise or revoke one exact finding, edit the policy, and rerun the
+review. Full sync with unresolved findings still updates the local raw mirror,
+but writes `review-required`; only a review with every finding fixed, excluded,
+or authorised writes `ready`.
+
+Deployment refuses both `blocked` and `review-required` before running Git or
+GitHub commands. For a full-sync candidate it additionally rechecks the policy
+digest, manifest SHA-256 values, sharing scope, candidate digest, custom rules,
+and every exact authorisation. Editing status JSON, changing policy after sync,
+adding a managed-namespace file, or modifying a reviewed candidate therefore
+requires another full sync. A version-1 manifest has no hash baseline; its first
+full-sync migration is shown as “baseline unknown,” then writes schema version 2
+hashes for future conflict detection.
 
 The first ready deploy shows the public repository name and asks before creating
 it with the authenticated GitHub CLI. Later deploys refuse unexpected
@@ -147,6 +207,9 @@ uncommitted files, remote-ahead or diverged history, and symbolic links. Only
 files recorded in the publish manifest are staged; repository-owned files such
 as `CNAME` and `README.md` are preserved. The local export-only
 `.org-museum-manifest.json` and the detailed privacy report are never published.
+The dangerous full-sync operation is available through `M-x` and both command
+panels as “Full Sync / Review Sharing”; it intentionally has no default key
+binding.
 
 ## Project Structure
 

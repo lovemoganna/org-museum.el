@@ -60,6 +60,13 @@
   "*Org Museum Privacy Report*"
   "Buffer used for local-only publish privacy findings.")
 
+(defconst org-museum--publish-full-preview-buffer
+  "*Org Museum Full Sync Preview*"
+  "Buffer used to review a configurable raw publication mirror.")
+
+(defconst org-museum--publish-full-confirmation "COPY PRIVATE EXPORTS"
+  "Exact confirmation required before installing a raw publication mirror.")
+
 (define-error 'org-museum-publish-error
   "Org Museum publish stopped"
   'user-error)
@@ -107,6 +114,13 @@ This directory must be outside `org-museum-root-dir' and its export tree."
 (defcustom org-museum-publish-remote "origin"
   "Git remote used by `org-museum-publish-deploy'."
   :type 'string
+  :group 'org-museum)
+
+(defcustom org-museum-publish-policy-file
+  (expand-file-name "org-museum-publish-policy.json" user-emacs-directory)
+  "Local JSON policy controlling full-sync scope and explicit authorisations.
+This file is never copied into the publish checkout."
+  :type 'file
   :group 'org-museum)
 
 (defcustom org-museum-scan-dir nil
@@ -2468,8 +2482,8 @@ export would remove."
     (_
      "Inspect the exporter that generated this path; generated public output must use relative links.")))
 
-(defun org-museum--publish-file-privacy-matches (file)
-  "Return every non-overlapping local-path match in text FILE."
+(defun org-museum--publish-file-privacy-matches (file &optional detectors)
+  "Return local-path and supplemental DETECTORS matches in text FILE."
   (let ((specs
          '((file-unc-url
             "file:////+[^/[:space:]\"']+/[^<>\"'\n\r]+" 0)
@@ -2486,6 +2500,18 @@ export would remove."
            (unc-path
             "\\(?:\\`\\|[^\\\\]\\)\\(\\\\\\\\[[:alnum:]][[:alnum:]._-]+\\\\[[:alnum:]][^\\\\/[:space:]\"']*\\)" 1)))
         candidates selected)
+    (dolist (detector detectors)
+      (let* ((name (alist-get 'name detector))
+             (kind (intern
+                    (concat "custom-"
+                            (replace-regexp-in-string
+                             "[^[:alnum:]-]+" "-" (downcase name)))))
+             (regexp (alist-get 'regexp detector))
+             (group (or (alist-get 'group detector) 0))
+             (suggestion (or (alist-get 'suggestion detector)
+                             "Edit or exclude this policy-defined sensitive content.")))
+        (setq specs
+              (append specs (list (list kind regexp group suggestion))))))
     (with-temp-buffer
       (insert-file-contents file)
       (let ((case-fold-search t))
@@ -2496,7 +2522,8 @@ export would remove."
               (push (list :begin (match-beginning group)
                           :end (match-end group)
                           :kind (car spec)
-                          :match (match-string-no-properties group))
+                          :match (match-string-no-properties group)
+                          :suggestion (nth 3 spec))
                     candidates))))))
     (dolist (candidate
              (sort candidates
@@ -2513,8 +2540,8 @@ export would remove."
         (push candidate selected)))
     (nreverse selected)))
 
-(defun org-museum--publish-privacy-findings (files export-root)
-  "Return structured local-path findings for FILES below EXPORT-ROOT."
+(defun org-museum--publish-privacy-findings (files export-root &optional detectors)
+  "Return structured findings for FILES, including supplemental DETECTORS."
   (let (findings)
     (dolist (file files)
       (when (org-museum--publish-text-file-p file)
@@ -2522,13 +2549,18 @@ export would remove."
                           (file-relative-name file export-root)))
                (source (and relative
                             (org-museum--publish-source-for-relative relative))))
-          (dolist (match (org-museum--publish-file-privacy-matches file))
+          (dolist (match (org-museum--publish-file-privacy-matches
+                          file detectors))
             (let* ((matched (plist-get match :match))
                    (locations (org-museum--publish-source-locations
                                source matched)))
               (dolist (location (or locations (list nil)))
-                (let ((kind (or (plist-get location :kind)
-                                'generated-output)))
+                (let ((kind (if (string-prefix-p
+                                 "custom-"
+                                 (symbol-name (plist-get match :kind)))
+                                (plist-get match :kind)
+                              (or (plist-get location :kind)
+                                  'generated-output))))
                   (push
                    (make-org-museum-publish-finding
                     :file file
@@ -2539,7 +2571,8 @@ export would remove."
                     :kind kind
                     :match matched
                     :excerpt (plist-get location :excerpt)
-                    :suggestion (org-museum--publish-finding-suggestion kind))
+                    :suggestion (or (plist-get match :suggestion)
+                                    (org-museum--publish-finding-suggestion kind)))
                    findings))))))))
     (let ((seen (make-hash-table :test #'equal)) unique)
       (dolist (finding (nreverse findings) (nreverse unique))
@@ -2626,40 +2659,549 @@ export would remove."
       (special-mode))
     buffer))
 
-(defun org-museum--publish-read-managed-files (publish-root)
-  "Read safe managed relative paths from PUBLISH-ROOT's manifest."
+(defun org-museum--publish-default-policy ()
+  "Return the default local full-sync sharing policy."
+  (list :include '("index.html" "graph.html" "pages/**" "resources/**")
+        :exclude nil
+        :authorizations nil
+        :detectors nil))
+
+(defun org-museum--publish-policy-pattern-p (pattern)
+  "Return non-nil when relative glob PATTERN is safe for publish selection."
+  (and (stringp pattern)
+       (not (string-empty-p pattern))
+       (not (file-name-absolute-p pattern))
+       (not (string-prefix-p "/" pattern))
+       (not (member ".." (split-string
+                           (replace-regexp-in-string "\\\\" "/" pattern)
+                           "/" t)))))
+
+(defun org-museum--publish-policy-detector-p (detector)
+  "Return non-nil when DETECTOR is a valid supplemental scan rule."
+  (let ((name (alist-get 'name detector))
+        (regexp (alist-get 'regexp detector))
+        (group (or (alist-get 'group detector) 0))
+        (suggestion (alist-get 'suggestion detector)))
+    (and (stringp name) (not (string-empty-p name))
+         (stringp regexp) (not (string-empty-p regexp))
+         (condition-case nil (progn (string-match-p regexp "") t)
+           (invalid-regexp nil))
+         (integerp group) (>= group 0)
+         (or (null suggestion) (stringp suggestion)))))
+
+(defun org-museum--publish-policy-authorization-p (entry)
+  "Return non-nil when authorisation ENTRY contains only safe metadata."
+  (let ((fingerprint (alist-get 'fingerprint entry))
+        (source (alist-get 'source entry))
+        (published (alist-get 'published entry))
+        (risk-type (alist-get 'riskType entry))
+        (reason (alist-get 'reason entry))
+        (approved-at (alist-get 'approvedAt entry)))
+    (and (stringp fingerprint)
+         (string-match-p "\\`[[:xdigit:]]\\{64\\}\\'" fingerprint)
+         (stringp source)
+         (or (string-empty-p source)
+             (org-museum--publish-normalise-relative-path source))
+         (stringp published)
+         (org-museum--publish-managed-relative-path-p published)
+         (stringp risk-type)
+         (stringp reason) (not (string-empty-p reason))
+         (stringp approved-at))))
+
+(defun org-museum--publish-read-policy ()
+  "Read and validate the local sharing policy, or return safe defaults."
+  (if (not (file-exists-p org-museum-publish-policy-file))
+      (org-museum--publish-default-policy)
+    (condition-case err
+        (let ((json-object-type 'alist)
+              (json-array-type 'list)
+              (json-key-type 'symbol))
+          (with-temp-buffer
+            (insert-file-contents org-museum-publish-policy-file)
+            (goto-char (point-min))
+            (let* ((data (json-read))
+                   (include (alist-get 'include data))
+                   (exclude (alist-get 'exclude data))
+                   (authorizations (alist-get 'authorizations data))
+                   (detectors (alist-get 'detectors data)))
+              (unless (and (= (or (alist-get 'schemaVersion data) 0) 1)
+                           (listp include) include
+                           (listp exclude)
+                           (cl-every #'org-museum--publish-policy-pattern-p
+                                     (append include exclude))
+                           (listp authorizations)
+                           (cl-every
+                            #'org-museum--publish-policy-authorization-p
+                            authorizations)
+                           (listp detectors)
+                           (cl-every #'org-museum--publish-policy-detector-p
+                                     detectors))
+                (signal 'org-museum-publish-error
+                        '("Publish sharing policy is invalid")))
+              (list :include include :exclude exclude
+                    :authorizations authorizations :detectors detectors))))
+      (org-museum-publish-error (signal (car err) (cdr err)))
+      (error
+       (signal 'org-museum-publish-error
+               (list (format "Cannot read publish sharing policy: %s"
+                             (error-message-string err))))))))
+
+(defun org-museum--publish-policy-pattern-match-p (pattern relative)
+  "Return non-nil when relative publish path RELATIVE matches glob PATTERN."
+  (string-match-p (wildcard-to-regexp
+                   (replace-regexp-in-string "\\\\" "/" pattern))
+                  relative))
+
+(defun org-museum--publish-policy-selected-p (policy relative)
+  "Return non-nil when POLICY selects publish path RELATIVE."
+  (and (cl-some (lambda (pattern)
+                  (org-museum--publish-policy-pattern-match-p pattern relative))
+                (plist-get policy :include))
+       (not (cl-some
+             (lambda (pattern)
+               (org-museum--publish-policy-pattern-match-p pattern relative))
+             (plist-get policy :exclude)))))
+
+(defun org-museum--publish-policy-json (policy)
+  "Return canonical local JSON for sharing POLICY."
+  (concat
+   (json-encode
+    `((schemaVersion . 1)
+      (include . ,(vconcat (plist-get policy :include)))
+      (exclude . ,(vconcat (plist-get policy :exclude)))
+      (authorizations . ,(vconcat (plist-get policy :authorizations)))
+      (detectors . ,(vconcat (plist-get policy :detectors)))))
+   "\n"))
+
+(defun org-museum--publish-policy-digest (policy)
+  "Return a stable digest of the effective local sharing POLICY."
+  (secure-hash 'sha256 (org-museum--publish-policy-json policy)))
+
+(defun org-museum--publish-candidate-digest (root files)
+  "Return a stable path-and-content digest for relative FILES below ROOT."
+  (secure-hash
+   'sha256
+   (mapconcat
+    (lambda (relative)
+      (format "%s\0%s" relative
+              (org-museum--publish-file-sha256
+               (expand-file-name relative root))))
+    (sort (copy-sequence files) #'string<)
+    "\0")))
+
+(defun org-museum--publish-write-policy (policy)
+  "Atomically write local sharing POLICY outside the publish checkout."
+  (let* ((target (expand-file-name org-museum-publish-policy-file))
+         (directory (file-name-directory target)))
+    (make-directory directory t)
+    (let ((temporary (make-temp-file
+                      (expand-file-name ".org-museum-policy-" directory))))
+      (unwind-protect
+          (let ((coding-system-for-write 'utf-8-unix))
+            (with-temp-file temporary
+              (insert (org-museum--publish-policy-json policy)))
+            (rename-file temporary target t))
+        (when (file-exists-p temporary) (delete-file temporary))))
+    target))
+
+(defun org-museum--publish-validate-policy-location (export-root publish-root)
+  "Ensure the local policy cannot enter EXPORT-ROOT or PUBLISH-ROOT."
+  (let* ((policy (expand-file-name org-museum-publish-policy-file))
+         (policy-key (org-museum--publish-path-key policy))
+         (export-key (org-museum--publish-path-key export-root))
+         (publish-key (org-museum--publish-path-key publish-root)))
+    (when (or (string-prefix-p export-key policy-key)
+              (string-prefix-p publish-key policy-key))
+      (signal 'org-museum-publish-error
+              '("Publish policy must stay outside export and publish directories")))))
+
+(defun org-museum--publish-finding-source-relative (finding)
+  "Return FINDING's source path relative to the museum root, or nil."
+  (when-let ((source (org-museum-publish-finding-source finding)))
+    (org-museum--publish-normalise-relative-path
+     (file-relative-name source org-museum-root-dir))))
+
+(defun org-museum--publish-finding-records (findings policy excluded)
+  "Return stable policy-evaluation records for FINDINGS.
+POLICY supplies exact fingerprint authorisations and EXCLUDED lists candidate
+paths outside the effective sharing scope."
+  (let ((counts (make-hash-table :test #'equal)) records)
+    (dolist (finding findings (nreverse records))
+      (let* ((source (or (org-museum--publish-finding-source-relative finding)
+                         ""))
+             (relative (org-museum-publish-finding-relative finding))
+             (kind (symbol-name (org-museum-publish-finding-kind finding)))
+             (match (org-museum--publish-path-from-match
+                     (org-museum-publish-finding-match finding)))
+             (excerpt (or (org-museum-publish-finding-excerpt finding) ""))
+             (base (mapconcat #'identity
+                              (list source relative kind match excerpt) "\0"))
+             (occurrence (1+ (gethash base counts 0)))
+             (fingerprint (secure-hash
+                           'sha256 (format "%s\0%d" base occurrence)))
+             (authorized
+              (cl-some
+               (lambda (entry)
+                 (equal fingerprint (alist-get 'fingerprint entry)))
+               (plist-get policy :authorizations)))
+             (status (cond
+                      ((member relative excluded) 'excluded)
+                      (authorized 'authorized)
+                      (t 'unresolved))))
+        (puthash base occurrence counts)
+        (push (list :finding finding :fingerprint fingerprint :status status)
+              records)))))
+
+(defun org-museum--publish-policy-authorize-button (button)
+  "Add BUTTON's exact finding fingerprint to the local sharing policy."
+  (let* ((policy (org-museum--publish-read-policy))
+         (fingerprint (button-get button 'org-museum-fingerprint))
+         (finding (button-get button 'org-museum-finding))
+         (reason (string-trim
+                  (read-string "Why is this exact content safe to share? "))))
+    (when (string-empty-p reason)
+      (signal 'org-museum-publish-error
+              '("An authorisation reason is required")))
+    (unless (cl-some
+             (lambda (entry)
+               (equal fingerprint (alist-get 'fingerprint entry)))
+             (plist-get policy :authorizations))
+      (setf (plist-get policy :authorizations)
+            (append
+             (plist-get policy :authorizations)
+             (list
+              `((fingerprint . ,fingerprint)
+                (source . ,(or (org-museum--publish-finding-source-relative
+                                finding) ""))
+                (published . ,(org-museum-publish-finding-relative finding))
+                (riskType . ,(symbol-name
+                              (org-museum-publish-finding-kind finding)))
+                (reason . ,reason)
+                (approvedAt . ,(format-time-string "%FT%T%z"))))))
+      (org-museum--publish-write-policy policy))
+    (message "Org Museum authorised this exact finding; rerun full sync")))
+
+(defun org-museum--publish-policy-revoke-button (button)
+  "Remove BUTTON's exact finding authorisation from the local policy."
+  (let* ((policy (org-museum--publish-read-policy))
+         (fingerprint (button-get button 'org-museum-fingerprint)))
+    (setf (plist-get policy :authorizations)
+          (cl-remove-if
+           (lambda (entry)
+             (equal fingerprint (alist-get 'fingerprint entry)))
+           (plist-get policy :authorizations)))
+    (org-museum--publish-write-policy policy)
+    (message "Org Museum revoked this exact authorisation; rerun full sync")))
+
+(defun org-museum--publish-policy-exclude-button (button)
+  "Add BUTTON's exact published path to the local policy exclusions."
+  (let* ((policy (org-museum--publish-read-policy))
+         (relative (button-get button 'org-museum-relative)))
+    (unless (member relative (plist-get policy :exclude))
+      (setf (plist-get policy :exclude)
+            (append (plist-get policy :exclude) (list relative)))
+      (org-museum--publish-write-policy policy))
+    (message "Org Museum excluded %s; rerun full sync" relative)))
+
+(defun org-museum--publish-policy-edit-button (_button)
+  "Create the default policy when necessary, then visit it."
+  (unless (file-exists-p org-museum-publish-policy-file)
+    (org-museum--publish-write-policy (org-museum--publish-default-policy)))
+  (find-file org-museum-publish-policy-file))
+
+(defun org-museum--publish-full-rerun-button (_button)
+  "Rerun the interactive full-sync review workflow."
+  (call-interactively #'org-museum-publish-sync-full))
+
+(defun org-museum--publish-render-full-preview
+    (policy records selected excluded state &optional change-plan)
+  "Render full-sync POLICY, FINDINGS and selected paths before installation."
+  (let ((buffer (get-buffer-create org-museum--publish-full-preview-buffer)))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Org Museum Full Sync / Review Sharing\n\n")
+        (insert "WARNING: selected exports are copied byte-for-byte, including "
+                "local paths and other private material.\n"
+                "The detailed report remains in Emacs; the policy stays local.\n\n")
+        (insert-text-button "Edit sharing policy"
+                            'follow-link t
+                            'action #'org-museum--publish-policy-edit-button)
+        (insert "    ")
+        (insert-text-button "Rerun full sync"
+                            'follow-link t
+                            'action #'org-museum--publish-full-rerun-button)
+        (insert "\n\n")
+        (insert (format "Result state: %s\nSelected files: %d\nExcluded files: %d\nPrivacy findings: %d\n\n"
+                        state (length selected) (length excluded)
+                        (length records)))
+        (insert "Effective include patterns:\n")
+        (dolist (pattern (plist-get policy :include))
+          (insert (format "  + %s\n" pattern)))
+        (insert "Effective exclude patterns:\n")
+        (if (plist-get policy :exclude)
+            (dolist (pattern (plist-get policy :exclude))
+              (insert (format "  - %s\n" pattern)))
+          (insert "  (none)\n"))
+        (when excluded
+          (insert "\nExcluded candidate files:\n")
+          (dolist (relative excluded) (insert (format "  - %s\n" relative))))
+        (when change-plan
+          (insert "\nMirror change preview:\n")
+          (dolist (category '((:create . "Add")
+                              (:overwrite . "Overwrite")
+                              (:delete . "Delete")
+                              (:unknown . "Baseline unknown")
+                              (:conflicts . "CONFLICT")))
+            (let ((paths (plist-get change-plan (car category))))
+              (insert (format "  %s: %d\n" (cdr category) (length paths)))
+              (dolist (relative paths)
+                (insert (format "    - %s\n" relative))))))
+        (when records
+          (insert "\nFinding decisions:\n")
+          (dolist (record records)
+            (let* ((finding (plist-get record :finding))
+                   (fingerprint (plist-get record :fingerprint))
+                   (status (plist-get record :status)))
+              (insert (format "\n  %s  %s\n"
+                              status
+                              (org-museum-publish-finding-relative finding)))
+              (when (and (org-museum-publish-finding-source finding)
+                         (org-museum-publish-finding-line finding))
+                (insert "    ")
+                (insert-text-button
+                 "Open source note"
+                 'follow-link t
+                 'org-museum-source
+                 (org-museum-publish-finding-source finding)
+                 'org-museum-line (org-museum-publish-finding-line finding)
+                 'action #'org-museum--publish-open-source-button)
+                (insert "\n"))
+              (insert (format "    Risk: %s\n    Suggested change: %s\n"
+                              (org-museum-publish-finding-kind finding)
+                              (org-museum-publish-finding-suggestion finding)))
+              (when (org-museum-publish-finding-line finding)
+                (insert (format "    Source line: %d\n"
+                                (org-museum-publish-finding-line finding))))
+              (insert (format "    Matched content: %s\n"
+                              (org-museum-publish-finding-match finding)))
+              (unless (eq status 'excluded)
+                (insert "    ")
+                (insert-text-button
+                 "Exclude this published file"
+                 'follow-link t
+                 'org-museum-policy-action 'exclude
+                 'org-museum-relative
+                 (org-museum-publish-finding-relative finding)
+                 'action #'org-museum--publish-policy-exclude-button)
+                (insert "\n"))
+              (unless (eq status 'excluded)
+                (insert "    ")
+                (insert-text-button
+                 (if (eq status 'authorized)
+                     "Revoke exact authorisation"
+                   "Authorise this exact content")
+                 'follow-link t
+                 'org-museum-policy-action
+                 (if (eq status 'authorized) 'revoke 'authorize)
+                 'org-museum-fingerprint fingerprint
+                 'org-museum-finding finding
+                 'action (if (eq status 'authorized)
+                             #'org-museum--publish-policy-revoke-button
+                           #'org-museum--publish-policy-authorize-button))
+                (insert "\n")))))
+        (let ((current-fingerprints
+               (mapcar (lambda (record) (plist-get record :fingerprint))
+                       records)))
+          (dolist (entry (plist-get policy :authorizations))
+            (unless (member (alist-get 'fingerprint entry)
+                            current-fingerprints)
+              (insert (format
+                       "\n  fixed  %s\n    The authorised finding is no longer present after export.\n    "
+                       (alist-get 'published entry)))
+              (insert-text-button
+               "Revoke stale authorisation"
+               'follow-link t
+               'org-museum-policy-action 'revoke
+               'org-museum-fingerprint (alist-get 'fingerprint entry)
+               'action #'org-museum--publish-policy-revoke-button)
+              (insert "\n"))))
+        (insert (format "\nTo install this local raw mirror, enter exactly: %s\n"
+                        org-museum--publish-full-confirmation))
+        (goto-char (point-min)))
+      (special-mode))
+    buffer))
+
+(defun org-museum--publish-file-sha256 (file)
+  "Return the SHA-256 of FILE's literal bytes."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally file)
+    (secure-hash 'sha256 (current-buffer))))
+
+(defun org-museum--publish-manifest-data-from-string (contents context)
+  "Return validated manifest data from JSON CONTENTS labelled by CONTEXT."
+  (condition-case err
+      (let ((json-object-type 'alist)
+            (json-array-type 'list)
+            (json-key-type 'symbol))
+        (with-temp-buffer
+          (insert contents)
+          (goto-char (point-min))
+          (let* ((data (json-read))
+                 (schema (or (alist-get 'schemaVersion data) 0))
+                 (files (alist-get 'files data))
+                 (hash-records (alist-get 'hashes data))
+                 hashes)
+            (unless (and (memq schema '(1 2))
+                         (listp files)
+                         (cl-every #'stringp files)
+                         (cl-every #'org-museum--publish-managed-relative-path-p
+                                   files)
+                         (or (= schema 1) (listp hash-records)))
+              (signal 'org-museum-publish-error
+                      (list (format "%s contains unsafe entries" context))))
+            (when (= schema 2)
+              (dolist (record hash-records)
+                (let ((path (alist-get 'path record))
+                      (hash (alist-get 'sha256 record)))
+                  (unless (and (stringp path)
+                               (member path files)
+                               (org-museum--publish-managed-relative-path-p path)
+                               (stringp hash)
+                               (string-match-p
+                                "\\`[[:xdigit:]]\\{64\\}\\'" hash)
+                               (not (assoc path hashes)))
+                    (signal 'org-museum-publish-error
+                            (list (format "%s contains invalid hashes"
+                                          context))))
+                  (push (cons path (downcase hash)) hashes)))
+              (unless (= (length hashes) (length files))
+                (signal 'org-museum-publish-error
+                        (list (format "%s has incomplete hashes" context)))))
+            (list :schema schema :files files :hashes (nreverse hashes)))))
+    (error
+     (if (eq (car err) 'org-museum-publish-error)
+         (signal (car err) (cdr err))
+       (signal 'org-museum-publish-error
+               (list (format "Cannot parse %s: %s"
+                             context (error-message-string err))))))))
+
+(defun org-museum--publish-read-manifest (publish-root)
+  "Read validated manifest data from PUBLISH-ROOT, or an empty baseline."
   (let ((manifest (expand-file-name org-museum--publish-manifest-name
                                     publish-root)))
     (if (not (file-regular-p manifest))
-        nil
+        (list :schema 0 :files nil :hashes nil)
       (condition-case err
           (with-temp-buffer
             (insert-file-contents manifest)
-            (org-museum--publish-manifest-files-from-string
+            (org-museum--publish-manifest-data-from-string
              (buffer-string) "Publish manifest"))
         (error
          (signal 'org-museum-publish-error
                  (list (format "Cannot read publish manifest: %s"
                                (error-message-string err)))))))))
 
+(defun org-museum--publish-read-managed-files (publish-root)
+  "Read safe managed relative paths from PUBLISH-ROOT's manifest."
+  (plist-get (org-museum--publish-read-manifest publish-root) :files))
+
 (defun org-museum--publish-write-manifest (publish-root files)
-  "Write relative managed FILES under PUBLISH-ROOT."
+  "Write relative managed FILES and their hashes under PUBLISH-ROOT."
   (let ((manifest (expand-file-name org-museum--publish-manifest-name
                                     publish-root))
-        (coding-system-for-write 'utf-8-unix))
+        (coding-system-for-write 'utf-8-unix)
+        hashes)
+    (dolist (relative files)
+      (let ((file (expand-file-name relative publish-root)))
+        (unless (and (file-regular-p file) (not (file-symlink-p file)))
+          (signal 'org-museum-publish-error
+                  (list (format "Cannot hash managed publish file: %s"
+                                relative))))
+        (push `((path . ,relative)
+                (sha256 . ,(org-museum--publish-file-sha256 file)))
+              hashes)))
     (with-temp-file manifest
       (insert (json-encode
-               `((schemaVersion . 1)
-                 (files . ,(vconcat (sort (copy-sequence files) #'string<))))))
+               `((schemaVersion . 2)
+                 (files . ,(vconcat (sort (copy-sequence files) #'string<)))
+                 (hashes . ,(vconcat
+                              (sort hashes
+                                    (lambda (left right)
+                                      (string< (alist-get 'path left)
+                                               (alist-get 'path right)))))))))
       (insert "\n"))))
 
-(defun org-museum--publish-write-status (root state blocked-pages)
+(defun org-museum--publish-full-change-plan
+    (staging-root publish-root relative-files manifest)
+  "Classify full-sync changes and conflicts against MANIFEST's hash baseline."
+  (let* ((incoming (cons ".nojekyll" relative-files))
+         (old-files (plist-get manifest :files))
+         (baseline (plist-get manifest :hashes))
+         (stale (cl-set-difference old-files incoming :test #'equal))
+         create overwrite delete unchanged unknown conflicts)
+    (dolist (relative incoming)
+      (let* ((source (unless (equal relative ".nojekyll")
+                       (expand-file-name relative staging-root)))
+             (destination (expand-file-name relative publish-root))
+             (incoming-hash (if source
+                                (org-museum--publish-file-sha256 source)
+                              (secure-hash 'sha256 "")))
+             (baseline-hash (cdr (assoc relative baseline)))
+             (destination-hash
+              (and (file-regular-p destination)
+                   (not (file-symlink-p destination))
+                   (org-museum--publish-file-sha256 destination))))
+        (cond
+         ((and baseline-hash (not destination-hash))
+          (push relative conflicts))
+         ((and baseline-hash
+               destination-hash
+               (not (equal baseline-hash destination-hash)))
+          (push relative conflicts))
+         ((not destination-hash) (push relative create))
+         ((equal incoming-hash destination-hash) (push relative unchanged))
+         ((not baseline-hash) (push relative unknown))
+         (t (push relative overwrite)))))
+    (dolist (relative stale)
+      (let* ((destination (expand-file-name relative publish-root))
+             (baseline-hash (cdr (assoc relative baseline)))
+             (destination-hash
+              (and (file-regular-p destination)
+                   (not (file-symlink-p destination))
+                   (org-museum--publish-file-sha256 destination))))
+        (cond
+         ((not destination-hash) (push relative unchanged))
+         ((and baseline-hash (not (equal baseline-hash destination-hash)))
+          (push relative conflicts))
+         ((not baseline-hash) (push relative unknown))
+         (t (push relative delete)))))
+    (list :create (sort create #'string<)
+          :overwrite (sort overwrite #'string<)
+          :delete (sort delete #'string<)
+          :unchanged (sort unchanged #'string<)
+          :unknown (sort unknown #'string<)
+          :conflicts (sort (delete-dups conflicts) #'string<))))
+
+(defun org-museum--publish-write-status
+    (root state blocked-pages &optional mode policy-digest candidate-digest)
   "Write safe publication STATE and relative BLOCKED-PAGES below ROOT."
-  (unless (and (memq state '(ready blocked))
+  (setq mode (or mode 'safe))
+  (unless (and (memq state '(ready blocked review-required))
+               (memq mode '(safe full))
                (listp blocked-pages)
                (cl-every #'org-museum--publish-managed-relative-path-p
                          blocked-pages)
-               (if (eq state 'ready) (null blocked-pages) blocked-pages))
+               (if (eq state 'ready) (null blocked-pages) blocked-pages)
+               (if (eq mode 'full)
+                   (and (stringp policy-digest)
+                        (string-match-p
+                         "\\`[[:xdigit:]]\\{64\\}\\'" policy-digest)
+                        (stringp candidate-digest)
+                        (string-match-p
+                         "\\`[[:xdigit:]]\\{64\\}\\'" candidate-digest))
+                 (and (null policy-digest) (null candidate-digest))))
     (signal 'org-museum-publish-error
             '("Invalid publish privacy status")))
   (let ((status-file (expand-file-name org-museum--publish-status-name root))
@@ -2667,9 +3209,12 @@ export would remove."
     (with-temp-file status-file
       (insert
        (json-encode
-        `((schemaVersion . 1)
+        `((schemaVersion . 2)
           (state . ,(symbol-name state))
+          (mode . ,(symbol-name mode))
           (generatedAt . ,(format-time-string "%FT%T%z"))
+          (policyDigest . ,policy-digest)
+          (candidateDigest . ,candidate-digest)
           (blockedPages . ,(vconcat
                             (sort (copy-sequence blocked-pages) #'string<))))))
       (insert "\n"))
@@ -2692,18 +3237,40 @@ export would remove."
                    (state-value (alist-get 'state data))
                    (state (and (stringp state-value)
                                (intern-soft state-value)))
-                   (blocked (alist-get 'blockedPages data)))
-              (unless (and (= (or (alist-get 'schemaVersion data) 0) 1)
-                           (memq state '(ready blocked))
+                   (blocked (alist-get 'blockedPages data))
+                   (schema (or (alist-get 'schemaVersion data) 0))
+                   (mode-value (alist-get 'mode data))
+                   (mode (if (= schema 1) 'safe
+                           (and (stringp mode-value)
+                                (intern-soft mode-value))))
+                   (policy-digest (alist-get 'policyDigest data))
+                   (candidate-digest (alist-get 'candidateDigest data)))
+              (unless (and (memq schema '(1 2))
+                           (memq state '(ready blocked review-required))
+                           (memq mode '(safe full))
                            (listp blocked)
                            (cl-every #'stringp blocked)
                            (cl-every
                             #'org-museum--publish-managed-relative-path-p
                             blocked)
-                           (if (eq state 'ready) (null blocked) blocked))
+                           (if (eq state 'ready) (null blocked) blocked)
+                           (if (eq mode 'full)
+                               (and (= schema 2)
+                                    (stringp policy-digest)
+                                    (string-match-p
+                                     "\\`[[:xdigit:]]\\{64\\}\\'"
+                                     policy-digest)
+                                    (stringp candidate-digest)
+                                    (string-match-p
+                                     "\\`[[:xdigit:]]\\{64\\}\\'"
+                                     candidate-digest))
+                             t))
                 (signal 'org-museum-publish-error
                         '("Publish status is invalid; rerun publish sync")))
-              (list :state state :blocked-pages blocked))))
+              (list :schema schema :state state :mode mode
+                    :blocked-pages blocked
+                    :policy-digest policy-digest
+                    :candidate-digest candidate-digest))))
       (org-museum-publish-error (signal (car err) (cdr err)))
       (error
        (signal 'org-museum-publish-error
@@ -2770,6 +3337,89 @@ export would remove."
                          (mapcar #'org-museum-publish-finding-relative findings))
                         ", "))))))
     t))
+
+(defun org-museum--publish-managed-namespace-files (root)
+  "Return every existing file in ROOT's managed publishing namespaces."
+  (let (relative-files)
+    (dolist (relative (list "index.html" "graph.html" ".nojekyll"
+                            org-museum--publish-status-name))
+      (let ((file (expand-file-name relative root)))
+        (when (or (file-exists-p file) (file-symlink-p file))
+          (unless (and (file-regular-p file) (not (file-symlink-p file)))
+            (signal 'org-museum-publish-error
+                    (list (format "Unsafe managed publish entry: %s" relative))))
+          (push relative relative-files))))
+    (dolist (tree '("pages" "resources"))
+      (let ((directory (expand-file-name tree root)))
+        (when (or (file-exists-p directory) (file-symlink-p directory))
+          (dolist (file (org-museum--publish-tree-files root tree))
+            (push (org-museum--publish-normalise-relative-path
+                   (file-relative-name file root))
+                  relative-files)))))
+    (sort (delete-dups relative-files) #'string<)))
+
+(defun org-museum--publish-validate-manifest-integrity (root manifest)
+  "Reject hash changes and unlisted managed namespace files below ROOT."
+  (let ((files (sort (copy-sequence (plist-get manifest :files)) #'string<))
+        (hashes (plist-get manifest :hashes)))
+    (unless (equal files (org-museum--publish-managed-namespace-files root))
+      (signal 'org-museum-publish-error
+              '("Managed publish namespace differs from its manifest; rerun sync")))
+    (when (= (plist-get manifest :schema) 2)
+      (dolist (relative files)
+        (let ((expected (cdr (assoc relative hashes)))
+              (file (expand-file-name relative root)))
+          (unless (and expected
+                       (file-regular-p file)
+                       (equal expected
+                              (org-museum--publish-file-sha256 file)))
+            (signal 'org-museum-publish-error
+                    (list (format
+                           "Managed publish file changed after sync: %s"
+                           relative)))))))))
+
+(defun org-museum--publish-validate-full-ready-candidate
+    (root manifest status)
+  "Re-evaluate full-sync policy, hashes, scope and authorisations in ROOT."
+  (unless (= (plist-get manifest :schema) 2)
+    (signal 'org-museum-publish-error
+            '("Full-sync hash baseline is missing; rerun full sync")))
+  (let* ((policy (org-museum--publish-read-policy))
+         (policy-digest (org-museum--publish-policy-digest policy))
+         (content-files
+          (cl-remove-if
+           (lambda (relative)
+             (member relative
+                     (list ".nojekyll" org-museum--publish-status-name)))
+           (plist-get manifest :files))))
+    (unless (equal policy-digest (plist-get status :policy-digest))
+      (signal 'org-museum-publish-error
+              '("Sharing policy changed after sync; rerun full sync")))
+    (dolist (relative content-files)
+      (unless (org-museum--publish-policy-selected-p policy relative)
+        (signal 'org-museum-publish-error
+                (list (format
+                       "Excluded publish file is still present: %s; rerun full sync"
+                       relative)))))
+    (unless (equal
+             (org-museum--publish-candidate-digest root content-files)
+             (plist-get status :candidate-digest))
+      (signal 'org-museum-publish-error
+              '("Full-sync candidate changed after review; rerun full sync")))
+    (let* ((files (mapcar (lambda (relative)
+                            (expand-file-name relative root))
+                          content-files))
+           (findings (org-museum--publish-privacy-findings
+                      files root (plist-get policy :detectors)))
+           (records (org-museum--publish-finding-records findings policy nil))
+           (unresolved
+            (cl-remove-if
+             (lambda (record)
+               (eq (plist-get record :status) 'authorized))
+             records)))
+      (when unresolved
+        (signal 'org-museum-publish-error
+                '("Full-sync authorisation is missing or stale; rerun full sync"))))))
 
 (defun org-museum--publish-write-placeholder (file)
   "Replace staged HTML FILE with a privacy-safe preview placeholder."
@@ -3007,6 +3657,108 @@ export would remove."
       (when (file-directory-p staging-root)
         (delete-directory staging-root t)))))
 
+;;;###autoload
+(defun org-museum-publish-sync-full (&optional interactive-invocation)
+  "Interactively install a configurable byte-for-byte local publish mirror.
+Unlike `org-museum-publish-sync', this command does not replace or remove
+selected files merely because privacy findings remain.  It always previews the
+effective sharing scope and requires the exact high-risk confirmation phrase.
+Unresolved findings produce a `review-required' state that cannot be deployed."
+  (interactive (list t))
+  (unless interactive-invocation
+    (signal 'org-museum-publish-error
+            '("Full publish sync must be invoked interactively")))
+  (org-museum-export-all)
+  (pcase-let* ((`(,export-root ,publish-root)
+                (org-museum--publish-validate-directories))
+               (_policy-location
+                (org-museum--publish-validate-policy-location
+                 export-root publish-root))
+               (policy (org-museum--publish-read-policy))
+               (source-files (org-museum--publish-source-files export-root))
+               (inventory
+                (mapcar
+                 (lambda (file)
+                   (cons (org-museum--publish-normalise-relative-path
+                          (file-relative-name file export-root))
+                         file))
+                 source-files))
+               (selected
+                (cl-remove-if-not
+                 (lambda (entry)
+                   (org-museum--publish-policy-selected-p policy (car entry)))
+                 inventory))
+               (excluded (mapcar #'car
+                                 (cl-set-difference inventory selected
+                                                    :test #'equal)))
+               (findings (org-museum--publish-privacy-findings
+                          source-files export-root
+                          (plist-get policy :detectors)))
+               (records (org-museum--publish-finding-records
+                         findings policy excluded))
+               (unresolved
+                (cl-remove-if
+                 (lambda (record)
+                   (not (eq (plist-get record :status) 'unresolved)))
+                 records))
+               (blocked (sort
+                         (delete-dups
+                          (mapcar
+                           (lambda (record)
+                             (org-museum-publish-finding-relative
+                              (plist-get record :finding)))
+                           unresolved))
+                         #'string<))
+               (state (if unresolved 'review-required 'ready))
+               (old-manifest (org-museum--publish-read-manifest publish-root))
+               (old-files (plist-get old-manifest :files))
+               (staging-root (make-temp-file "org-museum-publish-full-" t)))
+    (unless selected
+      (signal 'org-museum-publish-error
+              '("Publish sharing policy selects no exported files")))
+    (unwind-protect
+        (let* ((relative-files
+                (org-museum--publish-copy-to-staging
+                 (mapcar #'cdr selected) export-root staging-root))
+               change-plan)
+          (org-museum--publish-write-status
+           staging-root state blocked 'full
+           (org-museum--publish-policy-digest policy)
+           (org-museum--publish-candidate-digest
+            staging-root relative-files))
+          (setq relative-files
+                (append relative-files (list org-museum--publish-status-name)))
+          (org-museum--publish-render-privacy-report findings)
+          (setq change-plan
+                (org-museum--publish-full-change-plan
+                 staging-root publish-root relative-files old-manifest))
+          (let ((preview
+                  (org-museum--publish-render-full-preview
+                   policy records (mapcar #'car selected) excluded state
+                   change-plan)))
+            (pop-to-buffer preview))
+          (when (plist-get change-plan :conflicts)
+            (signal
+             'org-museum-publish-error
+             (list
+              (format
+               "Full sync stopped before confirmation: managed files were edited after the last sync: %s"
+               (mapconcat #'identity
+                          (plist-get change-plan :conflicts) ", ")))))
+          (unless (equal (read-string
+                          (format "Type %s to continue: "
+                                  org-museum--publish-full-confirmation))
+                         org-museum--publish-full-confirmation)
+            (signal 'org-museum-publish-error
+                    '("Full publish sync confirmation did not match; no files changed")))
+          (org-museum--publish-apply-staging
+           staging-root publish-root relative-files old-files)
+          (message "Org Museum full mirror updated: %s (%s)"
+                   publish-root state)
+          publish-root)
+      (when (file-directory-p staging-root)
+        (delete-directory staging-root t)))))
+
 (defun org-museum--publish-redact-command-output (output)
   "Remove credentials and token-shaped secrets from process OUTPUT."
   (let ((redacted (replace-regexp-in-string
@@ -3054,29 +3806,8 @@ which defaults to (0)."
 
 (defun org-museum--publish-manifest-files-from-string (contents context)
   "Return validated managed paths from JSON CONTENTS, labelled by CONTEXT."
-  (condition-case err
-      (let ((json-object-type 'alist)
-            (json-array-type 'list)
-            (json-key-type 'symbol))
-        (with-temp-buffer
-          (insert contents)
-          (goto-char (point-min))
-          (let* ((data (json-read))
-                 (files (alist-get 'files data)))
-            (unless (and (= (or (alist-get 'schemaVersion data) 0) 1)
-                         (listp files)
-                         (cl-every #'stringp files)
-                         (cl-every #'org-museum--publish-managed-relative-path-p
-                                   files))
-              (signal 'org-museum-publish-error
-                      (list (format "%s contains unsafe entries" context))))
-            files)))
-    (error
-     (if (eq (car err) 'org-museum-publish-error)
-         (signal (car err) (cdr err))
-       (signal 'org-museum-publish-error
-               (list (format "Cannot parse %s: %s"
-                             context (error-message-string err))))))))
+  (plist-get (org-museum--publish-manifest-data-from-string contents context)
+             :files))
 
 (defun org-museum--publish-head-managed-files ()
   "Return managed files recorded by the current Git HEAD, if any."
@@ -3261,22 +3992,31 @@ which defaults to (0)."
   (interactive)
   (pcase-let* ((`(,directory ,repository ,branch)
                 (org-museum--publish-repository-config))
-               (current (org-museum--publish-read-managed-files directory))
+               (manifest (org-museum--publish-read-manifest directory))
+               (current (plist-get manifest :files))
                (status (org-museum--publish-read-status directory)))
     (unless current
       (signal 'org-museum-publish-error
               '("Publish manifest is missing or empty; run publish sync")))
-    (when (eq (plist-get status :state) 'blocked)
+    (when (memq (plist-get status :state) '(blocked review-required))
       (when (and (called-interactively-p 'interactive)
                  (get-buffer org-museum--publish-privacy-buffer))
         (pop-to-buffer org-museum--publish-privacy-buffer))
       (signal
        'org-museum-publish-error
        (list
-        (format
-         "Publish privacy review is blocked for: %s. Rerun org-museum-publish-sync after fixing the source notes"
-         (mapconcat #'identity (plist-get status :blocked-pages) ", ")))))
-    (org-museum--publish-validate-ready-candidate directory current)
+        (if (eq (plist-get status :state) 'review-required)
+            (format
+             "Full-sync sharing review is incomplete for: %s. Resolve, exclude, or explicitly authorise every finding, then rerun full sync"
+             (mapconcat #'identity (plist-get status :blocked-pages) ", "))
+          (format
+           "Publish privacy review is blocked for: %s. Rerun org-museum-publish-sync after fixing the source notes"
+           (mapconcat #'identity (plist-get status :blocked-pages) ", "))))))
+    (org-museum--publish-validate-manifest-integrity directory manifest)
+    (if (eq (plist-get status :mode) 'full)
+        (org-museum--publish-validate-full-ready-candidate
+         directory manifest status)
+      (org-museum--publish-validate-ready-candidate directory current))
     (unless (file-directory-p (expand-file-name ".git" directory))
       (org-museum--publish-run "gh" '("auth" "status"))
       (org-museum--publish-bootstrap-repository directory repository branch))
@@ -7499,6 +8239,7 @@ When nil:
             ("E  Export All"       . org-museum-export-all)
             ("g  Export Graph"     . org-museum-export-graph)
             ("p  Sync Publish Site" . org-museum-publish-sync)
+            ("!  Full Sync / Review Sharing" . org-museum-publish-sync-full)
             ("P  Deploy to GitHub"  . org-museum-publish-deploy)
             ("r  Rename Page"      . org-museum-rename-page)
             ("i  Rebuild Index"    . org-museum-index-build)
@@ -7548,6 +8289,7 @@ Applicable scope: daily editing workflow, discoverability."
         ("E" "Export All"       org-museum-export-all)
         ("g" "Export Graph"     org-museum-export-graph)
         ("p" "Sync Publish Site" org-museum-publish-sync)
+        ("!" "Full Sync / Review Sharing" org-museum-publish-sync-full)
         ("P" "Deploy to GitHub"  org-museum-publish-deploy)]
        ["Index"
         ("i" "Rebuild Index"    org-museum-index-build)
