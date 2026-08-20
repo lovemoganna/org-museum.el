@@ -2194,7 +2194,9 @@
         (progn
           (make-directory (file-name-directory source) t)
           (with-temp-file source
-            (insert "[[wiki:target][Target]]\n"))
+            (insert "[[wiki:target][Wiki]]\n"
+                    "[[museum:target][Museum]]\n"
+                    "[[id:target][ID]]\n"))
           (with-temp-file target
             (insert "#+TITLE: Target\n#+WIKI_ID: target\n"))
           (puthash "source"
@@ -2207,12 +2209,16 @@
                    pages)
           (with-temp-buffer
             (setq buffer-file-name source)
-            (insert "[[wiki:target][Target]]\n")
+            (insert "[[wiki:target][Wiki]]\n"
+                    "[[museum:target][Museum]]\n"
+                    "[[id:target][ID]]\n")
             (org-museum--rewrite-org-museum-links
              (current-buffer) out-file source)
-            (should (string-match-p
-                     (regexp-quote "[[file:target.html][Target]]")
-                     (buffer-string)))
+            (dolist (description '("Wiki" "Museum" "ID"))
+              (should (string-match-p
+                       (regexp-quote
+                        (format "[[file:target.html][%s]]" description))
+                       (buffer-string))))
             (should-not (string-match-p "[A-Za-z]:[/\\\\]"
                                         (buffer-string)))))
       (delete-directory root t))))
@@ -3275,6 +3281,76 @@
           (should-not process-called))
       (delete-directory root t))))
 
+(ert-deftest org-museum-publish-deploy-revalidates-a-ready-candidate ()
+  "A mutable ready status cannot authorize unsafe or placeholder content."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-ready-recheck-" t)))
+         (org-museum-publish-directory root)
+         (org-museum-publish-repository "example/org-notes")
+         (org-museum-publish-branch "main")
+         (org-museum-publish-remote "origin")
+         process-called)
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "pages" root) t)
+          (with-temp-file (expand-file-name "index.html" root)
+            (insert "INDEX"))
+          (with-temp-file (expand-file-name "pages/private.html" root)
+            (insert "<meta name=\"org-museum-privacy-placeholder\" "
+                    "content=\"blocked\">"))
+          (with-temp-file
+              (expand-file-name ".org-museum-publish-status.json" root)
+            (insert "{\"schemaVersion\":1,\"state\":\"ready\","
+                    "\"blockedPages\":[]}"))
+          (with-temp-file
+              (expand-file-name ".org-museum-publish-manifest.json" root)
+            (insert "{\"schemaVersion\":1,\"files\":["
+                    "\".org-museum-publish-status.json\",\"index.html\","
+                    "\"pages/private.html\"]}"))
+          (cl-letf (((symbol-function 'org-museum--publish-run)
+                     (lambda (&rest _args)
+                       (setq process-called t)
+                       (cons 0 ""))))
+            (let ((error-data
+                   (should-error (org-museum-publish-deploy)
+                                 :type 'org-museum-publish-error)))
+              (should (string-match-p "placeholder"
+                                      (error-message-string error-data))))
+            (with-temp-file (expand-file-name "pages/private.html" root)
+              (insert "<code>C:/private/secret.txt</code>"))
+            (let ((error-data
+                   (should-error (org-museum-publish-deploy)
+                                 :type 'org-museum-publish-error)))
+              (should (string-match-p "local paths"
+                                      (error-message-string error-data)))))
+          (should-not process-called))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-publish-deploy-requires-a-current-status-file ()
+  "An older mirror must be resynchronised before any deployment process runs."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-missing-status-" t)))
+         (org-museum-publish-directory root)
+         (org-museum-publish-repository "example/org-notes")
+         process-called)
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "index.html" root) (insert "INDEX"))
+          (with-temp-file
+              (expand-file-name ".org-museum-publish-manifest.json" root)
+            (insert "{\"schemaVersion\":1,\"files\":[\"index.html\"]}"))
+          (cl-letf (((symbol-function 'org-museum--publish-run)
+                     (lambda (&rest _args)
+                       (setq process-called t)
+                       (cons 0 ""))))
+            (let ((error-data
+                   (should-error (org-museum-publish-deploy)
+                                 :type 'org-museum-publish-error)))
+              (should (string-match-p "status is missing"
+                                      (error-message-string error-data)))))
+          (should-not process-called))
+      (delete-directory root t))))
+
 (ert-deftest org-museum-publish-sync-builds-safe-preview-for-private-pages ()
   "A private page becomes a safe preview placeholder with a local report."
   (let* ((root (file-name-as-directory
@@ -3345,7 +3421,11 @@
             (should (string-match-p "private\\.org:2" (buffer-string)))
             (should (string-match-p "C:/private/secret\\.txt"
                                     (buffer-string)))
-            (should (button-at (point-min)))
+            (let ((rerun-called nil))
+              (cl-letf (((symbol-function 'org-museum-publish-sync)
+                         (lambda () (interactive) (setq rerun-called t))))
+                (button-activate (button-at (point-min))))
+              (should rerun-called))
             (let* ((position
                     (text-property-any (point-min) (point-max)
                                        'org-museum-source source))
@@ -3404,7 +3484,7 @@
          (org-museum-export-dir "exports/html/pages")
          (source (expand-file-name "pages/topic.org" root))
          (output (expand-file-name "exports/html/pages/topic.html" root))
-         (external (expand-file-name "outside.sql" root))
+         (external (expand-file-name "A&B outside.sql" root))
          (pages (make-hash-table :test 'equal))
          (org-museum--index
           (make-org-museum-index
@@ -3419,7 +3499,8 @@
           (with-temp-file source
             (insert "#+TITLE: Topic\n"
                     "Code path: C:/private/code.el\n"
-                    "[[file:../outside.sql][Query]]\n"))
+                    "[[file:../A&B outside.sql][Query]]\n"
+                    "Repeated path: C:/private/code.el\n"))
           (puthash "topic"
                    (org-museum-test--page
                     "topic" "Topic" 1 nil nil "published" source)
@@ -3429,13 +3510,18 @@
                     (format
                      (concat "<a href=\"file:///%s\" "
                              "data-local-path=\"%s\">Query</a>\n")
-                     (replace-regexp-in-string "\\\\" "/" external)
-                     (replace-regexp-in-string "\\\\" "/" external))))
+                     (replace-regexp-in-string
+                      "&" "&amp;"
+                      (replace-regexp-in-string "\\\\" "/" external) t t)
+                     (replace-regexp-in-string
+                      "&" "&amp;"
+                      (replace-regexp-in-string "\\\\" "/" external) t t))
+                    "<code>C:/private/code.el</code>\n"))
           (let ((findings
                  (org-museum--publish-privacy-findings
                   (list output) (expand-file-name "exports/html" root))))
-            (should (= 2 (length findings)))
-            (should (equal '(2 3)
+            (should (= 3 (length findings)))
+            (should (equal '(2 3 4)
                            (sort (mapcar #'org-museum-publish-finding-line
                                          findings)
                                  #'<)))
@@ -3447,20 +3533,84 @@
 (ert-deftest org-museum-publish-privacy-scan-distinguishes-unc-from-javascript ()
   "UNC paths are private, while bundled regular-expression syntax is safe."
   (let ((unc-file (make-temp-file "org-museum-publish-unc-" nil ".js"))
+        (unc-url-file (make-temp-file "org-museum-publish-unc-url-" nil ".html"))
         (drive-file (make-temp-file "org-museum-publish-drive-" nil ".js"))
         (syntax-file (make-temp-file "org-museum-publish-js-" nil ".js")))
     (unwind-protect
         (progn
           (with-temp-file unc-file (insert "open('\\\\server\\share\\note.org')"))
+          (with-temp-file unc-url-file
+            (insert "<a href=\"file:////server/share/note.org\" "
+                    "data-local-path=\"//server/share/note.org\">Local</a>"))
           (with-temp-file drive-file (insert "source:C:/$private/secret.txt"))
           (with-temp-file syntax-file
             (insert "\\\\\\*{2}[^\\n]*? begin:/HTTP\\\\/ ?o:/[%p]"))
           (should (equal (org-museum--publish-privacy-violations
-                          (list unc-file drive-file syntax-file))
-                         (list unc-file drive-file))))
+                          (list unc-file unc-url-file drive-file syntax-file))
+                         (list unc-file unc-url-file drive-file))))
       (delete-file unc-file)
+      (delete-file unc-url-file)
       (delete-file drive-file)
       (delete-file syntax-file))))
+
+(ert-deftest org-museum-publish-sync-keeps-old-mirror-on-preview-build-failure ()
+  "Placeholder and status failures occur before the old mirror is installed."
+  (dolist (failure-function '(org-museum--publish-write-placeholder
+                              org-museum--publish-write-status))
+    (let* ((root (file-name-as-directory
+                  (make-temp-file "org-museum-preview-build-failure-" t)))
+           (org-museum-root-dir root)
+           (org-museum-shared-export-dir "exports/html")
+           (org-museum-publish-directory (expand-file-name "../publish" root))
+           (export-root (expand-file-name "exports/html" root))
+           (source (expand-file-name "pages/private.org" root))
+           (pages (make-hash-table :test 'equal))
+           (org-museum--index
+            (make-org-museum-index
+             :pages pages
+             :tags (make-hash-table :test 'equal)
+             :categories (make-hash-table :test 'equal)
+             :graph (make-hash-table :test 'equal))))
+      (unwind-protect
+          (progn
+            (make-directory (expand-file-name "pages" export-root) t)
+            (make-directory (expand-file-name "resources" export-root) t)
+            (make-directory (file-name-directory source) t)
+            (make-directory org-museum-publish-directory t)
+            (with-temp-file source (insert "Local C:/private/secret.txt\n"))
+            (puthash "private"
+                     (org-museum-test--page
+                      "private" "Private" 1 nil nil "published" source)
+                     pages)
+            (with-temp-file (expand-file-name "index.html" export-root)
+              (insert "NEW INDEX"))
+            (with-temp-file (expand-file-name "graph.html" export-root)
+              (insert "GRAPH"))
+            (with-temp-file (expand-file-name "pages/private.html" export-root)
+              (insert "<code>C:/private/secret.txt</code>"))
+            (with-temp-file (expand-file-name "index.html"
+                                              org-museum-publish-directory)
+              (insert "OLD INDEX"))
+            (with-temp-file
+                (expand-file-name ".org-museum-publish-manifest.json"
+                                  org-museum-publish-directory)
+              (insert "{\"schemaVersion\":1,\"files\":[\"index.html\"]}"))
+            (cl-letf (((symbol-function 'org-museum-export-all) #'ignore)
+                      ((symbol-function failure-function)
+                       (lambda (&rest _args) (error "fixture build failure"))))
+              (should-error (org-museum-publish-sync)))
+            (should (equal
+                     (org-museum-test--file-string
+                      (expand-file-name "index.html"
+                                        org-museum-publish-directory))
+                     "OLD INDEX"))
+            (should-not
+             (file-exists-p
+              (expand-file-name ".org-museum-publish-status.json"
+                                org-museum-publish-directory))))
+        (delete-directory root t)
+        (when (file-directory-p org-museum-publish-directory)
+          (delete-directory org-museum-publish-directory t))))))
 
 (ert-deftest org-museum-publish-rejects-a-linked-export-tree-root ()
   "The pages/resources roots themselves cannot redirect the source walk."

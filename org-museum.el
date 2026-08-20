@@ -341,6 +341,10 @@ nil       — No code highlighting in PDF exports."
   "One local-only privacy finding in an exported publication candidate."
   file relative source line column kind match excerpt suggestion)
 
+(cl-defstruct org-museum-publish-candidate
+  "A sanitised publication candidate ready for transactional installation."
+  files blocked state)
+
 (define-error 'org-museum-duplicate-page-id
   "Duplicate Org Museum page ID")
 (define-error 'org-museum-index-scan-failed
@@ -2400,47 +2404,56 @@ export would remove."
 (defun org-museum--publish-path-from-match (value)
   "Return a comparison-ready local path extracted from matched VALUE."
   (let ((path (or value "")))
-    (setq path (replace-regexp-in-string
-                "\\`file:/+" "" path t t))
+    (setq path
+          (if (string-match "\\`file:\\(////+\\)\\(.*\\)" path)
+              (concat "//" (match-string 2 path))
+            (replace-regexp-in-string "\\`file:/+" "" path t t)))
     (setq path (replace-regexp-in-string
                 "\\`data-local-path=\\\"\\|\\\"\\'" "" path t))
+    (dolist (entity '(("&amp;" . "&") ("&quot;" . "\"")
+                      ("&#39;" . "'") ("&lt;" . "<") ("&gt;" . ">")))
+      (setq path (replace-regexp-in-string
+                  (regexp-quote (car entity)) (cdr entity) path t t)))
     (url-unhex-string path)))
 
-(defun org-museum--publish-source-location (source matched)
-  "Locate MATCHED in SOURCE and return a source-attribution plist."
+(defun org-museum--publish-source-locations (source matched)
+  "Locate every occurrence of MATCHED in SOURCE and return attribution plists."
   (when (and source (file-regular-p source))
     (with-temp-buffer
       (insert-file-contents source)
       (let* ((case-fold-search t)
              (needle (org-museum--publish-path-from-match matched))
              (normal-needle (org-museum--normalised-path needle))
-             position kind)
-        (goto-char (point-min))
-        (when (search-forward needle nil t)
-          (setq position (match-beginning 0)
-                kind 'absolute-path))
-        (unless position
+             locations)
+        (cl-labels
+            ((record (position kind)
+               (save-excursion
+                 (goto-char position)
+                 (push (list :line (line-number-at-pos)
+                             :column (current-column)
+                             :kind kind
+                             :excerpt
+                             (string-trim
+                              (buffer-substring-no-properties
+                               (line-beginning-position) (line-end-position))))
+                       locations))))
+          ;; Prefer source file links when an absolute path is also literal
+          ;; text inside that same Org link.
           (goto-char (point-min))
-          (while (and (not position)
-                      (re-search-forward
-                       "\\[\\[file:\\([^]\n]+\\)\\]\\(?:\\[[^]]*\\]\\)?\\]"
-                       nil t))
+          (while (re-search-forward
+                  "\\[\\[file:\\([^]\n]+\\)\\]\\(?:\\[[^]]*\\]\\)?\\]"
+                  nil t)
             (let* ((parts (org-museum--file-link-parts (match-string 1)))
                    (target (url-unhex-string (car parts)))
                    (expanded (expand-file-name
                               target (file-name-directory source))))
               (when (equal normal-needle
                            (org-museum--normalised-path expanded))
-                (setq position (match-beginning 0)
-                      kind 'local-file-link)))))
-        (when position
-          (goto-char position)
-          (list :line (line-number-at-pos)
-                :column (current-column)
-                :kind kind
-                :excerpt (string-trim
-                          (buffer-substring-no-properties
-                           (line-beginning-position) (line-end-position)))))))))
+                (record (match-beginning 0) 'local-file-link))))
+          (goto-char (point-min))
+          (while (search-forward needle nil t)
+            (record (match-beginning 0) 'absolute-path)))
+        (nreverse locations)))))
 
 (defun org-museum--publish-finding-suggestion (kind)
   "Return an actionable source-edit suggestion for finding KIND."
@@ -2455,14 +2468,20 @@ export would remove."
 (defun org-museum--publish-file-privacy-matches (file)
   "Return every non-overlapping local-path match in text FILE."
   (let ((specs
-         '((file-url
-            "file:///[[:alpha:]]:[/\\\\][^<>\"'\n\r[:space:]]+" 0)
+         '((file-unc-url
+            "file:////+[^/[:space:]\"']+/[^<>\"'\n\r]+" 0)
+           (data-unc-path
+            "data-local-path=\\\"\\(//[^/[:space:]\"']+/[^\"\n\r]+\\)\\\"" 1)
+           (file-url
+            "file:///[[:alpha:]]:[/\\\\][^<>\"'\n\r]+" 0)
            (data-local-path
             "data-local-path=\\\"\\([[:alpha:]]:[^\"\n\r]+\\)\\\"" 1)
            (windows-path
             "\\(?:\\`\\|[^[:alnum:]?]\\)\\([[:alpha:]]:[/\\\\][^<>:\"/\\\\|?*\n\r][^<>\"'\n\r[:space:]]*\\)" 1)
            (unc-path
-            "\\(?:\\`\\|[^\\\\]\\)\\(\\\\\\\\[[:alnum:]][[:alnum:]._-]+\\\\[[:alnum:]][^\\\\/[:space:]\"']*\\)" 1)))
+            "\\(?:\\`\\|[^\\\\]\\)\\(\\\\\\\\[[:alnum:]][[:alnum:]._-]+\\\\[[:alnum:]][^\\\\/[:space:]\"']*\\)" 1)
+           (forward-unc-path
+            "\\(?:\\`\\|[^[:alnum:]:/]\\)\\(//[[:alnum:]][[:alnum:]._-]*/[^<>:\"|?*\n\r[:space:]]+\\)" 1)))
         candidates selected)
     (with-temp-buffer
       (insert-file-contents file)
@@ -2502,21 +2521,23 @@ export would remove."
                             (org-museum--publish-source-for-relative relative))))
           (dolist (match (org-museum--publish-file-privacy-matches file))
             (let* ((matched (plist-get match :match))
-                   (location (org-museum--publish-source-location
-                              source matched))
-                   (kind (or (plist-get location :kind) 'generated-output)))
-              (push
-               (make-org-museum-publish-finding
-                :file file
-                :relative relative
-                :source source
-                :line (plist-get location :line)
-                :column (plist-get location :column)
-                :kind kind
-                :match matched
-                :excerpt (plist-get location :excerpt)
-                :suggestion (org-museum--publish-finding-suggestion kind))
-               findings))))))
+                   (locations (org-museum--publish-source-locations
+                               source matched)))
+              (dolist (location (or locations (list nil)))
+                (let ((kind (or (plist-get location :kind)
+                                'generated-output)))
+                  (push
+                   (make-org-museum-publish-finding
+                    :file file
+                    :relative relative
+                    :source source
+                    :line (plist-get location :line)
+                    :column (plist-get location :column)
+                    :kind kind
+                    :match matched
+                    :excerpt (plist-get location :excerpt)
+                    :suggestion (org-museum--publish-finding-suggestion kind))
+                   findings))))))))
     (let ((seen (make-hash-table :test #'equal)) unique)
       (dolist (finding (nreverse findings) (nreverse unique))
         (let* ((source (org-museum-publish-finding-source finding))
@@ -2686,6 +2707,42 @@ export would remove."
                (list (format "Cannot read publish status: %s"
                              (error-message-string err))))))))
 
+(defun org-museum--publish-validate-ready-candidate (root managed-files)
+  "Revalidate READY content in ROOT named by MANAGED-FILES before deployment."
+  (let (files placeholders)
+    (dolist (relative managed-files)
+      (let ((file (expand-file-name relative root)))
+        (unless (and (file-regular-p file) (not (file-symlink-p file)))
+          (signal 'org-museum-publish-error
+                  (list (format "Managed publish file is missing or unsafe: %s"
+                                relative))))
+        (push file files)
+        (when (member (downcase (or (file-name-extension file) ""))
+                      '("html" "htm"))
+          (with-temp-buffer
+            (insert-file-contents file)
+            (goto-char (point-min))
+            (when (search-forward
+                   "name=\"org-museum-privacy-placeholder\"" nil t)
+              (push relative placeholders))))))
+    (when placeholders
+      (signal 'org-museum-publish-error
+              (list (format
+                     "Publish candidate still contains privacy placeholders: %s"
+                     (mapconcat #'identity (nreverse placeholders) ", ")))))
+    (let ((findings (org-museum--publish-privacy-findings
+                     (nreverse files) root)))
+      (when findings
+        (signal 'org-museum-publish-error
+                (list (format
+                       "Publish candidate contains local paths in: %s; rerun publish sync"
+                       (mapconcat
+                        #'identity
+                        (delete-dups
+                         (mapcar #'org-museum-publish-finding-relative findings))
+                        ", "))))))
+    t))
+
 (defun org-museum--publish-write-placeholder (file)
   "Replace staged HTML FILE with a privacy-safe preview placeholder."
   (let ((coding-system-for-write 'utf-8-unix))
@@ -2694,6 +2751,7 @@ export would remove."
        "<!doctype html>\n"
        "<html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
        "<meta name=\"robots\" content=\"noindex,nofollow\">"
+       "<meta name=\"org-museum-privacy-placeholder\" content=\"blocked\">"
        "<title>Org Museum privacy review</title></head>"
        "<body><main><h1>Org Museum privacy review</h1>"
        "<p>本页包含仅适用于本机的引用，已在发布候选中安全隐藏。</p>"
@@ -2702,7 +2760,7 @@ export would remove."
 
 (defun org-museum--publish-sanitise-staging
     (staging-root relative-files findings)
-  "Make FINDINGS safe in STAGING-ROOT and return retained RELATIVE-FILES."
+  "Make FINDINGS safe and return a named candidate for STAGING-ROOT."
   (let ((blocked (delete-dups
                   (delq nil (mapcar #'org-museum-publish-finding-relative
                                     findings))))
@@ -2715,7 +2773,10 @@ export would remove."
           (when (file-exists-p file)
             (delete-file file))
           (setq retained (delete relative retained)))))
-    (list retained (sort blocked #'string<))))
+    (make-org-museum-publish-candidate
+     :files retained
+     :blocked (sort blocked #'string<)
+     :state (if findings 'blocked 'ready))))
 
 (defun org-museum--publish-copy-to-staging (files export-root staging-root)
   "Copy public FILES from EXPORT-ROOT into STAGING-ROOT and return relatives."
@@ -2882,12 +2943,12 @@ export would remove."
                  (findings
                   (org-museum--publish-privacy-findings
                    staged-files staging-root))
-                 (sanitised
+                 (candidate
                   (org-museum--publish-sanitise-staging
                    staging-root relative-files findings))
-                 (retained (car sanitised))
-                 (blocked (cadr sanitised))
-                 (state (if findings 'blocked 'ready)))
+                 (retained (org-museum-publish-candidate-files candidate))
+                 (blocked (org-museum-publish-candidate-blocked candidate))
+                 (state (org-museum-publish-candidate-state candidate)))
             (org-museum--publish-write-status staging-root state blocked)
             (setq retained (append retained
                                    (list org-museum--publish-status-name)))
@@ -3187,6 +3248,7 @@ which defaults to (0)."
         (format
          "Publish privacy review is blocked for: %s. Rerun org-museum-publish-sync after fixing the source notes"
          (mapconcat #'identity (plist-get status :blocked-pages) ", ")))))
+    (org-museum--publish-validate-ready-candidate directory current)
     (unless (file-directory-p (expand-file-name ".git" directory))
       (org-museum--publish-run "gh" '("auth" "status"))
       (org-museum--publish-bootstrap-repository directory repository branch))

@@ -135,10 +135,11 @@ the managed `.org-museum-publish-status.json` records only `ready` or `blocked`
 and safe relative filenames.
 
 Deployment refuses a `blocked` preview before running Git or GitHub commands.
-Fix the reported source links, rerun sync, and confirm the status becomes
-`ready`; the next sync replaces every placeholder with the real page. Do not
-copy the original unsafe exports into the publish checkout or bypass the status
-file.
+It also requires a current status file and rechecks every managed candidate for
+local paths and privacy placeholders, so editing `blocked` to `ready` cannot
+bypass the gate. Fix the reported source links, rerun sync, and confirm the
+status becomes `ready`; the next sync replaces every placeholder with the real
+page. Do not copy the original unsafe exports into the publish checkout.
 
 The first ready deploy shows the public repository name and asks before creating
 it with the authenticated GitHub CLI. Later deploys refuse unexpected
