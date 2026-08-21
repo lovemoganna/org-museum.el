@@ -225,11 +225,12 @@ Recommended usage:
   :type '(repeat string)
   :group 'org-museum)
 
-(defcustom org-museum-graph-exclude-orphans t
+(defcustom org-museum-graph-exclude-orphans nil
   "When non-nil, exclude orphan nodes (degree == 0) from the global graph.
 
-Orphans are typically low-context pages that are not linked from or to any
-other page, which adds noise and dilutes meaningful clusters."
+The default is nil so every indexed page remains discoverable.  Set this to
+non-nil only when a deliberately relationship-only graph is preferred;
+individual low-value pages can instead use an explicit `:no-graph:' tag."
   :type 'boolean
   :group 'org-museum)
 
@@ -1772,6 +1773,7 @@ malformed HTML."
     (org-museum--pp-fix-exported-entities)
     (org-museum--pp-remove-inline-styles)
     (org-museum--pp-inject-hljs-language-classes)
+    (org-museum--pp-normalize-plain-results)
     (org-museum--pp-inject-page-attributes org-file out-file)
     (org-museum--pp-annotate-local-file-links)
     (org-museum--pp-stabilize-heading-anchors org-file)
@@ -1851,6 +1853,31 @@ its semicolon.  Keep the workaround local to exported HTML."
           (when (re-search-forward "</table>" nil t)
             (insert "</section>")))))))
 
+(defun org-museum--pp-normalize-plain-results ()
+  "Preserve line breaks in plain Org results blocks.
+Only single-paragraph results are rewritten.  Rich results such as exported
+tables retain their native markup."
+  (goto-char (point-min))
+  (let ((case-fold-search t)
+        (pattern
+         (concat
+          "\\(<div class=\\\"results\\\"[^>]*>\\)"
+          "[[:space:]]*<p>[[:space:]]*"
+          "\\([^<]*\\)"
+          "[[:space:]]*</p>[[:space:]]*</div>")))
+    (while (re-search-forward pattern nil t)
+      (let ((begin (match-beginning 0))
+            (end (match-end 0))
+            (opening-tag (match-string-no-properties 1))
+            (result-text (string-trim (match-string-no-properties 2))))
+        (delete-region begin end)
+        (goto-char begin)
+        (insert opening-tag
+                "<pre class=\"org-museum-results\" tabindex=\"0\" "
+                "aria-label=\"代码运行结果\"><code>"
+                result-text
+                "</code></pre></div>")))))
+
 (defun org-museum--page-for-file (org-file)
   "Return the indexed page matching ORG-FILE."
   (when org-museum--index
@@ -1923,36 +1950,53 @@ its semicolon.  Keep the workaround local to exported HTML."
       (org-museum--category-label (org-museum-page-category page)))
      (if (string= status "draft") " · 草稿" ""))))
 
+(defun org-museum--pp-find-body-tag ()
+  "Move point after the real body start tag and return non-nil.
+Start after </head> when present so body-like text inside exporter comments or
+scripts in the document head cannot be mistaken for the page body."
+  (goto-char (point-min))
+  (let ((body-search-start
+         (if (re-search-forward "</head[[:space:]]*>" nil t)
+             (point)
+           (point-min))))
+    (goto-char body-search-start)
+    (re-search-forward "<body\\([[:space:]][^>]*\\)?>" nil t)))
+
 (defun org-museum--pp-inject-page-attributes (org-file &optional out-file)
   "Add stable page metadata attributes to the current HTML buffer."
   (when-let ((page (org-museum--page-for-file org-file)))
-    (goto-char (point-min))
-    (when (re-search-forward "<body\\([^>]*\\)>" nil t)
-      (let ((existing (match-string 1)))
-        (replace-match
-         (format
-          (concat "<body%s class=\"org-museum-page\" data-page-kind=\"article\" "
-                  "data-page-id=\"%s\" data-page-title=\"%s\" "
-                  "data-page-category=\"%s\" data-page-tags=\"%s\" "
-                  "data-page-status=\"%s\" data-page-modified=\"%s\" "
-                  "data-hljs-css=\"%s\" data-hljs-js=\"%s\" "
-                  "data-hljs-lisp=\"%s\">")
-          existing
-          (org-museum--html-escape (org-museum-page-id page) t)
-          (org-museum--html-escape (org-museum-page-title page) t)
-          (org-museum--html-escape (org-museum-page-category page) t)
-          (org-museum--html-escape
-           (mapconcat #'identity (org-museum-page-tags page) ",") t)
-          (org-museum--html-escape
-           (downcase (or (org-museum-page-status page) "published")) t)
-          (org-museum--format-page-date page)
-          (org-museum--html-escape
-           (or (and out-file (org-museum--hljs-css-src out-file)) "") t)
-          (org-museum--html-escape
-           (or (and out-file (org-museum--hljs-js-src out-file)) "") t)
-          (org-museum--html-escape
-           (or (and out-file (org-museum--hljs-lisp-js-src out-file)) "") t))
-         t t)))))
+    (when (org-museum--pp-find-body-tag)
+      ;; Capture the target before metadata/resource helpers run: some of them
+      ;; legitimately use regexp matching and therefore replace match-data.
+      (let* ((tag-begin (match-beginning 0))
+             (tag-end (match-end 0))
+             (existing (or (match-string-no-properties 1) ""))
+             (replacement
+              (format
+               (concat "<body%s class=\"org-museum-page\" data-page-kind=\"article\" "
+                       "data-page-id=\"%s\" data-page-title=\"%s\" "
+                       "data-page-category=\"%s\" data-page-tags=\"%s\" "
+                       "data-page-status=\"%s\" data-page-modified=\"%s\" "
+                       "data-hljs-css=\"%s\" data-hljs-js=\"%s\" "
+                       "data-hljs-lisp=\"%s\">")
+               existing
+               (org-museum--html-escape (org-museum-page-id page) t)
+               (org-museum--html-escape (org-museum-page-title page) t)
+               (org-museum--html-escape (org-museum-page-category page) t)
+               (org-museum--html-escape
+                (mapconcat #'identity (org-museum-page-tags page) ",") t)
+               (org-museum--html-escape
+                (downcase (or (org-museum-page-status page) "published")) t)
+               (org-museum--format-page-date page)
+               (org-museum--html-escape
+                (or (and out-file (org-museum--hljs-css-src out-file)) "") t)
+               (org-museum--html-escape
+                (or (and out-file (org-museum--hljs-js-src out-file)) "") t)
+               (org-museum--html-escape
+                (or (and out-file (org-museum--hljs-lisp-js-src out-file)) "") t))))
+        (delete-region tag-begin tag-end)
+        (goto-char tag-begin)
+        (insert replacement)))))
 
 (defun org-museum--pp-remove-inline-styles ()
   "Conditionally strip <style>…</style> blocks from current buffer.
@@ -2142,8 +2186,7 @@ check org-export output for this file" out-file)
 
 (defun org-museum--pp-inject-sidebars-and-scripts (out-file)
   "Inject sidebar, TOC, and script HTML before </body>."
-  (goto-char (point-min))
-  (when (re-search-forward "<body[^>]*>" nil t)
+  (when (org-museum--pp-find-body-tag)
     (insert "\n" (org-museum--build-topbar out-file 'article)))
   (goto-char (point-max))
   (when (re-search-backward "</body>" nil t)
@@ -6558,6 +6601,8 @@ var simulation=null;
 var frozen=false;
 var graphReady=false;
 var isZeroLinkGraph=links.length===0;
+var isolatedNodes=nodes.filter(function(node){return (node.degree||0)===0;});
+var hasIsolatedNodes=isolatedNodes.length>0;
 var charge=Number(meta.charge);
 var alphaDecay=Number(meta['alpha-decay']);
 var tickLimit=meta['tick-limit']===false?0:Number(meta['tick-limit']);
@@ -6587,7 +6632,7 @@ document.getElementById('stat-links').textContent=count(links.length);
 document.getElementById('stat-cats').textContent=count(cats.length);
 document.getElementById('graph-heading-count').textContent='/ '+count(nodes.length);
 if(zeroNotice)zeroNotice.hidden=!isZeroLinkGraph;
-if(isolatedFallback)isolatedFallback.hidden=!isZeroLinkGraph;
+if(isolatedFallback)isolatedFallback.hidden=!hasIsolatedNodes;
 if(canvas)canvas.hidden=false;
 document.body.classList.toggle('graph-zero-mode',isZeroLinkGraph);
 var viewControls=document.querySelector('.graph-view-controls');
@@ -6638,8 +6683,8 @@ function copyWikiLink(value,button){
 }
 function renderFallbackList(){
   var listRoot=document.getElementById('graph-isolated-list');
-  var visible=visibleNodes();
-  updateMatchStatus(visible);
+  var candidates=(isZeroLinkGraph||typeof d3==='undefined')?nodes:isolatedNodes;
+  var visible=candidates.filter(matches);
   if(listRoot){
     listRoot.textContent='';
     visible.forEach(function(node){
@@ -6673,7 +6718,7 @@ function setCategory(value){
   state.category=value||'*';syncGraphCategoryControls();
   writeGraphUrl('push');
   if(graphReady)applyFilter();
-  if(isZeroLinkGraph||!graphReady)renderFallbackList();
+  if(hasIsolatedNodes||!graphReady)renderFallbackList();
 }
 function renderFilters(){
   var root=document.getElementById('graph-category-filters');
@@ -6746,6 +6791,7 @@ function clearSelection(){
 if(clearSelectionButton)clearSelectionButton.addEventListener('click',clearSelection);
 
 renderFilters();renderLegend();
+if(hasIsolatedNodes)renderFallbackList();
 document.addEventListener('keydown',function(event){
   if(event.key==='Escape'&&state.selectedId){clearSelection();return;}
   if(event.key==='/'&&!event.metaKey&&!event.ctrlKey&&!event.altKey&&
@@ -6783,7 +6829,8 @@ var zoom=d3.zoom().scaleExtent([0.35,5]).on('zoom',function(event){
   zoomScale=event.transform.k;
   layer.attr('transform',event.transform);
   layer.classed('graph-labels-dense',event.transform.k>=0.9);
-  if(nodeSelection)nodeSelection.select('.graph-node-hit-target').attr('r',16/zoomScale);
+  // [UI-03] Keep graph-node pointer targets at least as large as the 44px UI baseline.
+  if(nodeSelection)nodeSelection.select('.graph-node-hit-target').attr('r',23/zoomScale);
 });
 svg.call(zoom);
 function zoomBy(factor){
@@ -6797,6 +6844,7 @@ var linkSelection=layer.append('g').attr('class','graph-links')
   .selectAll('line').data(links).enter().append('line');
 var nodeSelection=layer.append('g').attr('class','graph-nodes')
   .selectAll('g').data(nodes).enter().append('g')
+  .classed('is-isolated',function(node){return (node.degree||0)===0;})
   .attr('tabindex',0).attr('role','link')
   .attr('aria-label',function(node){
     return (node.name||'未命名')+'，'+(node.group||'未分类')+'，'+
@@ -6804,9 +6852,10 @@ var nodeSelection=layer.append('g').attr('class','graph-nodes')
       '，Space 选择，Enter 打开笔记';
   });
 graphReady=true;
+// [UI-03] A 23px radius survives SVG scaling while preserving a 44px touch target.
 nodeSelection.append('circle')
   .attr('class','graph-node-hit-target')
-  .attr('r',16);
+  .attr('r',23);
 nodeSelection.append('circle')
   .attr('class',function(node){return 'graph-node-dot'+(node.status==='draft'?' is-draft':'');})
   .attr('r',function(node){return 6+Math.min(8,Math.sqrt(node.degree||0)*2);})
@@ -6975,14 +7024,14 @@ else if(motionQuery.addListener)motionQuery.addListener(syncMotionPreference);
 if(search)search.addEventListener('input',function(){
   state.query=search.value.trim().toLowerCase();applyFilter();
   writeGraphUrl();
-  if(isZeroLinkGraph)renderFallbackList();
+  if(hasIsolatedNodes)renderFallbackList();
 });
 window.addEventListener('popstate',function(){
   var params=new URLSearchParams(location.search);
   state.query=(params.get('q')||'').trim().toLowerCase();
   state.category=params.get('category')||'*';
   if(search)search.value=state.query;syncGraphCategoryControls();applyFilter();
-  if(isZeroLinkGraph)renderFallbackList();
+  if(hasIsolatedNodes)renderFallbackList();
 });
 applyFilter();
 var initialSelectedNode=nodes.find(function(node){return node.id===state.selectedId;});

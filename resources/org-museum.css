@@ -1230,6 +1230,30 @@ pre.org-museum-code-block {
   white-space: pre;
 }
 
+.results {
+  max-width: 100%;
+}
+
+pre.org-museum-results {
+  max-width: 100%;
+  margin: 18px 0 22px;
+  padding: 14px 16px;
+  overflow: auto;
+  overscroll-behavior-inline: contain;
+  border: 0;
+  border-left: 2px solid var(--mono-green);
+  border-radius: 0;
+  background: var(--mono-deep);
+  color: var(--text-main);
+  font: 400 11px/1.7 var(--font-code);
+  white-space: pre;
+}
+
+pre.org-museum-results:focus-visible {
+  outline: 2px solid var(--mono-cyan);
+  outline-offset: 2px;
+}
+
 .org-museum-code {
   font: inherit;
 }
@@ -1695,7 +1719,10 @@ pre.org-museum-code-block.org-museum-code-expanded {
 }
 
 .museum-graph-rail {
+  /* [UI-01] Keep controls reachable when the fixed-height graph viewport is short. */
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
   padding-right: 42px;
   border-right: 1px solid var(--rule);
 }
@@ -1783,6 +1810,19 @@ pre.org-museum-code-block.org-museum-code-expanded {
   cursor: pointer;
 }
 
+/* [UI-02] Mirror the existing disabled-control precedent without lowering contrast. */
+.graph-view-controls button:disabled {
+  border-bottom: 1px dashed var(--mono-orange);
+  color: var(--text-main);
+  cursor: not-allowed;
+}
+
+/* [UI-04] Reuse the existing topbar control cue for enabled graph actions. */
+.graph-view-controls button:not(:disabled):hover,
+.graph-view-controls button:not(:disabled):focus-visible {
+  color: var(--mono-blue);
+}
+
 .graph-view-controls small {
   margin-top: 8px;
   color: var(--text-muted);
@@ -1844,6 +1884,19 @@ pre.org-museum-code-block.org-museum-code-expanded {
   stroke: var(--mono-orange);
   stroke-dasharray: 2 2;
   fill-opacity: 0.72;
+}
+
+.graph-nodes g.is-isolated .graph-node-dot:not(.is-selected) {
+  fill: var(--mono-deep) !important;
+  stroke: var(--text-muted);
+  stroke-dasharray: 2 2;
+  fill-opacity: 0.9;
+}
+
+/* [UI-03] Put keyboard focus on the visible node, not only its SVG group box. */
+.graph-nodes g:focus-visible .graph-node-dot:not(.is-selected) {
+  stroke: var(--mono-blue);
+  stroke-width: 3px;
 }
 
 .graph-nodes circle.is-selected {
@@ -2460,6 +2513,8 @@ body.zen-mode .article-container {
   }
 
   .museum-graph-rail {
+    /* [UI-01] The mobile shell owns scrolling, so avoid a nested rail scroller. */
+    overflow-y: visible;
     padding: 0 0 24px;
     border-right: 0;
     border-bottom: 1px solid var(--rule);

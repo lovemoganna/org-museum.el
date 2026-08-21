@@ -1438,6 +1438,75 @@
                html))
       (should (= (org-museum-test--count-occurrences "</section>" html) 2)))))
 
+(ert-deftest org-museum-postprocess-targets-the-real-body-tag ()
+  "Metadata and chrome must not be injected into an exporter comment."
+  (let* ((page (org-museum-test--page
+                "article" "Article" 1 "Sql" '("duckdb") "draft"
+                "c:/fixture/article.org"))
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (puthash (org-museum-page-id page) page pages)
+    (with-temp-buffer
+      (insert "<html><head><!-- generated <body data-decoy=\"yes\"> at 11:20 --></head>"
+              "<body><div id=\"content\"></div></body></html>")
+      (cl-letf (((symbol-function 'file-equal-p)
+                 (lambda (a b) (equal a b)))
+                ((symbol-function 'org-museum--format-page-date)
+                 (lambda (_page)
+                   ;; Reproduce the match-data clobbering that used to move
+                   ;; the replacement into Org's export timestamp comment.
+                   (string-match "20" "11:20")
+                   "2026-08-21"))
+                ((symbol-function 'org-museum--hljs-css-src)
+                 (lambda (_out-file) "resources/highlight.css"))
+                ((symbol-function 'org-museum--hljs-js-src)
+                 (lambda (_out-file) "resources/highlight.js"))
+                ((symbol-function 'org-museum--hljs-lisp-js-src)
+                 (lambda (_out-file) "resources/highlight-lisp.js"))
+                ((symbol-function 'org-museum--build-topbar)
+                 (lambda (&rest _args) "<header id=\"real-topbar\"></header>"))
+                ((symbol-function 'org-museum--build-sidebar-injection)
+                 (lambda (&rest _args) "")))
+        (org-museum--pp-inject-page-attributes
+         "c:/fixture/article.org" "article.html")
+        (org-museum--pp-inject-sidebars-and-scripts "article.html"))
+      (let ((html (buffer-string)))
+        (should (string-search
+                 "<!-- generated <body data-decoy=\"yes\"> at 11:20 -->" html))
+        (should (string-search
+                 "<body class=\"org-museum-page\"" html))
+        (should (string-search
+                 "data-hljs-js=\"resources/highlight.js\"" html))
+        (should (< (string-match "</head>" html)
+                   (string-match "<header id=\"real-topbar\"" html)))))))
+
+(ert-deftest org-museum-postprocess-preserves-plain-result-lines ()
+  "Plain #+begin_results output remains readable line by line."
+  (with-temp-buffer
+    (insert "<div class=\"results\" id=\"result-1\">\n"
+            "<p>\nid,asset,amount\n1,BTC,1000\n2,ETH,2000\n</p>\n"
+            "</div>\n"
+            "<div class=\"results\"><table><tr><td>rich</td></tr></table></div>")
+    (org-museum--pp-normalize-plain-results)
+    (let ((html (buffer-string)))
+      (should (string-search
+               (concat "<pre class=\"org-museum-results\" tabindex=\"0\" "
+                       "aria-label=\"代码运行结果\"><code>"
+                       "id,asset,amount\n1,BTC,1000\n2,ETH,2000"
+                       "</code></pre>")
+               html))
+      (should (string-search
+               "<div class=\"results\"><table><tr><td>rich</td>" html))))
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    (should (search-forward ".org-museum-results" nil t))))
+
 (ert-deftest org-museum-css-deployment-prefers-content-over-mtime ()
   (let* ((root (file-name-as-directory
                 (make-temp-file "org-museum-css-content-test-" t)))
@@ -1805,7 +1874,8 @@
                 "{\"nodes\":[],\"links\":[],\"meta\":{}}"
                 "resources/org-museum.css" "resources/d3.v7.min.js")))
     (should (string-match-p "graph-node-hit-target" graph))
-    (should (string-match-p (regexp-quote ".attr('r',16)") graph))
+    ;; [UI-03] Graph nodes use the existing 44px touch-target baseline.
+    (should (string-match-p (regexp-quote ".attr('r',23)") graph))
     (should (string-match-p "node\.labelWidth" graph))
     (should (string-match-p "Math\.max(minX,Math\.min(maxX,node\.x))" graph))
     (should (string-match-p (regexp-quote ".attr('aria-label'") graph))
@@ -1816,8 +1886,27 @@
              (regexp-quote
               "layoutTicks=reduceMotion?Math.max(preTicks,160):preTicks")
              graph))
-    (should (string-match-p (regexp-quote "16/zoomScale") graph))
-    (should (string-match-p "selectedDetail\.hidden=true" graph))))
+    (should (string-match-p (regexp-quote "23/zoomScale") graph))
+    (should (string-match-p "selectedDetail\.hidden=true" graph)))
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    ;; [UI-01] Short desktop viewports keep every rail control reachable.
+    (should (re-search-forward
+             "\\.museum-graph-rail[[:space:]\n]*{[^}]*overflow-y: auto;"
+             nil t))
+    ;; [UI-02] Reduced-motion disabling has a visible non-interactive state.
+    (should (re-search-forward
+             "\\.graph-view-controls button:disabled[[:space:]\n]*{[^}]*cursor: not-allowed;"
+             nil t))
+    ;; [UI-04] Enabled graph controls expose the shared blue hover/focus cue.
+    (should (re-search-forward
+             "\\.graph-view-controls button:not(:disabled):hover,[[:space:]\n]*\\.graph-view-controls button:not(:disabled):focus-visible[[:space:]\n]*{[^}]*color: var(--mono-blue);"
+             nil t))
+    ;; [UI-03] Keyboard focus is drawn on the visible graph-node dot.
+    (should (re-search-forward
+             "\\.graph-nodes g:focus-visible \\.graph-node-dot"
+             nil t))))
 
 (ert-deftest org-museum-graph-reflows-after-viewport-changes ()
   (let ((graph (org-museum--build-graph-html
@@ -2539,6 +2628,47 @@
       (should (equal '(1 1)
                      (sort (mapcar (lambda (node) (alist-get 'degree node)) nodes)
                            #'<))))))
+
+(ert-deftest org-museum-graph-keeps-isolated-pages-beside-linked-clusters ()
+  "An isolated page remains discoverable when other pages form a cluster."
+  (should-not (default-value 'org-museum-graph-exclude-orphans))
+  (let* ((pages (make-hash-table :test 'equal))
+         (alpha (org-museum-test--page "alpha" "Alpha" 100))
+         (beta (org-museum-test--page "beta" "Beta" 90))
+         (orphan (org-museum-test--page "orphan" "Orphan" 80))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (setf (org-museum-page-links-to alpha) '("beta")
+          (org-museum-page-linked-from beta) '("alpha"))
+    (puthash "alpha" alpha pages)
+    (puthash "beta" beta pages)
+    (puthash "orphan" orphan pages)
+    (let* ((json-array-type 'list)
+           (json-object-type 'alist)
+           (data (json-read-from-string (org-museum--generate-graph-json)))
+           (nodes (alist-get 'nodes data))
+           (orphan-node
+            (seq-find (lambda (node)
+                        (equal (alist-get 'id node) "orphan"))
+                      nodes)))
+      (should (= 3 (length nodes)))
+      (should orphan-node)
+      (should (= 0 (alist-get 'degree orphan-node))))
+    ;; A relationship-only view remains an explicit, reversible choice.
+    (let* ((org-museum-graph-exclude-orphans t)
+           (json-array-type 'list)
+           (json-object-type 'alist)
+           (data (json-read-from-string (org-museum--generate-graph-json)))
+           (nodes (alist-get 'nodes data)))
+      (should (= 2 (length nodes)))
+      (should-not
+       (seq-find (lambda (node)
+                   (equal (alist-get 'id node) "orphan"))
+                 nodes)))))
 
 (ert-deftest org-museum-graph-opens-an-article-on-the-first-click ()
   "A mouse click has the same direct-navigation result as Enter."
