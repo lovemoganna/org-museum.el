@@ -3829,7 +3829,15 @@ which defaults to (0)."
          status raw-output log-output)
     (unwind-protect
         (progn
-          (setq status (apply #'process-file program nil process-buffer t arguments))
+          ;; Git and GitHub CLI emit UTF-8 paths.  On Windows, leaving process
+          ;; decoding implicit can preserve those bytes as a unibyte string,
+          ;; so managed Chinese paths no longer compare equal to JSON paths.
+          ;; Command-line arguments, however, must use the Windows locale so
+          ;; the same paths can be passed back to Git for staging.
+          (let ((coding-system-for-read 'utf-8)
+                (coding-system-for-write locale-coding-system))
+            (setq status
+                  (apply #'process-file program nil process-buffer t arguments)))
           (with-current-buffer process-buffer
             (setq raw-output (buffer-string)
                   log-output

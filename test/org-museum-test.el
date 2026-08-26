@@ -4396,6 +4396,29 @@
     (should (equal (org-museum--publish-git-status-paths)
                    '("pages/old.html" "pages/new.html")))))
 
+(ert-deftest org-museum-publish-git-status-decodes-unicode-paths ()
+  "Real Git porcelain output preserves UTF-8 managed relative paths."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-unicode-git-" t)))
+         (org-museum-publish-directory root)
+         (relative "pages/学习.html")
+         (file (expand-file-name relative root)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory file) t)
+          (org-museum--publish-run "git" '("init" "-b" "main"))
+          (with-temp-file file (insert "published"))
+          (should (member relative
+                          (org-museum--publish-git-status-paths)))
+          (org-museum--publish-run "git" (list "add" "--" relative))
+          (should (member
+                   relative
+                   (split-string
+                    (cdr (org-museum--publish-run
+                          "git" '("diff" "--cached" "--name-only" "-z")))
+                    "\0" t))))
+      (delete-directory root t))))
+
 (ert-deftest org-museum-publish-command-output-redacts-url-credentials ()
   "Persistent publish logs never retain URL userinfo or GitHub tokens."
   (let ((redacted
