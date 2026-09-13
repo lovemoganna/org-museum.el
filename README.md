@@ -1,6 +1,7 @@
 # org-museum.el
 
-A MECE-refactored static wiki generator based on Org Mode, featuring a Monokai theme, D3.js graph visualization, and Zen writing mode.
+A static Org reading system with a unified bookshelf shell, warm-paper article
+pages, explicit relationship reading, a D3.js knowledge graph, and Zen mode.
 
 **Version:** 2.4.2
 
@@ -162,7 +163,7 @@ copied into the publish checkout:
 ```json
 {
   "schemaVersion": 1,
-  "include": ["index.html", "graph.html", "pages/**", "resources/**"],
+  "include": ["index.html", "timeline.html", "graph.html", "related.html", "pages/**", "resources/**"],
   "exclude": ["pages/private/**"],
   "authorizations": [],
   "detectors": [
@@ -265,10 +266,10 @@ the Org source automatically.
 
 The wiki includes an interactive D3.js graph (`graph.html`) showing:
 
-- All pages as nodes
-- Links between pages as edges
-- Color-coded by category tags
-- Click to navigate between pages
+- Explicit Org links as directed relationships in a stable reading canvas
+- Category-coloured nodes with click/Space selection and double-click/Enter opening
+- A persistent note inspector for summaries, dates, status, backlinks, and next actions
+- A separate **待连接** triage view for isolated notes, grouped by topic
 
 The main index (`index.html`) includes a small local graph for each page's immediate neighbors.
 
@@ -387,8 +388,125 @@ A subtle reading progress indicator appears at the bottom of each page.
 ### Graph Navigation
 
 - Press `g` to open the full-site graph view
-- Click nodes to navigate
-- Hover for tooltip information
+- Click or press Space to select a node; double-click or press Enter to open it
+- Hover only shows a lightweight tooltip and does not change the URL or selection
+- Use the persistent reading panel for summary, dates, tags, incoming/outgoing
+  relationships, previous/next navigation, related reading, and timeline context
+- Isolated notes stay in the folded **待连接笔记** area by default instead of
+  occupying the relationship canvas
+
+The graph preserves the direction of every explicit Org link. Unlabelled links
+appear as `显式链接`. To label an existing outgoing link, add repeatable metadata
+to the source page:
+
+```org
+#+MUSEUM_RELATION: target-page-id | 启发影响
+```
+
+This metadata never creates a relationship by itself. Its target must also be
+present in an explicit outgoing Org link on the same page; otherwise it is
+ignored and listed by the index health diagnostics. The first valid value wins
+when labels are repeated or conflict. Reciprocal links with the same label are
+shown as one bidirectional edge, while differently labelled reciprocal links
+remain two offset directed arcs.
+
+Search, category, and explicit focus are bookmarkable:
+
+```text
+graph.html?q=ontology&category=Ontology&focus=page-id&view=triage
+```
+
+Search updates the current history entry; category and node selection create
+history entries so Back and Forward restore the filters, reading panel, and
+relationship emphasis. `view` accepts `relations` (default) or `triage`; invalid
+values fall back to relationship reading. The graph remains fully local and works from
+`file:///`.
+
+### Timeline Reading
+
+`timeline.html` arranges every indexed note by its first valid `#+DATE`. When a
+date is missing or invalid, the file modification time is used and reported by
+the index health diagnostics. Creation nodes are shown by default; focusing or
+selecting a note reveals its modification point, interval, metadata, summary,
+tags, publication state, and explicit incoming or outgoing Org links. The
+desktop keeps a stable full-range axis and opens details beside the selected
+node, while unrelated nodes and relations recede without changing position.
+
+The view is bookmarkable and works from `file:///` without a server:
+
+```text
+timeline.html?q=ontology&category=Ontology&status=published&focus=page-id
+```
+
+Below 820px the horizontal chart becomes a month- and date-grouped vertical
+time stream. Filters open in a bottom sheet, selected details stay beside their
+note, and previous/next controls support continuous reading. Generate only this
+page when needed with `M-x org-museum-export-timeline`.
+
+### Relationship Reading
+
+`related.html` lists every explicit Org link in the generated index. Open a
+pair with stable, bookmarkable parameters:
+
+```text
+related.html?source=source-id&target=target-id&mode=summary
+related.html?source=source-id&target=target-id&mode=full
+```
+
+Summary mode uses only source material: `DESCRIPTION`, or the first readable
+paragraph, up to six first-level exported sections, and two excerpt
+paragraphs. Full mode embeds cleaned exported article content and preserves
+tables, code, images, anchors, and internal links. No network request, AI
+summary, or `fetch` call is used. Missing or invalid IDs return to the relation
+index with an understandable empty state.
+
+Generate only the relationship center when needed:
+
+```elisp
+M-x org-museum-export-related-reading
+```
+
+## Safe Local Curation
+
+Static exports remain read-only. On `file:` and localhost pages, the graph's
+**待连接** queue can hand a short relationship request back to Emacs. Public
+exports hide the action and contain no loopback token or API route.
+
+The default review path is `org-protocol`:
+
+```elisp
+(setq org-museum-curation-mode 'protocol)
+```
+
+Use `M-x org-museum-curation-protocol-install-command` to copy, but not run, a
+Windows registration command for `C:\v\Emacs\bin\emacs.exe`. The command does
+not inspect or overwrite an existing handler; check the registry value first.
+`org-museum-curation-protocol-uninstall-command` likewise only copies an
+uninstall command.
+
+For an explicitly authenticated local session:
+
+```elisp
+(setq org-museum-curation-mode 'loopback)
+(setq org-museum-curation-port 0) ; random free localhost port
+(setq org-museum-curation-backup-directory
+      "D:/backups/org-museum-curation/") ; outside the Wiki root
+M-x org-museum-curation-server-start
+```
+
+The loopback server binds only to `127.0.0.1`, moves its 256-bit session token
+from the URL fragment into session storage, and exposes only versioned
+`session`, `page`, `preview`, and `apply` operations. Every write requires a
+fresh SHA-256, a short-lived preview transaction, an explicit second apply,
+and a persistent backup. Identity or path changes require another confirmation.
+Unknown fields, requests over 64KB, unsaved buffers, stale files, unknown IDs,
+unsafe tags, path escape, symlinks, reserved names, and collisions are rejected.
+Stop and invalidate the session with `M-x org-museum-curation-server-stop`.
+
+Supported changes are title, `WIKI_ID`, category, publication status, created
+date, description, tags, a relative `.org` path under `pages/`, and controlled
+relations. Browser-created links live in a marked **Related Notes** section;
+prose links outside that section remain manual edits.
 
 ## Build Pipeline
 
@@ -400,14 +518,16 @@ A subtle reading progress indicator appears at the bottom of each page.
 4. **Link Processing** — Resolve internal links and fix asset paths
 5. **Generate Index** — Create `index.html` with all pages
 6. **Generate Graph** — Create `graph.html` with D3 visualization
-7. **Copy Assets** — Copy CSS, JS resources to export directory
+7. **Generate Relationships** — Create `related.html` and its versioned local data
+8. **Generate Timeline** — Create `timeline.html` and its versioned local runtime
+9. **Copy Assets** — Copy CSS, JS, fonts, and icon resources to the export directory
 
 ### Test and Export Commands
 
 From the canonical checkout, run the complete ERT suite with Emacs 30.2:
 
 ```powershell
-& "C:\Program Files\Emacs\emacs-30.2\bin\emacs.exe" -Q --batch `
+& "C:\path\to\emacs-30.2\bin\emacs.exe" -Q --batch `
   -L . -L test -l test/org-museum-test.el -f ert-run-tests-batch-and-exit
 ```
 
