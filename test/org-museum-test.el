@@ -196,6 +196,7 @@
                 (insert-file-contents css-path)
                 (buffer-string))))
     (dolist (name '("NotoSansCJKsc-VF-v2.004.woff2"
+                    "NotoSerifCJKsc-VF.woff2"
                     "VictorMono-Roman-v1.564.woff2"
                     "VictorMono-Italic-v1.564.woff2"
                     "OFL-Noto-Sans-CJK.txt"
@@ -205,8 +206,13 @@
                (expand-file-name (concat "resources/fonts/" name)
                                  org-museum-test--repo-root))))
     (dolist (variable '("--font-reading" "--font-ui"
-                        "--font-code" "--font-technical"))
+                        "--font-code" "--font-technical" "--font-display"))
       (should (string-search variable css)))
+    (dolist (icon '("book-open.svg" "file-text.svg" "graph.svg"
+                    "magnifying-glass.svg" "moon.svg" "sun.svg" "LICENSE"))
+      (should (file-regular-p
+               (expand-file-name (concat "resources/icons/" icon)
+                                 org-museum-test--repo-root))))
     (should (string-search ".org-museum-code {\n  font: inherit;" css))
     (should-not (string-search "JetBrains Mono" css))
     (should-not (string-search "Cascadia Code" css))))
@@ -221,7 +227,8 @@
     (should (string-search "page._searchText=" script))
     (should (string-search "page.description" script))
     (should (string-search "className='resume-remove'" script))
-    (should (string-search "objectStore('readingState').delete(record.pageId)" script))))
+    (should (string-search "objectStore('readingState').delete(record.pageId)" script))
+    (should (string-search "if(!remaining)renderResume([])" script))))
 
 (ert-deftest org-museum-cross-buffer-saves-persist-one-index-batch ()
   (let* ((org-museum-root-dir temporary-file-directory)
@@ -370,7 +377,7 @@
           (should-not (file-exists-p file))
           (should (= 0 (hash-table-count
                         (org-museum-index-pages org-museum--index)))))
-      (when-let ((buffer (get-file-buffer file)))
+      (when-let* ((buffer (get-file-buffer file)))
         (with-current-buffer buffer
           (set-buffer-modified-p nil))
         (kill-buffer buffer))
@@ -393,7 +400,7 @@
           (should-not (file-exists-p file))
           (should (= 0 (hash-table-count
                         (org-museum-index-pages org-museum--index)))))
-      (when-let ((buffer (get-file-buffer file)))
+      (when-let* ((buffer (get-file-buffer file)))
         (with-current-buffer buffer
           (set-buffer-modified-p nil))
         (kill-buffer buffer))
@@ -465,7 +472,7 @@
           (should (eq org-museum--index original-index))
           (should (= 0 (hash-table-count
                         (org-museum-index-pages org-museum--index)))))
-      (when-let ((buffer (get-file-buffer file)))
+      (when-let* ((buffer (get-file-buffer file)))
         (with-current-buffer buffer
           (set-buffer-modified-p nil))
         (kill-buffer buffer))
@@ -1875,18 +1882,29 @@
                 "resources/org-museum.css" "resources/d3.v7.min.js")))
     (should (string-match-p "graph-node-hit-target" graph))
     ;; [UI-03] Graph nodes use the existing 44px touch-target baseline.
-    (should (string-match-p (regexp-quote ".attr('r',23)") graph))
+    (should (string-match-p (regexp-quote ".attr('r',26)") graph))
     (should (string-match-p "node\.labelWidth" graph))
+    (should (string-match-p (regexp-quote "var limit=width<600?12:22;") graph))
     (should (string-match-p "Math\.max(minX,Math\.min(maxX,node\.x))" graph))
     (should (string-match-p (regexp-quote ".attr('aria-label'") graph))
     (should (string-match-p "event\.key===' '" graph))
     (should (string-match-p "prefers-reduced-motion: reduce" graph))
-    (should (string-match-p "if(!reduceMotion)simulation\.on" graph))
+    (should (string-match-p
+             (regexp-quote "var layoutTicks=Math.max(preTicks,180)")
+             graph))
+    (should (string-match-p
+             (regexp-quote "simulation.stop();frozen=true")
+             graph))
     (should (string-match-p
              (regexp-quote
-              "layoutTicks=reduceMotion?Math.max(preTicks,160):preTicks")
+              "catch(_dragError){canvas.classList.add('graph-drag-unavailable');}")
              graph))
-    (should (string-match-p (regexp-quote "23/zoomScale") graph))
+    (should (string-match-p
+             (regexp-quote
+              "catch(_resizeObserverError){window.addEventListener('resize',syncGraphViewport);}")
+             graph))
+    (should-not (string-match-p "simulation\.on('tick'" graph))
+    (should (string-match-p (regexp-quote "26/zoomScale") graph))
     (should (string-match-p "selectedDetail\.hidden=true" graph)))
   (with-temp-buffer
     (insert-file-contents
@@ -1899,27 +1917,44 @@
     (should (re-search-forward
              "\\.graph-view-controls button:disabled[[:space:]\n]*{[^}]*cursor: not-allowed;"
              nil t))
-    ;; [UI-04] Enabled graph controls expose the shared blue hover/focus cue.
+    ;; [UI-04] Enabled graph controls expose the shared primary hover/focus cue.
     (should (re-search-forward
-             "\\.graph-view-controls button:not(:disabled):hover,[[:space:]\n]*\\.graph-view-controls button:not(:disabled):focus-visible[[:space:]\n]*{[^}]*color: var(--mono-blue);"
+             "\\.graph-view-controls button:not(:disabled):hover,[[:space:]\n]*\\.graph-view-controls button:not(:disabled):focus-visible[[:space:]\n]*{[^}]*color: var(--museum-accent);"
              nil t))
     ;; [UI-03] Keyboard focus is drawn on the visible graph-node dot.
     (should (re-search-forward
              "\\.graph-nodes g:focus-visible \\.graph-node-dot"
+             nil t))
+    (goto-char (point-min))
+    (should (re-search-forward
+             "\\.graph-page \\.graph-view-controls button[^{]*{[^}]*min-height: 44px;"
+             nil t))
+    (goto-char (point-min))
+    (should (re-search-forward
+             "\\.graph-isolated-list \\.graph-isolated-actions button[[:space:]\n]*{[^}]*min-height: 44px;"
+             nil t))
+    (goto-char (point-min))
+    (should (re-search-forward
+             "\\.graph-links path\\.is-dimmed[[:space:]\n]*{[^}]*opacity: 0\\.14;"
+             nil t))
+    (goto-char (point-min))
+    (should (re-search-forward
+             "\\.graph-link-labels text\\.is-dimmed[[:space:]\n]*{[^}]*opacity: 0\\.14;"
              nil t))))
 
 (ert-deftest org-museum-graph-reflows-after-viewport-changes ()
   (let ((graph (org-museum--build-graph-html
                 "{\"nodes\":[],\"links\":[],\"meta\":{}}"
                 "resources/org-museum.css" "resources/d3.v7.min.js")))
-    (should (string-match-p "new ResizeObserver" graph))
+    (should (string-match-p "new window\.ResizeObserver" graph))
     (should (string-match-p "function syncGraphViewport" graph))
     (should (string-search
              "svg.attr('viewBox','0 0 '+width+' '+height)" graph))
     (should (string-search "simulation.force('center'" graph))
     (should (string-search "simulation.alpha(.35).stop()" graph))
     (should (string-search "mobileGraphMedia.addEventListener" graph))
-    (should (string-search "filterSummary.open=!mobile" graph))))
+    (should (string-search
+             "if(event.matches&&filterSummary)filterSummary.open=false" graph))))
 
 (ert-deftest org-museum-graph-search-and-selection-share-visible-state ()
   (let ((graph (org-museum--build-graph-html
@@ -1928,12 +1963,41 @@
     (should (string-match-p "aria-label=\"搜索图谱节点\"" graph))
     (should (string-match-p "id=\"graph-match-status\"" graph))
     (should (string-match-p "id=\"btn-clear-selection\"" graph))
-    (should (string-search "var state={query:'',category:'*',selectedId:" graph))
+    (should (string-match-p "id=\"graph-canvas\" tabindex=\"-1\"" graph))
+    (should (string-search "var state={query:'',category:'*',view:" graph))
+    (should (string-search "var graphUrlNeedsCleanup=!focusIsValid||!categoryIsValid||!viewIsValid" graph))
+    (should (string-search "if(graphUrlNeedsCleanup)writeGraphUrl('replace')" graph))
     (should-not (string-search "focusOk" graph))
     (should (string-search
              ".classed('is-dimmed',function(node){return !matches(node);})"
              graph))
     (should (string-search "function clearSelection" graph))
+    (should (string-search "function clearSelection(pushHistory,skipUrl)" graph))
+    (should (string-search
+             "if(selected&&!matches(selected)){clearSelection(false,true);"
+             graph))
+    (should (string-search
+             "if(!skipUrl)writeGraphUrl(pushHistory?'push':'replace')"
+             graph))
+    (should (string-search "出链 · 当前 → 目标" graph))
+    (should (string-search "入链 · 来源 → 当前" graph))
+    (should (string-search "renderNeighbourList(node)" graph))
+    (should (string-search
+             "return group[2]?(source===node.id&&target===id):"
+             graph))
+    (should (string-search
+             "if(selected&&matches(selected))selectNode(selected,false)"
+             graph))
+    (should (string-search
+             "if(initialSelectedNode&&matches(initialSelectedNode))"
+             graph))
+    (should (string-search
+             "tooltip.classList.remove('is-visible')"
+             graph))
+    (should (string-search "canvas.focus({preventScroll:true})" graph))
+    (should-not (string-search
+                 ".on('mouseenter',function(event,node){\n    activeNeighborhood="
+                 graph))
     (should (string-search "event.key==='Escape'" graph))
     (should (string-search "visible.length+' 个匹配节点'" graph))))
 
@@ -2121,7 +2185,8 @@
               (should (equal (plist-get health :isolated-draft)
                              '("missing-description")))
               (should (equal (plist-get health :missing-description)
-                             '("missing-description")))))
+                             '("missing-description")))
+              (should (= 2 (length (plist-get health :date-fallback))))))
           (let* ((legacy `((pages . [((id . "legacy")
                                       (title . "旧缓存")
                                       (path . ,described-file)
@@ -2135,7 +2200,36 @@
                  (index (org-museum--alist-to-index legacy))
                  (page (gethash "legacy" (org-museum-index-pages index))))
             (should page)
-            (should-not (org-museum-page-description page))))
+            (should-not (org-museum-page-description page))
+            (should-not (org-museum-page-relation-types page))
+            (should-not (org-museum-page-relation-diagnostics page))
+            (should (= 1 (org-museum-page-created page)))
+            (should (eq 'modified-fallback
+                        (org-museum-page-date-source page))))
+          (let* ((typed (org-museum-test--page
+                         "typed" "有类型关系" 2 "Ontology" nil
+                         "published" described-file))
+                 (roundtrip-pages (make-hash-table :test 'equal))
+                 roundtrip)
+            (setf (org-museum-page-relation-types typed)
+                  '(("目标-一" . "启发影响")))
+            (setf (org-museum-page-relation-diagnostics typed)
+                  '("重复标注：目标-一"))
+            (puthash "typed" typed roundtrip-pages)
+            (setq roundtrip
+                  (org-museum--alist-to-index
+                   (org-museum--index-to-alist
+                    (make-org-museum-index
+                     :pages roundtrip-pages
+                     :tags (make-hash-table :test 'equal)
+                     :categories (make-hash-table :test 'equal)
+                     :graph (make-hash-table :test 'equal)))))
+            (let ((restored (gethash "typed"
+                                     (org-museum-index-pages roundtrip))))
+              (should (equal (org-museum-page-relation-types restored)
+                             '(("目标-一" . "启发影响"))))
+              (should (equal (org-museum-page-relation-diagnostics restored)
+                             '("重复标注：目标-一"))))))
       (delete-directory root t))))
 
 (ert-deftest org-museum-health-reports-duplicate-heading-paths-and-legacy-anchors ()
@@ -2577,21 +2671,24 @@
             (should (string-match-p "graph-isolated-fallback" html))
             (should (string-match-p "graph-isolated-list" html))
             (should (string-search "copy.textContent='复制链接'" html))
-            (should (string-match-p "graph-wiki-literal" html))
+            (should (string-match-p
+                     (regexp-quote "copyWikiLink('[[wiki:'") html))
              (should (string-match-p "graph-copy-status" html))
              (should (string-match-p "rel=\\\"icon\\\" href=\\\"data:,\\\"" html))
              (should (string-match-p "setAttribute('aria-pressed'" html))
             (should (string-match-p "navigator.clipboard" html))
             (should (string-match-p "document.execCommand('copy')" html))
             (should (string-match-p "复制失败，请手动复制" html))
-            (should (string-match-p "forceSimulation(nodes)" html))
+            (should (string-match-p "forceSimulation(canvasNodes)" html))
             (should (string-match-p
                      (regexp-quote ".attr('role','group')") html))
             (should-not (string-match-p
                          (regexp-quote ".attr('role','img')") html))
             (should (string-match-p "forceX(width/2)" html))
             (should (string-match-p "graph-node-neighbour" html))
-            (should (string-match-p "isolatedFallback.hidden=false" html))
+            (should (string-match-p "setGraphView('triage',false)" html))
+            (should (string-match-p "triagePanel.hidden=false" html))
+            (should (string-match-p "zeroNotice.hidden=true" html))
             (should (string-match-p "renderFallbackList" html))
             (should-not
              (string-match-p
@@ -2599,7 +2696,7 @@
       (delete-directory root t))))
 
 (ert-deftest org-museum-graph-deduplicates-reciprocal-page-connections ()
-  "Mutual page references render as one undirected visual connection."
+  "Mutual references with one type render as one bidirectional connection."
   (let* ((pages (make-hash-table :test 'equal))
          (alpha (org-museum-test--page "alpha" "Alpha" 100))
          (beta (org-museum-test--page "beta" "Beta" 90))
@@ -2611,8 +2708,10 @@
            :graph (make-hash-table :test 'equal))))
     (setf (org-museum-page-links-to alpha) '("beta")
           (org-museum-page-linked-from alpha) '("beta")
+          (org-museum-page-relation-types alpha) '(("beta" . "相关"))
           (org-museum-page-links-to beta) '("alpha")
-          (org-museum-page-linked-from beta) '("alpha"))
+          (org-museum-page-linked-from beta) '("alpha")
+          (org-museum-page-relation-types beta) '(("alpha" . "相关")))
     (puthash "alpha" alpha pages)
     (puthash "beta" beta pages)
     (let* ((json-array-type 'list)
@@ -2621,13 +2720,156 @@
            (links (alist-get 'links data))
            (nodes (alist-get 'nodes data)))
       (should (= 1 (length links)))
-      (should (equal '("alpha" "beta")
-                     (sort (list (alist-get 'source (car links))
-                                 (alist-get 'target (car links)))
-                           #'string<)))
+      (should (equal "alpha" (alist-get 'source (car links))))
+      (should (equal "beta" (alist-get 'target (car links))))
+      (should (equal "相关" (alist-get 'type (car links))))
+      (should (eq t (alist-get 'bidirectional (car links))))
       (should (equal '(1 1)
                      (sort (mapcar (lambda (node) (alist-get 'degree node)) nodes)
                            #'<))))))
+
+(ert-deftest org-museum-relation-annotations-label-only-explicit-outgoing-links ()
+  "Repeated Unicode relation metadata annotates, but never creates, edges."
+  (let* ((root (make-temp-file "org-museum-relation-type-test-" t))
+         (source (expand-file-name "source.org" root))
+         (target (expand-file-name "target.org" root))
+         (missing (expand-file-name "missing.org" root))
+         (pages (make-hash-table :test 'equal))
+         (index (make-org-museum-index
+                 :pages pages
+                 :tags (make-hash-table :test 'equal)
+                 :categories (make-hash-table :test 'equal)
+                 :graph (make-hash-table :test 'equal))))
+    (unwind-protect
+        (progn
+          (with-temp-file source
+            (insert "#+TITLE: Source\n#+WIKI_ID: source\n"
+                    "#+MUSEUM_RELATION: target | 前置依赖\n"
+                    "#+MUSEUM_RELATION: target | 冲突类型\n"
+                    "#+MUSEUM_RELATION: missing | 启发影响\n\n"
+                    "[[wiki:target][Target]]\n"))
+          (with-temp-file target
+            (insert "#+TITLE: Target\n#+WIKI_ID: target\n"))
+          (with-temp-file missing
+            (insert "#+TITLE: Missing\n#+WIKI_ID: missing\n"))
+          (mapc (lambda (file)
+                  (let ((page (org-museum--parse-page-metadata file)))
+                    (puthash (org-museum-page-id page) page pages)))
+                (list source target missing))
+          (cl-letf (((symbol-function 'org-museum--org-roam-db-linked-page-ids)
+                     (lambda (&rest _) nil)))
+            (org-museum--scan-resolve-links index))
+          (let ((page (gethash "source" pages)))
+            (should (equal '(("target" . "前置依赖"))
+                           (org-museum-page-relation-types page)))
+            (should (= 2 (length (org-museum-page-relation-diagnostics page))))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-incremental-update-resolves-relation-annotations ()
+  "Single-page refresh validates relation labels like a full index rebuild."
+  (let* ((root (make-temp-file "org-museum-relation-incremental-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (pages-dir (expand-file-name "pages" root))
+         (source-file (expand-file-name "source.org" pages-dir))
+         (target-file (expand-file-name "target.org" pages-dir))
+         (pages (make-hash-table :test 'equal))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (unwind-protect
+        (progn
+          (make-directory pages-dir t)
+          (with-temp-file target-file
+            (insert "#+TITLE: Target\n#+WIKI_ID: target\n"))
+          (with-temp-file source-file
+            (insert "#+TITLE: Source\n#+WIKI_ID: source\n"
+                    "#+MUSEUM_RELATION: target | 启发影响\n\n"
+                    "[[wiki:target][Target]]\n"))
+          (org-museum--index-register-page
+           org-museum--index (org-museum--parse-page-metadata target-file))
+          (org-museum--index-update-file-in-place source-file)
+          (let ((source (gethash "source" pages)))
+            (should (equal (org-museum-page-relation-types source)
+                           '(("target" . "启发影响"))))
+            (should-not (org-museum-page-relation-diagnostics source)))
+          (with-temp-file source-file
+            (insert "#+TITLE: Source\n#+WIKI_ID: source\n"
+                    "#+MUSEUM_RELATION: target | 启发影响\n"))
+          (org-museum--index-update-file-in-place source-file)
+          (let ((source (gethash "source" pages)))
+            (should-not (org-museum-page-relation-types source))
+            (should (string-match-p
+                     "no explicit outgoing link: target"
+                     (car (org-museum-page-relation-diagnostics source))))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-page-rename-rewrites-relation-annotation-targets ()
+  "Typed-link metadata follows the same transactional rename as the Org link."
+  (let* ((root (make-temp-file "org-museum-relation-rename-test-" t))
+         (file (expand-file-name "source.org" root))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "."))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "#+MUSEUM_RELATION: old-id | 自定义类型\n"
+                    "[[wiki:old-id][Old]]\n"))
+          (should (= 1 (org-museum--update-links-globally
+                        "old-id" "new-id" (list file))))
+          (with-temp-buffer
+            (insert-file-contents file)
+            (should (search-forward
+                     "#+MUSEUM_RELATION: new-id | 自定义类型" nil t))
+            (should (search-forward "[[wiki:new-id][Old]]" nil t))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-health-includes-relation-annotation-diagnostics ()
+  "Invalid manual relation labels remain visible to index health checks."
+  (let* ((pages (make-hash-table :test 'equal))
+         (page (org-museum-test--page "alpha" "Alpha" 0)))
+    (setf (org-museum-page-relation-diagnostics page)
+          '("relation annotation has no explicit outgoing link: beta"))
+    (puthash "alpha" page pages)
+    (let ((health (org-museum--index-health-report pages)))
+      (should (equal '(("alpha" . "relation annotation has no explicit outgoing link: beta"))
+                     (plist-get health :relation-annotations))))))
+
+(ert-deftest org-museum-graph-keeps-different-reciprocal-types-directional ()
+  "Reciprocal links with different author labels remain two factual arrows."
+  (let* ((pages (make-hash-table :test 'equal))
+         (alpha (org-museum-test--page "alpha" "Alpha" 100))
+         (beta (org-museum-test--page "beta" "Beta" 90))
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (setf (org-museum-page-links-to alpha) '("beta")
+          (org-museum-page-linked-from alpha) '("beta")
+          (org-museum-page-relation-types alpha) '(("beta" . "属于"))
+          (org-museum-page-links-to beta) '("alpha")
+          (org-museum-page-linked-from beta) '("alpha")
+          (org-museum-page-relation-types beta) '(("alpha" . "启发影响")))
+    (puthash "alpha" alpha pages)
+    (puthash "beta" beta pages)
+    (let* ((json-array-type 'list)
+           (json-object-type 'alist)
+           (data (json-read-from-string (org-museum--generate-graph-json)))
+           (links (alist-get 'links data)))
+      (should (= 2 (length links)))
+      (should (equal '(("alpha" "beta" "属于")
+                       ("beta" "alpha" "启发影响"))
+                     (sort (mapcar (lambda (edge)
+                                     (list (alist-get 'source edge)
+                                           (alist-get 'target edge)
+                                           (alist-get 'type edge)))
+                                   links)
+                           (lambda (a b) (string< (car a) (car b)))))))))
 
 (ert-deftest org-museum-graph-keeps-isolated-pages-beside-linked-clusters ()
   "An isolated page remains discoverable when other pages form a cluster."
@@ -2670,16 +2912,93 @@
                    (equal (alist-get 'id node) "orphan"))
                  nodes)))))
 
-(ert-deftest org-museum-graph-opens-an-article-on-the-first-click ()
-  "A mouse click has the same direct-navigation result as Enter."
+(ert-deftest org-museum-graph-selects-before-opening-an-article ()
+  "Click and Space select; double-click and Enter open the article."
   (let ((graph (org-museum--build-graph-html
                 "{\"nodes\":[],\"links\":[],\"meta\":{}}"
                 "resources/org-museum.css" "resources/d3.v7.min.js")))
     (should (string-search
-             ".on('click',function(_event,node){openNode(node);})" graph))
+             ".on('click',function(_event,node){selectNode(node,true);})" graph))
+    (should (string-search
+             ".on('dblclick',function(_event,node){openNode(node);})" graph))
     (should (string-search
              "if(event.key==='Enter'){event.preventDefault();openNode(node);}" graph))
-    (should-not (string-search ".on('dblclick'" graph))))
+    (should (string-search "url.searchParams.set('focus',state.selectedId)" graph))
+    (should (string-search "params.get('focus')" graph))))
+
+(ert-deftest org-museum-graph-adapts-layout-to-a-sparse-relation-set ()
+  "Small factual networks use a compact relation path and omit overview chrome."
+  (let ((graph (org-museum--build-graph-html
+                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                "resources/org-museum.css" "resources/d3.v7.min.js")))
+    (should (string-search
+             "var compactRelationMode=canvasNodes.length>0&&canvasNodes.length<=4;"
+             graph))
+    (should (string-search "function applyAutoLayout()" graph))
+    (should (string-search "canvasNodes.length<8" graph))))
+
+(ert-deftest org-museum-graph-keeps-click-selection-reliable-after-drag-binding ()
+  "Small pointer movement must not turn an ordinary node click into a drag."
+  (let ((graph (org-museum--build-graph-html
+                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                "resources/org-museum.css" "resources/d3.v7.min.js")))
+    (should (string-search "d3.drag().clickDistance(4)" graph))))
+
+(ert-deftest org-museum-graph-exposes-reading-and-triage-workflows ()
+  "Graph scope controls should not duplicate the global bookshelf rail."
+  (let ((graph (org-museum--build-graph-html
+                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                "resources/org-museum.css" "resources/d3.v7.min.js")))
+    (should (string-search "class=\"graph-commandbar\"" graph))
+    (should-not (string-search "class=\"museum-graph-rail\"" graph))
+    (should (string-search "data-graph-view=\"relations\"" graph))
+    (should (string-search "data-graph-view=\"triage\"" graph))
+    (should (string-search "id=\"graph-triage-panel\"" graph))
+    (should (string-search "var requestedView=graphParams.get('view')||'relations';" graph))
+    (should (string-search "function categoryLabel(value)" graph))))
+
+(ert-deftest org-museum-graph-workbench-has-responsive-reading-regions ()
+  "Wide graph pages use an inspector rail; narrower pages preserve document flow."
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    (dolist (pattern '("@media (min-width: 1200px)"
+                       "grid-template-columns: minmax(0, 1fr) 320px;"
+                       "graph-page .graph-commandbar"
+                       "graph-page .graph-triage-panel"
+                       "@media (max-width: 820px)"))
+      (goto-char (point-min))
+      (should (search-forward pattern nil t)))))
+
+(ert-deftest org-museum-graph-keeps-isolated-focus-in-triage-context ()
+  "A focused orphan should open its queue without dimming the factual network."
+  (let ((graph (org-museum--build-graph-html
+                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                "resources/org-museum.css" "resources/d3.v7.min.js")))
+    (should (string-search
+             "if(focusId&&state.view==='relations'&&isolatedNodes.some" graph))
+    (should (string-search
+             "activeNeighborhood=(node.degree||0)>0?neighborhood(node):null" graph))))
+
+(ert-deftest org-museum-graph-stacks-a-compact-relation-path-on-mobile ()
+  "Long labels in a two-note relationship must not collide on narrow screens."
+  (let ((graph (org-museum--build-graph-html
+                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                "resources/org-museum.css" "resources/d3.v7.min.js")))
+    (should (string-search "if(width<600){" graph))
+    (should (string-search "node.x=Math.min(62,width*.18);" graph))
+    (should (string-search "node.y=height*(0.14+0.72*ratio);" graph))
+    (should (string-search "width<600?'start'" graph))
+    (should (string-search "width<600?-6:-10" graph))))
+
+(ert-deftest org-museum-graph-keeps-triage-summary-inside-its-note ()
+  "A queued note expands its own summary without reviving relation details."
+  (let ((graph (org-museum--build-graph-html
+                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                "resources/org-museum.css" "resources/d3.v7.min.js")))
+    (should (string-search "row.dataset.nodeId=node.id" graph))
+    (should (string-search "summary.className='graph-isolated-summary'" graph))
+    (should (string-search "summary.hidden=!summary.hidden" graph))))
 
 (ert-deftest org-museum-full-export-keeps-heading-anchors-stable ()
   "Repeated full exports keep public section links stable and unique."
@@ -2968,8 +3287,9 @@
                                 "new URLSearchParams(location.search)"
                                 "orgMuseumThemeUrl(href)"
                                 ".alphaDecay(alphaDecay)"
-                                "tickCount=0;simulation.alphaTarget(.25)"
-                                "tickCount=0;simulation.alpha(.35)"))
+                                "var layoutTicks=Math.max(preTicks,180)"
+                                "simulation.stop();frozen=true"
+                                "window.addEventListener('popstate'"))
                 (goto-char (point-min))
                 (should (search-forward needle nil t))))
             (should (file-exists-p index-runtime))
@@ -3123,6 +3443,38 @@
       (goto-char (point-min))
       (should (search-forward needle nil t)))))
 
+(ert-deftest org-museum-desktop-index-uses-space-with-overlay-bookshelf ()
+  "The closed overlay shelf reserves no desktop reading space."
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    (should (search-forward "@media (min-width: 1200px)" nil t))
+    (should (re-search-forward
+             "\\.museum-index-shell[[:space:]\n]*{[^}]*width: 100%;"
+             nil t))))
+
+(ert-deftest org-museum-medium-layout-exposes-bookshelf-drawer-trigger ()
+  "The shelf remains reachable after it becomes an off-canvas drawer."
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    (should (search-forward "@media (max-width: 1199px)" nil t))
+    (should (re-search-forward
+             "\\.museum-drawer-toggle[[:space:]\n]*{[^}]*display: inline-flex;"
+             nil t))))
+
+(ert-deftest org-museum-mobile-article-defers-secondary-metadata ()
+  (let ((page (org-museum-test--page "alpha" "Alpha" 1 "Test" '("tag"))))
+    (cl-letf (((symbol-function 'org-museum--page-href)
+               (lambda (&rest _args) "pages/alpha.html")))
+      (let ((html (org-museum--article-meta-html
+                   page "pages/alpha.html" "alpha.org"))
+            (runtime (org-museum--script-shell)))
+        (should (string-search "museum-article-meta-disclosure" html))
+        (should (string-search "<summary>文章信息</summary>" html))
+        (should (string-search "metaDisclosure.open=false" runtime))
+        (should (string-search "metaMedia.addEventListener" runtime))))))
+
 (ert-deftest org-museum-narrow-article-topbar-keeps-all-actions-reachable ()
   "The four article actions must fit without shrinking their touch targets."
   (with-temp-buffer
@@ -3207,27 +3559,279 @@
 
 (ert-deftest org-museum-topbars-share-one-accessible-theme-control ()
   "Theme actions name their target without contradictory pressed state."
-  (dolist (kind '(home article graph))
+  (dolist (kind '(home article timeline graph related))
     (let ((topbar (org-museum--build-topbar "index.html" kind)))
       (should (= (length (split-string topbar "data-theme-toggle" t)) 2))
       (should (string-match-p
-               (regexp-quote "aria-label=\"切换为浅色主题\"") topbar))
+               (regexp-quote "aria-label=\"切换为深色主题\"") topbar))
       (should-not (string-match-p "aria-pressed=" topbar)))))
 
-(ert-deftest org-museum-article-topbar-exposes-one-drawer-trigger ()
-  "Only article pages expose the existing mobile notes drawer."
-  (let ((article (org-museum--build-topbar "article.html" 'article)))
-    (should (= (length (split-string article "data-drawer-toggle" t)) 2))
-    (should (string-match-p "aria-label=\"打开全部笔记\"" article)))
+(ert-deftest org-museum-all-topbars-expose-one-drawer-trigger ()
+  "Every shared shell exposes the same mobile notes drawer."
+  (dolist (kind '(home article timeline graph related))
+    (let ((topbar (org-museum--build-topbar "index.html" kind)))
+      (should (= (length (split-string topbar "data-drawer-toggle" t)) 2))
+      (should (string-match-p "aria-label=\"打开全部笔记\"" topbar))))
   (let ((runtime (org-museum--script-shell)))
     (should (string-match-p
              (regexp-quote
               "button.setAttribute('aria-label',open?'关闭全部笔记':'打开全部笔记');")
              runtime)))
-  (dolist (kind '(home graph))
-    (should-not (string-match-p
-                 "data-drawer-toggle"
-                 (org-museum--build-topbar "index.html" kind)))))
+  (let ((runtime (org-museum--script-shell)))
+    (should-not (string-search "var drawerMedia=" runtime))
+    (should (string-search "setPanelAvailable(drawer,false)" runtime))
+    (should (string-search "releasePanelBackground" runtime))
+    (should (string-search "lockPanelBackground" runtime))))
+
+(ert-deftest org-museum-related-data-keeps-explicit-direction-and-deduplicates-pairs ()
+  (let* ((pages (make-hash-table :test #'equal))
+         (alpha (org-museum-test--page "alpha" "Alpha" 2))
+         (beta (org-museum-test--page "beta" "Beta" 1))
+         (orphan (org-museum-test--page "orphan" "Orphan" 0))
+         (org-museum--index
+          (make-org-museum-index :pages pages
+                                 :tags (make-hash-table :test #'equal)
+                                 :categories (make-hash-table :test #'equal)
+                                 :graph (make-hash-table :test #'equal))))
+    (setf (org-museum-page-links-to alpha) '("beta")
+          (org-museum-page-linked-from alpha) '("beta")
+          (org-museum-page-links-to beta) '("alpha")
+          (org-museum-page-linked-from beta) '("alpha"))
+    (mapc (lambda (page) (puthash (org-museum-page-id page) page pages))
+          (list alpha beta orphan))
+    (cl-letf (((symbol-function 'org-museum--related-page-alist)
+               (lambda (page _out-file) `((id . ,(org-museum-page-id page))))))
+      (let* ((data (org-museum--related-data-alist "related.html"))
+             (edges (alist-get 'edges data))
+             (edge (aref edges 0)))
+        (should (= 1 (length edges)))
+        (should (equal "alpha" (alist-get 'source edge)))
+        (should (equal "beta" (alist-get 'target edge)))
+        (should (eq t (alist-get 'bidirectional edge)))))))
+
+(ert-deftest org-museum-created-date-parses-org-date-and-falls-back-safely ()
+  "Creation dates accept valid Org dates and diagnose missing or invalid values."
+  (let* ((fallback 12345.0)
+         (valid (org-museum--parse-created-date "<2026-09-03 Thu>" fallback))
+         (invalid (org-museum--parse-created-date "2026-02-31" fallback))
+         (missing (org-museum--parse-created-date nil fallback)))
+    (should (eq (cadr valid) 'org-date))
+    (should (equal "2026-09-03"
+                   (format-time-string "%Y-%m-%d" (seconds-to-time (car valid)))))
+    (should (equal invalid (list fallback 'modified-fallback)))
+    (should (equal missing (list fallback 'modified-fallback)))))
+
+(ert-deftest org-museum-timeline-orders-creation-and-keeps-explicit-relations ()
+  "Timeline data sorts creation events and reuses only explicit Org edges."
+  (let* ((pages (make-hash-table :test #'equal))
+         (later (org-museum-test--page "later" "Later" 40))
+         (earlier (org-museum-test--page "earlier" "Earlier" 30))
+         (org-museum--index
+          (make-org-museum-index :pages pages
+                                 :tags (make-hash-table :test #'equal)
+                                 :categories (make-hash-table :test #'equal)
+                                 :graph (make-hash-table :test #'equal))))
+    (setf (org-museum-page-created later) 20
+          (org-museum-page-date-source later) 'org-date
+          (org-museum-page-created earlier) 10
+          (org-museum-page-date-source earlier) 'org-date
+          (org-museum-page-links-to earlier) '("later")
+          (org-museum-page-linked-from later) '("earlier"))
+    (puthash "later" later pages)
+    (puthash "earlier" earlier pages)
+    (cl-letf (((symbol-function 'org-museum--related-article-fragment)
+               (lambda (_page) "<p>摘要</p>"))
+              ((symbol-function 'org-museum--page-href)
+               (lambda (id _out-file) (concat "pages/" id ".html"))))
+      (let* ((data (org-museum--timeline-data-alist "timeline.html"))
+             (timeline-pages (alist-get 'pages data))
+             (edges (alist-get 'edges data)))
+        (should (= org-museum--index-schema-version 5))
+        (should (equal '("earlier" "later")
+                       (mapcar (lambda (page) (alist-get 'id page))
+                               timeline-pages)))
+        (should (= 1 (length edges)))
+        (should (equal "earlier" (alist-get 'source (aref edges 0))))
+        (should (eq :json-false
+                    (alist-get 'bidirectional (aref edges 0))))))))
+
+(ert-deftest org-museum-timeline-age-days-uses-calendar-dates ()
+  "A next-afternoon update is one calendar day after creation, not two."
+  (let ((page (org-museum-test--page "dated" "Dated" 0)))
+    (setf (org-museum-page-created page)
+          (float-time (encode-time 0 0 0 3 9 2026))
+          (org-museum-page-modified page)
+          (float-time (encode-time 0 0 13 4 9 2026)))
+    (cl-letf (((symbol-function 'org-museum--page-href)
+               (lambda (&rest _args) "pages/dated.html")))
+      (should (= 1 (alist-get 'ageDays
+                              (org-museum--timeline-page-alist
+                               page "timeline.html")))))))
+
+(ert-deftest org-museum-timeline-runtime-keeps-focus-and-history-contracts ()
+  "Timeline filters, explicit selection, and history expose stable contracts."
+  (let ((script (org-museum--script-timeline)))
+    (dolist (needle '("selected&&!matches(selected)"
+                      "writeUrl('push')"
+                      "setFocus(next,true,true)"
+                      "window.addEventListener('popstate'"
+                      "if(!pageMap.has(state.focus))state.focus=''"))
+      (should (string-search needle script)))))
+
+(ert-deftest org-museum-timeline-runtime-keeps-interaction-continuity ()
+  "Focus, mobile details, and filters update without disruptive scrolling."
+  (let ((script (org-museum--script-timeline)))
+    (dolist (needle '("function scheduleTimelineUpdate"
+                      "function scheduleDesktopGeometry"
+                      "function revealWithinViewport"
+                      "function buildMobileList"
+                      "function applyMobileFocus"
+                      "mobileListSignature"
+                      "focus({preventScroll:true})"
+                      "timeline-filter-open"
+                      "filterScroll=scrollY"
+                      "document.body.style.position='fixed'"
+                      "document.body.style.position=''"
+                      "Math.abs(nextWidth-desktop.width)<1"
+                      "if(!event.target.closest||!event.target.closest('.timeline-node'))"))
+      (should (string-search needle script)))
+    (should-not (string-search "focusCard.scrollIntoView" script))
+    (should (string-search "timelineLayout.classList.toggle('has-focus',showInspector)" script))
+    (should-not (string-search "function positionFocusCard" script))
+    (should-not (string-search "state.focus===page.id?null:page" script))))
+
+(ert-deftest org-museum-timeline-page-exposes-modal-filter-contract ()
+  "The mobile filter sheet has a backdrop and modal semantics."
+  (let* ((root (make-temp-file "org-museum-timeline-dialog-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (out-file (expand-file-name "exports/html/timeline.html" root))
+         (html (org-museum--build-timeline-html
+                out-file "{\"pages\":[],\"edges\":[]}" "resources/d3.min.js")))
+    (unwind-protect
+        (progn
+          (should (string-search "timeline-filter-backdrop" html))
+          (should (string-search "role=\"dialog\"" html))
+          (should (string-search "aria-modal=\"false\"" html))
+          (should (string-search "filterSheet.setAttribute('aria-modal',filterOpen?'true':'false')" html))
+          (should (string-search "timeline-filter-result" html)))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-timeline-runtime-keeps-navigation-boundaries ()
+  "Previous, next, and same-day movement retain their edge guards."
+  (let ((script (org-museum--script-timeline)))
+    (dolist (needle '("previous.disabled=at<=0"
+                      "next.disabled=at<0||at>=list.length-1"
+                      "function navigateRelative(offset)"
+                      "navigateRelative(-1)"
+                      "navigateRelative(1)"
+                      "function sameDateGroup(page,list)"
+                      "item.createdDate===page.createdDate"))
+      (should (string-search needle script)))))
+
+(ert-deftest org-museum-timeline-runtime-restores-history-scroll-and-breakpoints ()
+  "History and responsive changes preserve the reader's spatial anchor."
+  (let ((script (org-museum--script-timeline)))
+    (dolist (needle '("currentScroll=filterOpen&&filterScroll!==null?filterScroll:scrollY"
+                      "history.replaceState({scrollY:currentScroll}"
+                      "history.pushState({scrollY:currentScroll}"
+                      "event.state&&Number.isFinite(event.state.scrollY)"
+                      "lastViewportWidth=innerWidth"
+                      "if(innerWidth===lastViewportWidth&&nextMobile===lastMobile)return"))
+      (should (string-search needle script)))))
+
+(ert-deftest org-museum-timeline-runtime-keeps-relation-and-isolation-noise-low ()
+  "Only selected relations render and isolated notes obey active filters."
+  (let ((script (org-museum--script-timeline)))
+    (dolist (needle '("edge.source===page.id||edge.target===page.id"
+                      ".classed('is-near'"
+                      ".classed('is-muted'"
+                      "visiblePages().filter(function(page){return relationCount(page)===0;})"))
+      (should (string-search needle script)))))
+
+(ert-deftest org-museum-timeline-page-is-offline-addressable-and-defensive ()
+  "The timeline is a local, query-addressable page with mobile and keyboard paths."
+  (let* ((root (make-temp-file "org-museum-timeline-page-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (out-file (expand-file-name "exports/html/timeline.html" root))
+         (html (org-museum--build-timeline-html out-file "{\"pages\":[],\"edges\":[]}" "resources/d3.min.js")))
+    (unwind-protect
+        (progn
+          (dolist (needle '("museum-timeline-shell" "timeline-mobile-list"
+                            "timeline-scope-bar" "timeline-filter-sheet"
+                            "timeline-focus-card" "timeline-previous"
+                            "timeline-next" "timeline-return"
+                            "q" "category" "status" "focus"
+                            "ArrowLeft" "ArrowRight" "ArrowUp" "ArrowDown"
+                            "同日更新" "筛选后已清除原选择"
+                            "Date.parse(page.createdDate+'T00:00:00Z')"
+                            "setFocus(next,true,true)"
+                            "node.focus({preventScroll:true})"
+                            ".classed('is-near'"
+                            "visiblePages().filter(function(page){return relationCount(page)===0;})"
+                            "selected&&!matches(selected)"
+                            "edges.filter(function(edge)"
+                            "if(!pageMap.has(state.focus))state.focus=''"
+                            "window.addEventListener('popstate'"
+                            "resources/d3.min.js"))
+            (should (string-search needle html)))
+          (should-not (string-search "class=\"timeline-preview\"" html))
+          (should (string-search
+                   "</section>\n    <aside id=\"timeline-focus-card\"" html))
+          (should-not (string-search
+                       "id=\"timeline-canvas\"><div id=\"timeline-svg\"></div><div id=\"timeline-tooltip\" role=\"tooltip\" hidden></div><aside" html))
+          (should-not (string-match-p "\\bfetch[[:space:]]*(" html))
+          (should (org-museum--publish-managed-relative-path-p "timeline.html"))
+          (should (member "timeline.html"
+                          (plist-get (org-museum--publish-default-policy)
+                                     :include))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-related-summary-falls-back-to-exported-content ()
+  (let ((page (org-museum-test--page "alpha" "Alpha" 1)))
+    (cl-letf (((symbol-function 'org-museum--related-article-fragment)
+              (lambda (_page)
+                 "<p>:PROPERTIES: :ID: private :END:</p><p>首个有效段落。</p><p>第一节摘录。</p><p>第二节摘录。</p>"))
+              ((symbol-function 'org-museum--related-rebase-fragment)
+               (lambda (html _page _out-file) html))
+              ((symbol-function 'org-museum--page-headings)
+               (lambda (_page)
+                 '(((id . "one") (title . "第一章") (level . 2))
+                   ((id . "deep") (title . "细节") (level . 3)))))
+              ((symbol-function 'org-museum--page-href)
+               (lambda (&rest _args) "pages/alpha.html")))
+      (let ((data (org-museum--related-page-alist page "related.html")))
+        (should (equal "首个有效段落。" (alist-get 'description data)))
+        (should (equal ["第一节摘录。" "第二节摘录。"]
+                       (alist-get 'excerpts data)))
+        (should (= 1 (length (alist-get 'headings data))))))))
+
+(ert-deftest org-museum-related-reader-is-offline-addressable-and-defensive ()
+  (let* ((root (make-temp-file "org-museum-related-page-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum--plugin-dir org-museum-test--repo-root)
+         (out-file (expand-file-name "exports/html/related.html" root))
+         (data-file (expand-file-name
+                     "exports/html/resources/org-museum-related-data.js" root)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory data-file) t)
+          (with-temp-file data-file (insert "window.ORG_MUSEUM_RELATED_DATA={};"))
+          (let ((html (org-museum--build-related-html out-file data-file)))
+            (dolist (needle '("source" "target" "mode" "relationValid"
+                              "显式 Org 链接" "data-related-panel=\"source\""
+                              "data-related-panel=\"target\""))
+              (should (string-search needle html)))
+            (should-not (string-match-p "\\bfetch[[:space:]]*(" html))))
+          (should (org-museum--publish-managed-relative-path-p "related.html"))
+          (should (org-museum--publish-managed-relative-path-p
+                   "resources/org-museum-related-data.js"))
+          (should (member "related.html"
+                          (plist-get (org-museum--publish-default-policy)
+                                     :include))))
+      (delete-directory root t)))
 
 (ert-deftest org-museum-theme-runtime-is-local-versioned-and-defensive ()
   "The blocking theme bootstrap is shared, offline, and rejects bad values."
@@ -3287,6 +3891,10 @@
             (insert "INDEX"))
           (with-temp-file (expand-file-name "graph.html" export-root)
             (insert "GRAPH"))
+          (with-temp-file (expand-file-name "related.html" export-root)
+            (insert "RELATED"))
+          (with-temp-file (expand-file-name "timeline.html" export-root)
+            (insert "TIMELINE"))
           (with-temp-file (expand-file-name "pages/topic/new.html" export-root)
             (insert "NEW"))
           (with-temp-file (expand-file-name "resources/site.js" export-root)
@@ -3526,6 +4134,10 @@
             (insert "INDEX"))
           (with-temp-file (expand-file-name "graph.html" export-root)
             (insert "GRAPH"))
+          (with-temp-file (expand-file-name "related.html" export-root)
+            (insert "RELATED"))
+          (with-temp-file (expand-file-name "timeline.html" export-root)
+            (insert "TIMELINE"))
           (with-temp-file page-output
             (insert "<code>path:C:/private/secret.txt</code>"))
           (with-temp-file (expand-file-name "resources/private.js" export-root)
@@ -3647,6 +4259,10 @@
             (insert "INDEX"))
           (with-temp-file (expand-file-name "graph.html" export-root)
             (insert "GRAPH"))
+          (with-temp-file (expand-file-name "related.html" export-root)
+            (insert "RELATED"))
+          (with-temp-file (expand-file-name "timeline.html" export-root)
+            (insert "TIMELINE"))
           (with-temp-file page-output
             (insert "<code>C:/private/note.org</code>"))
           (with-temp-file resource-output
@@ -3785,6 +4401,10 @@
             (insert "INDEX"))
           (with-temp-file (expand-file-name "graph.html" export-root)
             (insert "GRAPH"))
+          (with-temp-file (expand-file-name "related.html" export-root)
+            (insert "RELATED"))
+          (with-temp-file (expand-file-name "timeline.html" export-root)
+            (insert "TIMELINE"))
           (with-temp-file source-page (insert "VERSION ONE"))
           (with-temp-file (expand-file-name "resources/site.css" export-root)
             (insert "CSS"))
@@ -3843,7 +4463,9 @@
           (make-directory (expand-file-name "pages" export-root) t)
           (make-directory (expand-file-name "resources" export-root) t)
           (dolist (entry '(("index.html" . "INDEX")
+                           ("timeline.html" . "TIMELINE")
                            ("graph.html" . "GRAPH")
+                           ("related.html" . "RELATED")
                            ("pages/topic.html" . "TOPIC")
                            ("resources/site.css" . "CSS")))
             (with-temp-file (expand-file-name (car entry) export-root)
@@ -4034,6 +4656,10 @@
               (insert "NEW INDEX"))
             (with-temp-file (expand-file-name "graph.html" export-root)
               (insert "GRAPH"))
+            (with-temp-file (expand-file-name "related.html" export-root)
+              (insert "RELATED"))
+            (with-temp-file (expand-file-name "timeline.html" export-root)
+              (insert "TIMELINE"))
             (with-temp-file (expand-file-name "pages/private.html" export-root)
               (insert "<code>C:/private/secret.txt</code>"))
             (with-temp-file (expand-file-name "index.html"
@@ -4079,6 +4705,12 @@
             (insert "NEW INDEX"))
           (with-temp-file (expand-file-name "graph.html" export-root)
             (insert "GRAPH"))
+          (with-temp-file (expand-file-name "related.html" export-root)
+            (insert "RELATED"))
+          (with-temp-file (expand-file-name "timeline.html" export-root)
+            (insert "TIMELINE"))
+          (with-temp-file (expand-file-name "timeline.html" export-root)
+            (insert "TIMELINE"))
           (with-temp-file (expand-file-name "index.html"
                                             org-museum-publish-directory)
             (insert "OLD INDEX"))
@@ -4147,6 +4779,10 @@
             (insert "NEW INDEX"))
           (with-temp-file (expand-file-name "graph.html" export-root)
             (insert "GRAPH"))
+          (with-temp-file (expand-file-name "related.html" export-root)
+            (insert "RELATED"))
+          (with-temp-file (expand-file-name "timeline.html" export-root)
+            (insert "TIMELINE"))
           (with-temp-file (expand-file-name "pages/nested/new.html" export-root)
             (insert "NESTED"))
           (with-temp-file published-index (insert "OLD INDEX"))
@@ -4201,6 +4837,8 @@
             (insert "INDEX"))
           (with-temp-file (expand-file-name "graph.html" export-root)
             (insert "GRAPH"))
+          (with-temp-file (expand-file-name "related.html" export-root)
+            (insert "RELATED"))
           (with-temp-file (expand-file-name "pages/new.html" export-root)
             (insert "NEW"))
           (cl-letf (((symbol-function 'org-museum-export-all) #'ignore)
@@ -4569,6 +5207,178 @@
     (should (search-forward
              "(\"P\" \"Deploy to GitHub\"  org-museum-publish-deploy)"
              nil t))))
+
+(defun org-museum-test--curation-fixture (root)
+  "Create and index a two-page curation fixture beneath ROOT."
+  (let ((pages (expand-file-name "pages" root)))
+    (make-directory pages t)
+    (with-temp-file (expand-file-name "source.org" pages)
+      (insert "#+TITLE: Source\n#+WIKI_ID: source\n#+CATEGORY: Test\n"
+              "#+WIKI_STATUS: published\n#+DATE: 2026-09-01\n#+FILETAGS: :test:\n\n* Body\nText.\n"))
+    (with-temp-file (expand-file-name "target.org" pages)
+      (insert "#+TITLE: Target\n#+WIKI_ID: target\n#+CATEGORY: Test\n"
+              "#+WIKI_STATUS: published\n#+DATE: 2026-09-02\n#+FILETAGS: :test:\n\n* Body\nTarget.\n"))
+    (org-museum-index-build t)))
+
+(ert-deftest org-museum-curation-rejects-unknown-fields-and-stale-hashes ()
+  (let* ((root (make-temp-file "org-museum-curation-validation-" t))
+         (org-museum-root-dir root) (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages") org-museum--index)
+    (unwind-protect
+        (progn
+          (org-museum-test--curation-fixture root)
+          (should-error
+           (org-museum-curation-preview
+            '((schemaVersion . 1) (pageId . "source") (expectedSha256 . "bad")
+              (changes . ()) (relations . ()) (elisp . "(delete-directory \"/\")")))
+           :type 'org-museum-curation-error)
+          (should-error
+           (org-museum-curation-preview
+            '((schemaVersion . 1) (pageId . "source") (expectedSha256 . "bad")
+              (changes . ()) (relations . ())))
+           :type 'org-museum-curation-error))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-curation-managed-relations-are-additive-and-removable ()
+  (let* ((root (make-temp-file "org-museum-curation-relations-" t))
+         (org-museum-root-dir root) (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages") org-museum--index)
+    (unwind-protect
+        (progn
+          (org-museum-test--curation-fixture root)
+          (let* ((base "#+TITLE: Source\n\n* Body\nText.\n")
+                 (added (org-museum--curation-apply-relations
+                         base '(((action . "add") (targetId . "target") (type . "相关")))))
+                 (removed (org-museum--curation-apply-relations
+                           added '(((action . "remove") (targetId . "target") (type . "相关"))))))
+            (should (string-match-p (regexp-quote "#+MUSEUM_RELATION: target | 相关") added))
+            (should (string-match-p (regexp-quote ":ORG_MUSEUM_MANAGED: t") added))
+            (should-not (string-match-p (regexp-quote "[[wiki:target]") removed))
+            (should-not (string-match-p (regexp-quote "MUSEUM_RELATION: target") removed))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-curation-paths-stay-inside-pages ()
+  (let* ((root (make-temp-file "org-museum-curation-path-" t))
+         (org-museum-root-dir root) (org-museum-pages-subdir "pages"))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "pages" root) t)
+          (should-error (org-museum--curation-safe-target-path "../escape.org")
+                        :type 'org-museum-curation-error)
+          (should-error (org-museum--curation-safe-target-path "CON.org")
+                        :type 'org-museum-curation-error)
+          (should (file-in-directory-p
+                   (org-museum--curation-safe-target-path "ontology/safe.org")
+                   (expand-file-name "pages" root))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-curation-preview-normalizes-metadata-without-writing ()
+  (let* ((root (make-temp-file "org-museum-curation-preview-" t))
+         (org-museum-root-dir root) (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages") org-museum--index
+         (source (expand-file-name "pages/source.org" root)))
+    (unwind-protect
+        (progn
+          (org-museum-test--curation-fixture root)
+          (let* ((before (org-museum-test--file-string source))
+                 (transaction
+                  (org-museum-curation-preview
+                   `((schemaVersion . 1) (pageId . "source")
+                     (expectedSha256 . ,(org-museum--curation-sha256 source))
+                     (changes . ((title . "Curated") (status . "draft")
+                                 (tags . ["safe" "reviewed"])))
+                     (relations . ())))))
+            (should (string-match-p (regexp-quote "#+TITLE: Curated")
+                                    (plist-get transaction :after)))
+            (should (string-match-p (regexp-quote "#+FILETAGS: :safe:reviewed:")
+                                    (plist-get transaction :after)))
+            (should (equal before (org-museum-test--file-string source)))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-curation-apply-rolls-back-when-export-fails ()
+  (let* ((root (make-temp-file "org-museum-curation-rollback-" t))
+         (backup (make-temp-file "org-museum-curation-backup-" t))
+         (org-museum-root-dir root) (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (org-museum-curation-backup-directory backup) org-museum--index
+         (source (expand-file-name "pages/source.org" root)))
+    (unwind-protect
+        (progn
+          (org-museum-test--curation-fixture root)
+          (let* ((before (org-museum-test--file-string source))
+                 (transaction
+                  (org-museum-curation-preview
+                   `((schemaVersion . 1) (pageId . "source")
+                     (expectedSha256 . ,(org-museum--curation-sha256 source))
+                     (changes . ((title . "Must Roll Back"))) (relations . ())))))
+            (cl-letf (((symbol-function 'org-museum-export-all)
+                       (lambda () (error "fixture export failure"))))
+              (should-error (org-museum-curation-apply (plist-get transaction :id))
+                            :type 'error))
+            (should (equal before (org-museum-test--file-string source)))
+            (should (directory-files backup nil "^[^.].*"))))
+      (delete-directory root t)
+      (delete-directory backup t))))
+
+(ert-deftest org-museum-curation-loopback-rejects-wrong-token-and-origin ()
+  (let ((org-museum--curation-token "fixture-token")
+        (org-museum--curation-server-port 49152))
+    (should-not
+     (org-museum--curation-authorized-p
+      '(("authorization" . "Bearer wrong-token")
+        ("x-org-museum-curation" . "1")
+        ("origin" . "http://127.0.0.1:49152"))))
+    (should-not
+     (org-museum--curation-authorized-p
+      '(("authorization" . "Bearer fixture-token")
+        ("x-org-museum-curation" . "1")
+        ("origin" . "https://example.invalid"))))
+    (should
+     (org-museum--curation-authorized-p
+      '(("authorization" . "Bearer fixture-token")
+        ("x-org-museum-curation" . "1")
+        ("origin" . "http://localhost:49152"))))
+    (should (string-prefix-p
+             "HTTP/1.1 409"
+             (org-museum--curation-dispatch-http
+              "GET" "/api/v1/session"
+              '(("authorization" . "Bearer wrong-token")
+                ("x-org-museum-curation" . "1")) "")))))
+
+(ert-deftest org-museum-curation-server-stop-invalidates-session ()
+  (let ((org-museum--curation-server nil)
+        (org-museum--curation-token "fixture-token")
+        (org-museum--curation-server-port 49152)
+        (org-museum--curation-transactions (make-hash-table :test #'equal)))
+    (puthash "transaction" '(:id "transaction")
+             org-museum--curation-transactions)
+    (org-museum-curation-server-stop)
+    (should-not org-museum--curation-token)
+    (should-not org-museum--curation-server-port)
+    (should (= 0 (hash-table-count org-museum--curation-transactions)))))
+
+(ert-deftest org-museum-round23-interactions-are-exported ()
+  (let ((graph (org-museum--build-graph-html
+                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                "resources/org-museum.css" nil))
+        (related (org-museum--script-related-reading)))
+    (should (string-match-p (regexp-quote "aria-label=\"切换图谱布局方向") graph))
+    (should (string-match-p (regexp-quote "workspaceFooter.hidden=state.view==='triage'") graph))
+    (should (string-match-p
+             (regexp-quote "<h2 id=\"graph-selected-title\">尚未选择笔记</h2>")
+             graph))
+    (should (string-match-p (regexp-quote "data-related-pane") related))
+    (should (string-match-p (regexp-quote "syncScroll") related)))
+  (with-temp-buffer
+    (insert-file-contents (expand-file-name "resources/org-museum-theme.js"
+                                            org-museum-test--repo-root))
+    (should (search-forward "orgMuseumCuration" nil t))
+    (should-not (search-forward "/api/v1/" nil t)))
+  (with-temp-buffer
+    (insert-file-contents (expand-file-name "resources/org-museum-curation.js"
+                                            org-museum-test--repo-root))
+    (goto-char (point-min))
+    (should (search-forward "sessionStorage" nil t))))
 
 (provide 'org-museum-test)
 

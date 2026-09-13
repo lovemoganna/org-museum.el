@@ -11,6 +11,14 @@ without a network connection:
 - Highlight.js Monokai theme
   (`resources/highlight.monokai.min.css`), distributed with Highlight.js under
   the BSD-3-Clause license.
+- Phosphor Icons (`resources/icons/*.svg`), a small official regular-weight
+  subset from `phosphor-icons/core` (`book-open`, `clock`, `corners-out`,
+  `crosshair`, `file-text`, `graph`, `list`, `magnifying-glass`, `minus`,
+  `moon`, `plus`, `rows`, and `sun`), copyright Phosphor Icons
+  contributors, MIT license. The complete license is retained at
+  `resources/icons/LICENSE`.
+- Noto Serif CJK SC (`resources/fonts/NotoSerifCJKsc-VF.woff2`), from
+  `notofonts/noto-cjk`, distributed under SIL Open Font License 1.1.
 
 The upstream copyright and license headers are preserved in the vendored
 JavaScript files.
