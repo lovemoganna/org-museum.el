@@ -2543,6 +2543,22 @@ export would remove."
              deleted (if (= deleted 1) "" "s"))
     deleted))
 
+(defun org-museum--clean-stale-exports-if-safe ()
+  "Clean stale exports, or warn and skip when safety validation refuses.
+Only `user-error' safety refusals are non-fatal.  Unexpected filesystem
+errors still propagate so the full-export transaction can roll back."
+  (condition-case err
+      (org-museum--clean-stale-exports)
+    (user-error
+     (display-warning
+      'org-museum
+      (format "Stale cleanup skipped: %s\nMuseum root: %s\nPages root: %s"
+              (error-message-string err)
+              (expand-file-name org-museum-root-dir)
+              (expand-file-name (org-museum--pages-root)))
+      :warning)
+     0)))
+
 ;;;###autoload
 (defun org-museum-export-all ()
   "Export the entire Org Museum as a static HTML site."
@@ -4424,7 +4440,8 @@ which defaults to (0)."
               (when (> total 0)
                 (org-museum--write-export-manifest)
                 (when org-museum-clean-stale-html-on-full-export
-                  (setq cleaned (org-museum--clean-stale-exports)))))
+                  (setq cleaned
+                        (org-museum--clean-stale-exports-if-safe)))))
           (error
            (push (list "site-finalization" (error-message-string err) nil)
                  failed))))
