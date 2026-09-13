@@ -6190,6 +6190,8 @@ body {
   .resume-remove,
   .reading-restore-notice button,
   .related-mobile-segments button,
+  .timeline-filter-close,
+  #timeline-isolated-list button,
   .timeline-mobile-node {
     min-height: 44px;
   }

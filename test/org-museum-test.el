@@ -1956,6 +1956,14 @@
     (should (string-search
              "if(event.matches&&filterSummary)filterSummary.open=false" graph))))
 
+(ert-deftest org-museum-mobile-timeline-actions-have-touch-sized-hit-areas ()
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    (should (string-match-p
+             "\\.timeline-filter-close,[[:space:]\n]*#timeline-isolated-list button,[[:space:]\n]*\\.timeline-mobile-node[[:space:]\n]*{[^}]*min-height: 44px;"
+             (buffer-string)))))
+
 (ert-deftest org-museum-graph-search-and-selection-share-visible-state ()
   (let ((graph (org-museum--build-graph-html
                 "{\"nodes\":[],\"links\":[],\"meta\":{}}"
@@ -1999,7 +2007,13 @@
                  ".on('mouseenter',function(event,node){\n    activeNeighborhood="
                  graph))
     (should (string-search "event.key==='Escape'" graph))
-    (should (string-search "visible.length+' 个匹配节点'" graph))))
+    (should (string-search "function visibleModeNodes()" graph))
+    (should (string-search
+             "state.view==='triage'?(isZeroLinkGraph?nodes:isolatedNodes):canvasNodes"
+             graph))
+    (should (string-search
+             "state.view==='triage'?' 个待连接节点':' 个匹配关系节点'"
+             graph))))
 
 (ert-deftest org-museum-css-themes-scroll-regions-and-print-output ()
   "Scrollable UI stays Monokai on screen and articles become paper-friendly."
