@@ -6718,10 +6718,12 @@ window.addEventListener('pageshow',startReadingSession);
 ;; ============================================================
 
 (defun org-museum--related-pages ()
-  "Return all indexed pages in stable title order."
+  "Return published indexed pages in stable title order."
   (let (pages)
     (when org-museum--index
-      (maphash (lambda (_id page) (push page pages))
+      (maphash (lambda (_id page)
+                 (when (org-museum--published-page-p page)
+                   (push page pages)))
                (org-museum-index-pages org-museum--index)))
     (sort pages (lambda (left right)
                   (string-lessp (org-museum-page-title left)
@@ -6879,7 +6881,8 @@ window.addEventListener('pageshow',startReadingSession);
     (dolist (page pages)
       (dolist (target (org-museum-page-links-to page))
         (when-let* ((target-page
-                    (gethash target (org-museum-index-pages org-museum--index))))
+                    (gethash target (org-museum-index-pages org-museum--index)))
+                    ((org-museum--published-page-p target-page)))
           (let* ((source (org-museum-page-id page))
                  (key (mapconcat #'identity (sort (list source target)
                                                   #'string-lessp) "\0")))
