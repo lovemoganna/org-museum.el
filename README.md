@@ -304,6 +304,8 @@ reconciles case-only renames in the Git index. Before pushing, deployment checks
 local HTML links against the exact-case publish manifest, so a link that works
 only on Windows cannot silently become a GitHub Pages 404. This also covers
 Unicode filenames, encoded links, query strings, and page fragments.
+Previously published case variants remain compatible URLs with the same current
+page content; they are derived from Git history rather than individual page rules.
 
 Deployment preserves existing repository-local Git author settings. If either
 author field is missing, Org Museum derives it from the authenticated GitHub
