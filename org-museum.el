@@ -5010,13 +5010,13 @@ paths outside the effective sharing scope."
   (let* ((root-files
           (cl-loop for relative in
                 (list "index.html" "timeline.html" "graph.html" "related.html"
-                      "ai-center.html" "ai-public.json" ".nojekyll"
+                      "ai-center.html" "ai-public.json" "assets.json" ".nojekyll"
                          org-museum--publish-status-name)
                    for file = (expand-file-name relative root)
                    when (or (file-exists-p file) (file-symlink-p file))
                    collect relative))
          (tree-files
-          (cl-loop for relative in '("pages" "resources")
+          (cl-loop for relative in (delete-dups (list "pages" "resources" org-museum-assets-subdir))
                    for tree = (expand-file-name relative root)
                    when (or (file-exists-p tree) (file-symlink-p tree))
                    append
@@ -5071,7 +5071,7 @@ paths outside the effective sharing scope."
   "Return every existing file in ROOT's managed publishing namespaces."
   (let (relative-files)
     (dolist (relative (list "index.html" "timeline.html" "graph.html" "related.html"
-                            "ai-center.html" "ai-public.json" ".nojekyll"
+                            "ai-center.html" "ai-public.json" "assets.json" ".nojekyll"
                             org-museum--publish-status-name))
       (let ((file (expand-file-name relative root)))
         (when (or (file-exists-p file) (file-symlink-p file))
@@ -5079,7 +5079,7 @@ paths outside the effective sharing scope."
             (signal 'org-museum-publish-error
                     (list (format "Unsafe managed publish entry: %s" relative))))
           (push relative relative-files))))
-    (dolist (tree '("pages" "resources"))
+    (dolist (tree (delete-dups (list "pages" "resources" org-museum-assets-subdir)))
       (let ((directory (expand-file-name tree root)))
         (when (or (file-exists-p directory) (file-symlink-p directory))
           (dolist (file (org-museum--publish-tree-files root tree))
