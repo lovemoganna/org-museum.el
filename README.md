@@ -298,6 +298,13 @@ Configure a dedicated checkout outside the Wiki root:
 (setq org-museum-publish-remote "origin")
 ```
 
+Exported page URLs preserve the Org source directory and filename spelling.
+On Windows, export and publish sync repair old directory casing, and deployment
+reconciles case-only renames in the Git index. Before pushing, deployment checks
+local HTML links against the exact-case publish manifest, so a link that works
+only on Windows cannot silently become a GitHub Pages 404. This also covers
+Unicode filenames, encoded links, query strings, and page fragments.
+
 Deployment preserves existing repository-local Git author settings. If either
 author field is missing, Org Museum derives it from the authenticated GitHub
 account (using a GitHub noreply address) and writes it only to this publish
