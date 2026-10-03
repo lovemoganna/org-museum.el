@@ -3110,6 +3110,7 @@ Interactive calls run in an isolated background Emacs process."
       (org-museum--ensure-css-deployed)
       (org-museum--hljs-assets)
       (let ((out-file (org-museum--export-filename file)))
+      (org-museum--ensure-output-path-case out-file (org-museum--pages-root))
       (if (and (not force) (not asset-changed)
                (not (org-museum--needs-export-p file out-file)))
           (message "已跳过未变化的笔记：%s" (file-name-nondirectory file))
@@ -3979,6 +3980,32 @@ Interactive calls run in an isolated background Emacs process."
                (not (string-prefix-p "/" normalised))
                (not (member ".." (split-string normalised "/" t))))
       normalised)))
+
+(defun org-museum--ensure-output-path-case (file root)
+  "Preserve FILE's exact spelling below ROOT on case-insensitive Windows.
+Existing directories retain their old spelling when merely overwritten.
+Rename through a temporary sibling so exported URLs work on Linux hosts."
+  (when (eq system-type 'windows-nt)
+    (unless (string-prefix-p
+             (file-name-as-directory (org-museum--normalised-path root))
+             (org-museum--normalised-path file))
+      (signal 'org-museum-publish-error '("Output path escapes its root")))
+    (let ((parent (file-name-as-directory (expand-file-name root))))
+      (dolist (component (split-string (file-relative-name file parent) "/" t))
+        (when (file-directory-p parent)
+          (let* ((entries (directory-files parent nil nil t))
+                 (actual (cl-find component entries :test #'string-equal-ignore-case)))
+            (when (and actual (not (equal actual component)))
+              (let ((old (expand-file-name actual parent))
+                    (desired (expand-file-name component parent))
+                    (temporary (make-temp-name (expand-file-name ".museum-case-" parent))))
+                (when (file-symlink-p old)
+                  (signal 'org-museum-publish-error '("Linked output path cannot be renamed")))
+                (rename-file old temporary)
+                (condition-case err
+                    (rename-file temporary desired)
+                  (error (rename-file temporary old) (signal (car err) (cdr err))))))))
+        (setq parent (file-name-as-directory (expand-file-name component parent)))))))
 
 (defun org-museum--publish-managed-relative-path-p (path)
   "Return non-nil when relative PATH is owned by Org Museum publishing."
@@ -5067,6 +5094,29 @@ paths outside the effective sharing scope."
                         ", "))))))
     t))
 
+(defun org-museum--publish-validate-page-links (root managed-files)
+  "Reject local HTML links absent from the exact-case public file set.
+Do not use Windows file existence checks: the deployment host is case-sensitive."
+  (dolist (relative managed-files)
+    (when (string-suffix-p ".html" relative)
+      (let ((file (expand-file-name relative root)))
+        (with-temp-buffer
+          (insert-file-contents file)
+          (goto-char (point-min))
+          (while (re-search-forward "\\(?:href\\|src\\)=[\"']\\([^\"']+\\)[\"']" nil t)
+            (let ((href (match-string-no-properties 1)))
+              (when (and (not (string-match-p "\\`\\(?:[a-zA-Z][a-zA-Z0-9+.-]*:\\|//\\|#\\)" href))
+                         (string-match-p "\\.html\\(?:[?#].*\\)?\\'" href))
+                (let* ((path (car (split-string href "[?#]")))
+                       (decoded (decode-coding-string (url-unhex-string path) 'utf-8))
+                       (target (expand-file-name decoded (file-name-directory file)))
+                       (target-relative (file-relative-name target root)))
+                  (unless (and (file-in-directory-p target root)
+                               (member target-relative managed-files))
+                    (signal 'org-museum-publish-error
+                            (list (format "Broken or case-mismatched page link: %s -> %s"
+                                          relative href)))))))))))))
+
 (defun org-museum--publish-managed-namespace-files (root)
   "Return every existing file in ROOT's managed publishing namespaces."
   (let (relative-files)
@@ -5262,7 +5312,13 @@ paths outside the effective sharing scope."
     (staging-root publish-root relative-files old-files)
   "Transactionally install RELATIVE-FILES and remove stale OLD-FILES."
   (let* ((managed-files (cons ".nojekyll" relative-files))
-         (stale (cl-set-difference old-files managed-files :test #'equal))
+         (stale (cl-remove-if
+                 (lambda (old)
+                   (cl-some (lambda (current)
+                              (equal (org-museum--publish-path-key old)
+                                     (org-museum--publish-path-key current)))
+                            managed-files))
+                 old-files))
          (manifest-relative org-museum--publish-manifest-name)
          (targets
           (delete-dups
@@ -5275,6 +5331,9 @@ paths outside the effective sharing scope."
         (progn
           (make-directory publish-root t)
           (org-museum--publish-validate-destination-paths publish-root targets)
+          (dolist (relative managed-files)
+            (org-museum--ensure-output-path-case
+             (expand-file-name relative publish-root) publish-root))
           (setq snapshots (org-museum--snapshot-files targets)
                 preexisting
                 (mapcar (lambda (file) (cons file (file-exists-p file)))
@@ -5811,7 +5870,31 @@ configured fallbacks, authenticated GitHub account, or repository owner."
 (defun org-museum--publish-stage-and-commit (paths)
   "Stage validated PATHS and commit them; return non-nil when committed."
   (when paths
-    (org-museum--publish-run "git" (append '("add" "-A" "--") paths)))
+    (let ((current (org-museum--publish-read-managed-files org-museum-publish-directory)))
+      (when (eq system-type 'windows-nt)
+        (let ((tracked (split-string
+                        (cdr (org-museum--publish-run "git" '("ls-files" "-z"))) "\0" t))
+              aliases replacements)
+          (dolist (old tracked)
+            (when-let* ((desired (cl-find old current :test #'string-equal-ignore-case)))
+              (unless (equal old desired)
+                (push old aliases)
+                (push desired replacements))))
+          (when aliases
+            ;; Remove only the obsolete index spelling, keeping all disk files.
+            (org-museum--publish-run
+             "git" (append '("update-index" "--force-remove" "--") aliases))
+            (setq paths (append (cl-set-difference paths aliases :test #'equal)
+                                replacements)))))
+      (org-museum--publish-run "git" (append '("--literal-pathspecs" "add" "-A" "--") paths))
+      (when (eq system-type 'windows-nt)
+        (let* ((tracked (split-string
+                         (cdr (org-museum--publish-run "git" '("ls-files" "-z"))) "\0" t))
+               (missing (cl-set-difference current tracked :test #'equal)))
+          (when missing
+            (signal 'org-museum-publish-error
+                    (list (format "Git index does not preserve publish path spelling: %s"
+                                  (mapconcat #'identity missing ", ")))))))))
   (let ((diff-status
          (car (org-museum--publish-run
                "git" '("diff" "--cached" "--quiet") '(0 1)))))
@@ -5885,6 +5968,7 @@ Interactive calls run in an isolated background Emacs process."
            "发布隐私检查未通过：%s。修正源笔记后，请重新运行 org-museum-publish-sync"
            (mapconcat #'identity (plist-get status :blocked-pages) ", "))))))
     (org-museum--publish-validate-manifest-integrity directory manifest)
+    (org-museum--publish-validate-page-links directory current)
     (if (eq (plist-get status :mode) 'full)
         (org-museum--publish-validate-full-ready-candidate
          directory manifest status)

@@ -5541,6 +5541,9 @@
                    ((equal (car arguments) "ls-remote") (cons 2 ""))
                    ((equal arguments '("diff" "--cached" "--quiet"))
                     (cons 1 ""))
+                   ((equal arguments '("ls-files" "-z"))
+                    (cons 0 (mapconcat #'identity
+                                      (org-museum--publish-read-managed-files root) "\0")))
                    ((and (equal program "gh")
                           (equal (car arguments) "api")
                           (not (member "-X" arguments)))
