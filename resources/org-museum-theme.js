@@ -2,6 +2,7 @@
   "use strict";
 
   var key = "org-museum-theme";
+  var systemScheme = typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: dark)") : null;
 
   // Keep a category's visual identity stable across pages, filters and themes.
   window.orgMuseumCategoryColor = function (label) {
@@ -16,11 +17,11 @@
   };
 
   function isTheme(value) {
-    return value === "light" || value === "dark";
+    return value === "light" || value === "dark" || value === "system";
   }
 
   function normalize(value) {
-    return isTheme(value) ? value : "light";
+    return isTheme(value) ? value : "system";
   }
 
   function readThemeFromUrl() {
@@ -36,7 +37,7 @@
     try {
       return normalize(localStorage.getItem(key));
     } catch (_error) {
-      return "light";
+      return "system";
     }
   }
 
@@ -49,14 +50,32 @@
       if (label) label.textContent = light ? "深色" : "浅色";
       if (icon) icon.dataset.themeIcon = light ? "moon" : "sun";
     });
+    document.querySelectorAll("[data-theme-system]").forEach(function (button) {
+      button.setAttribute("aria-pressed", document.documentElement.dataset.themePreference === "system" ? "true" : "false");
+    });
+    document.querySelectorAll("[data-theme-current]").forEach(function (label) {
+      label.textContent = (document.documentElement.dataset.themePreference === "system" ? "系统 · " : "") + (light ? "浅色" : "深色");
+    });
   }
 
   function currentTheme() {
-    return normalize(document.documentElement.dataset.theme);
+    return normalize(document.documentElement.dataset.themePreference);
+  }
+
+  function syncCurrentThemeUrl(theme) {
+    try {
+      var url = new URL(location.href);
+      if (!/\.html$/i.test(url.pathname) || typeof history === "undefined" ||
+          typeof history.replaceState !== "function") return;
+      url.searchParams.set(key, theme);
+      history.replaceState(history.state, "", url.href);
+    } catch (_error) {}
   }
 
   function applyTheme(value, persist) {
-    var theme = normalize(value);
+    var preference = normalize(value);
+    var theme = preference === "system" ? (systemScheme && systemScheme.matches ? "dark" : "light") : preference;
+    document.documentElement.dataset.themePreference = preference;
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
     var meta = document.querySelector('meta[name="color-scheme"]');
@@ -64,8 +83,9 @@
     updateControls(theme);
     if (persist) {
       try {
-        localStorage.setItem(key, theme);
+        localStorage.setItem(key, preference);
       } catch (_error) {}
+      syncCurrentThemeUrl(preference);
     }
   }
 
@@ -78,6 +98,12 @@
       if (!/\.html$/i.test(url.pathname) || url.protocol !== location.protocol) return href;
       if (url.protocol !== "file:" && url.origin !== location.origin) return href;
       url.searchParams.set(key, currentTheme());
+      var root = siteRoot();
+      if (root && url.pathname.startsWith(root.pathname) && !viewName(url, root)) {
+        var current = new URL(location.href);
+        var from = viewName(current, root) ? cleanView(current, root) : returnView(root);
+        if (from) url.searchParams.set("museum-from", from.pathname.slice(root.pathname.length) + from.search + from.hash);
+      }
       return url.href;
     } catch (_error) {
       return href;
@@ -85,6 +111,52 @@
   }
 
   window.orgMuseumThemeUrl = themeUrl;
+
+  // Carry the collection context in the URL, including for local file browsing.
+  // Accept only the four views in this export, never an arbitrary return URL.
+  function siteRoot() {
+    var home = document.querySelector(".museum-wordmark[href]");
+    return home ? new URL(".", new URL(home.getAttribute("href"), location.href)) : null;
+  }
+  function viewName(url, root) {
+    if (url.origin !== root.origin || url.protocol !== root.protocol) return "";
+    var name = url.pathname.slice(root.pathname.length);
+    return url.pathname.startsWith(root.pathname) &&
+      /^(index|graph|timeline|related)\.html$/.test(name) ? name : "";
+  }
+  function cleanView(url, root) {
+    if (!viewName(url, root)) return null;
+    var clean = new URL(url.pathname, root);
+    ["q", "category", "tag", "status", "project", "type", "from", "to", "sort",
+      "focus", "view", "source", "target", "mode"].forEach(function (name) {
+      if (url.searchParams.has(name)) clean.searchParams.set(name, url.searchParams.get(name));
+    });
+    clean.hash = url.hash;
+    return clean;
+  }
+  function returnView(root) {
+    try {
+      var value = new URL(location.href).searchParams.get("museum-from");
+      return value ? cleanView(new URL(value, root), root) : null;
+    } catch (_error) { return null; }
+  }
+  function bindReturnLink() {
+    var link = document.querySelector("[data-reading-return]");
+    var root = siteRoot();
+    var from = root && returnView(root);
+    if (!from) return;
+    var name = viewName(from, root);
+    if (link) {
+      link.href = themeUrl(from.href);
+      link.textContent = name === "index.html" ?
+        (from.search ? "← 返回筛选结果" : "← 全部笔记") :
+        {"graph.html": "← 返回图谱", "timeline.html": "← 返回时间线", "related.html": "← 返回关联阅读"}[name];
+    }
+    var topIndex = document.querySelector(".museum-nav-all");
+    if (topIndex && name === "index.html" && from.search && document.body.dataset.pageKind === "article") {
+      topIndex.href = themeUrl(from.href);
+    }
+  }
 
   function localCurationSession() {
     var localHost = location.hostname === "127.0.0.1" || location.hostname === "localhost";
@@ -190,10 +262,20 @@
 
   function bindControls() {
     updateControls(normalize(document.documentElement.dataset.theme));
+    bindReturnLink();
     document.querySelectorAll("[data-theme-toggle]").forEach(function (button) {
       button.addEventListener("click", function () {
         var current = normalize(document.documentElement.dataset.theme);
         applyTheme(current === "light" ? "dark" : "light", true);
+      });
+    });
+    document.querySelectorAll("[data-theme-system]").forEach(function (button) {
+      button.addEventListener("click", function () { applyTheme("system", true); });
+    });
+    document.querySelectorAll(".museum-theme-menu").forEach(function (menu) {
+      document.addEventListener("click", function (event) { if (!menu.contains(event.target)) menu.open = false; });
+      menu.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") { menu.open = false; menu.querySelector("summary").focus(); }
       });
     });
   }
@@ -209,4 +291,9 @@
   window.addEventListener("storage", function (event) {
     if (event.key === key) applyTheme(event.newValue, false);
   });
+  if (systemScheme) {
+    var changed = function () { if (currentTheme() === "system") applyTheme("system", false); };
+    if (systemScheme.addEventListener) systemScheme.addEventListener("change", changed);
+    else if (systemScheme.addListener) systemScheme.addListener(changed);
+  }
 })();

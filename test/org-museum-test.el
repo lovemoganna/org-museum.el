@@ -1,5 +1,8 @@
 ;;; org-museum-test.el --- Tests for org-museum -*- lexical-binding: t; -*-
 
+(set-language-environment "UTF-8")
+(prefer-coding-system 'utf-8)
+
 (require 'ert)
 (require 'cl-lib)
 (require 'org-museum)
@@ -24,6 +27,35 @@
     (insert-file-contents file)
     (buffer-string)))
 
+(defun org-museum-test--unique-sibling-path (root name)
+  "Return a process-safe sibling of ROOT using NAME as its readable prefix."
+  (expand-file-name
+   (format "%s-%s" name
+           (file-name-nondirectory (directory-file-name root)))
+   (file-name-directory (directory-file-name root))))
+
+(ert-deftest org-museum-publish-fixtures-use-unique-sibling-paths ()
+  "Concurrent publish fixtures must not share one global temporary checkout."
+  (let* ((first (file-name-as-directory
+                 (make-temp-file "org-museum-publish-isolation-a-" t)))
+         (second (file-name-as-directory
+                  (make-temp-file "org-museum-publish-isolation-b-" t)))
+         (first-publish
+          (org-museum-test--unique-sibling-path first "published-site"))
+         (second-publish
+          (org-museum-test--unique-sibling-path second "published-site")))
+    (unwind-protect
+        (progn
+          (should-not (equal first-publish second-publish))
+          (should-not (file-in-directory-p first-publish first))
+          (should-not (file-in-directory-p second-publish second))
+          (should (equal (file-name-directory first-publish)
+                         (file-name-directory (directory-file-name first))))
+          (should (equal (file-name-directory second-publish)
+                         (file-name-directory (directory-file-name second)))))
+      (delete-directory first t)
+      (delete-directory second t))))
+
 (defun org-museum-test--page (id title modified &optional category tags status path)
   "Build a test page with ID, TITLE, and MODIFIED."
   (make-org-museum-page
@@ -37,6 +69,14 @@
    :linked-from nil
    :theme ""
    :status (or status "published")))
+
+(defun org-museum-test--tree-hashes (root)
+  "Return stable relative SHA256 records for all regular files below ROOT."
+  (mapcar
+   (lambda (file)
+     (cons (replace-regexp-in-string "\\\\" "/" (file-relative-name file root))
+           (org-museum--file-content-hash file)))
+   (sort (directory-files-recursively root "." nil) #'string<)))
 
 (ert-deftest org-museum-html-escaping-covers-cjk-and-special-characters ()
   (should
@@ -57,6 +97,35 @@
                   (list old new middle))))
     (should (equal (mapcar #'org-museum-page-id sorted)
                    '("new" "middle" "old")))))
+
+(ert-deftest org-museum-scan-excludes-build-artifacts-and-invalidates-cache ()
+  "Generated fixture notes and changed scan scope must not survive in the index."
+  (let* ((root (make-temp-file "museum-scan-scope-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-export-dir "dist/pages")
+         (org-museum-shared-export-dir "dist")
+         (org-museum--index nil)
+         (cache (expand-file-name ".org-museum-index.json" root)))
+    (unwind-protect
+        (progn
+          (dolist (name '("root.org" "pages/note.org" "pages/.#note.org"
+                          "output/test.org" "dist/copied.org"))
+            (let ((file (expand-file-name name root)))
+              (make-directory (file-name-directory file) t)
+              (with-temp-file file (insert (format "#+TITLE: %s\n" name)))))
+          (should (= 2 (length (org-museum--scan-files))))
+          (let ((org-museum-scan-excluded-directories nil))
+            (should (= 3 (length (org-museum--scan-files))))
+            (org-museum-index-build t)
+            (should (org-museum--index-fresh-p cache)))
+          (should-not (org-museum--index-fresh-p cache))
+          (org-museum-index-build)
+          (should (= 2 (hash-table-count (org-museum-index-pages org-museum--index))))
+          (delete-file (expand-file-name "pages/note.org" root))
+          (setq org-museum--index nil)
+          (should-not (org-museum--index-fresh-p cache)))
+      (delete-directory root t))))
 
 (ert-deftest org-museum-index-scan-rejects-duplicate-page-ids ()
   (let* ((root (make-temp-file "org-museum-duplicate-id-test-" t))
@@ -432,7 +501,7 @@
                          (org-museum-create-page (car input) (cadr input))
                          nil)
                      (error (error-message-string error-data)))))
-              (should (string-prefix-p "Org Museum [Create]:" message))))
+              (should (string-match-p "保留的.*路径" message))))
           (should (= 0 (hash-table-count
                         (org-museum-index-pages org-museum--index))))
           (should-not (get-file-buffer
@@ -554,7 +623,7 @@
                          nil)
                      (error (error-message-string error-data)))))
               (should (string-prefix-p
-                       "Org Museum [Rename]: new ID must be one non-empty path-safe name"
+                       "新 ID 不能为空，且须能安全用作文件路径"
                        message))
               (should (file-exists-p old-file))
               (should (gethash "original" pages)))))
@@ -693,7 +762,7 @@
                        nil)
                    (error (error-message-string error-data)))))
             (should (string-prefix-p
-                     "Org Museum [Rename]: save the page before renaming"
+                     "请先保存当前笔记，再更名"
                      message)))
           (should (file-exists-p old-file))
           (should-not (file-exists-p new-file))
@@ -1675,7 +1744,7 @@
     (should (string-search "function startPeriodicSave" script))))
 
 (ert-deftest org-museum-article-width-is-configurable-and-exported ()
-  (should (= org-museum-article-max-width 960))
+  (should (= org-museum-article-max-width 1320))
   (let ((org-museum-article-max-width 912)
         (org-museum--index nil))
     (with-temp-buffer
@@ -1687,7 +1756,7 @@
   (with-temp-buffer
     (insert-file-contents
      (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
-    (should (search-forward "var(--museum-article-max-width, 960px)" nil t))))
+    (should (search-forward "var(--museum-article-max-width, 1320px)" nil t))))
 
 (ert-deftest org-museum-article-wrapper-survives-metadata-match-data ()
   "Metadata parsing must not invalidate the content replacement bounds."
@@ -1841,6 +1910,47 @@
     (should (search-forward ".museum-filter-summary button" nil t))
     (should (search-forward ".topic-filter" nil t))))
 
+(ert-deftest org-museum-code-and-graph-detail-actions-have-usable-hit-areas ()
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    (should (string-match-p
+             "\\.code-copy-btn[[:space:]\n]*{[^}]*min-width: 44px;[^}]*min-height: 28px;"
+             (buffer-string)))
+    (should (string-match-p
+             "#graph-neighbours button[[:space:]\n]*{[^}]*min-height: 28px;"
+             (buffer-string)))
+    (should (string-match-p
+             "#graph-neighbours button,[[:space:]\n]*\\.graph-inspector-actions a,[[:space:]\n]*\\.graph-inspector-actions button,[[:space:]\n]*#btn-clear-selection[[:space:]\n]*{[^}]*min-height: 44px;"
+             (buffer-string)))
+    (should (string-match-p
+             "#btn-clear-selection[[:space:]\n]*{[^}]*min-width: 44px;"
+             (buffer-string)))))
+
+(ert-deftest org-museum-light-theme-shell-and-mobile-reading-targets-stay-usable ()
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
+    (let ((css (buffer-string)))
+      (should (string-match-p
+               "\\.museum-topbar :where(\\.museum-topbar-link:not(\\.museum-wordmark),[[:space:]\n]*\\.museum-theme-toggle, \\.museum-drawer-toggle)[[:space:]\n]*{[^}]*color: var(--museum-shell-muted);"
+               css))
+      (should (string-match-p
+               "#org-museum-sidebar \\.sidebar-nav-btn,[[:space:]\n]*#org-museum-sidebar \\.sidebar-category a,[[:space:]\n]*\\.museum-index-entry h3 a[[:space:]\n]*{[^}]*min-height: 44px;"
+               css))
+      (should (string-match-p
+               "#org-museum-sidebar \\.sidebar-category a,[[:space:]\n]*#org-museum-sidebar input[[:space:]\n]*{[^}]*color: var(--museum-shell-muted);"
+               css))
+      (should (string-match-p
+               "#org-museum-sidebar \\.sidebar-cat-label[[:space:]\n]*{[^}]*color: var(--museum-shell-accent);"
+               css))
+      (should (string-match-p
+               "#org-museum-right-sidebar a[[:space:]\n]*{[^}]*min-height: 44px;"
+               css))
+      (should (string-match-p
+               "\\.museum-filter-summary button[[:space:]\n]*{[^}]*min-width: 44px;"
+               css)))))
+
 (ert-deftest org-museum-closed-drawers-are-not-keyboard-focusable ()
   (let ((script (org-museum--script-shell)))
     (should (string-match-p
@@ -1881,31 +1991,17 @@
                 "{\"nodes\":[],\"links\":[],\"meta\":{}}"
                 "resources/org-museum.css" "resources/d3.v7.min.js")))
     (should (string-match-p "graph-node-hit-target" graph))
-    ;; [UI-03] Graph nodes use the existing 44px touch-target baseline.
-    (should (string-match-p (regexp-quote ".attr('r',26)") graph))
-    (should (string-match-p "node\.labelWidth" graph))
-    (should (string-match-p (regexp-quote "var limit=width<600?12:22;") graph))
-    (should (string-match-p "Math\.max(minX,Math\.min(maxX,node\.x))" graph))
-    (should (string-match-p (regexp-quote ".attr('aria-label'") graph))
-    (should (string-match-p "event\.key===' '" graph))
-    (should (string-match-p "prefers-reduced-motion: reduce" graph))
-    (should (string-match-p
-             (regexp-quote "var layoutTicks=Math.max(preTicks,180)")
-             graph))
-    (should (string-match-p
-             (regexp-quote "simulation.stop();frozen=true")
-             graph))
-    (should (string-match-p
-             (regexp-quote
-              "catch(_dragError){canvas.classList.add('graph-drag-unavailable');}")
-             graph))
-    (should (string-match-p
-             (regexp-quote
-              "catch(_resizeObserverError){window.addEventListener('resize',syncGraphViewport);}")
-             graph))
-    (should-not (string-match-p "simulation\.on('tick'" graph))
-    (should (string-match-p (regexp-quote "26/zoomScale") graph))
-    (should (string-match-p "selectedDetail\.hidden=true" graph)))
+    (should (string-search "org-museum-graph-network.js" graph)))
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum-graph-network.js" org-museum-test--repo-root))
+    (let ((source (buffer-string)))
+      (should (string-search "graph-node-hit-target').attr('r', 25)" source))
+      (should (string-search "window.innerWidth <= 600 ? 9 : 16" source))
+      (should (string-search "node.name + '，' + node.degree" source))
+      (should (string-search "event.key === ' '" source))
+      (should (string-search "d3.drag().clickDistance(4)" source))
+      (should (string-search "if (window.ResizeObserver)" source))))
   (with-temp-buffer
     (insert-file-contents
      (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
@@ -1943,18 +2039,14 @@
              nil t))))
 
 (ert-deftest org-museum-graph-reflows-after-viewport-changes ()
-  (let ((graph (org-museum--build-graph-html
-                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
-                "resources/org-museum.css" "resources/d3.v7.min.js")))
-    (should (string-match-p "new window\.ResizeObserver" graph))
-    (should (string-match-p "function syncGraphViewport" graph))
-    (should (string-search
-             "svg.attr('viewBox','0 0 '+width+' '+height)" graph))
-    (should (string-search "simulation.force('center'" graph))
-    (should (string-search "simulation.alpha(.35).stop()" graph))
-    (should (string-search "mobileGraphMedia.addEventListener" graph))
-    (should (string-search
-             "if(event.matches&&filterSummary)filterSummary.open=false" graph))))
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum-graph-network.js" org-museum-test--repo-root))
+    (let ((source (buffer-string)))
+      (should (string-search "svg.attr('viewBox', '0 0 ' + w + ' ' + h)" source))
+      (should (string-search "function resizeGraph()" source))
+      (should (string-search "resize.observe(canvas)" source))
+      (should (string-search "window.addEventListener('resize', resizeGraph)" source)))))
 
 (ert-deftest org-museum-mobile-timeline-actions-have-touch-sized-hit-areas ()
   (with-temp-buffer
@@ -1968,52 +2060,18 @@
   (let ((graph (org-museum--build-graph-html
                 "{\"nodes\":[],\"links\":[],\"meta\":{}}"
                 "resources/org-museum.css" "resources/d3.v7.min.js")))
-    (should (string-match-p "aria-label=\"搜索图谱节点\"" graph))
-    (should (string-match-p "id=\"graph-match-status\"" graph))
-    (should (string-match-p "id=\"btn-clear-selection\"" graph))
-    (should (string-match-p "id=\"graph-canvas\" tabindex=\"-1\"" graph))
-    (should (string-search "var state={query:'',category:'*',view:" graph))
-    (should (string-search "var graphUrlNeedsCleanup=!focusIsValid||!categoryIsValid||!viewIsValid" graph))
-    (should (string-search "if(graphUrlNeedsCleanup)writeGraphUrl('replace')" graph))
-    (should-not (string-search "focusOk" graph))
-    (should (string-search
-             ".classed('is-dimmed',function(node){return !matches(node);})"
-             graph))
-    (should (string-search "function clearSelection" graph))
-    (should (string-search "function clearSelection(pushHistory,skipUrl)" graph))
-    (should (string-search
-             "if(selected&&!matches(selected)){clearSelection(false,true);"
-             graph))
-    (should (string-search
-             "if(!skipUrl)writeGraphUrl(pushHistory?'push':'replace')"
-             graph))
-    (should (string-search "出链 · 当前 → 目标" graph))
-    (should (string-search "入链 · 来源 → 当前" graph))
-    (should (string-search "renderNeighbourList(node)" graph))
-    (should (string-search
-             "return group[2]?(source===node.id&&target===id):"
-             graph))
-    (should (string-search
-             "if(selected&&matches(selected))selectNode(selected,false)"
-             graph))
-    (should (string-search
-             "if(initialSelectedNode&&matches(initialSelectedNode))"
-             graph))
-    (should (string-search
-             "tooltip.classList.remove('is-visible')"
-             graph))
-    (should (string-search "canvas.focus({preventScroll:true})" graph))
-    (should-not (string-search
-                 ".on('mouseenter',function(event,node){\n    activeNeighborhood="
-                 graph))
-    (should (string-search "event.key==='Escape'" graph))
-    (should (string-search "function visibleModeNodes()" graph))
-    (should (string-search
-             "state.view==='triage'?(isZeroLinkGraph?nodes:isolatedNodes):canvasNodes"
-             graph))
-    (should (string-search
-             "state.view==='triage'?' 个待连接节点':' 个匹配关系节点'"
-             graph))))
+    (dolist (id '("graph-match-status" "btn-clear-selection" "graph-canvas"))
+      (should (string-search (concat "id=\"" id "\"") graph))))
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum-graph-network.js" org-museum-test--repo-root))
+    (let ((source (buffer-string)))
+      (should (string-search "var selectedNodeId = params.get('focus')" source))
+      (should (string-search "var query = (params.get('q')" source))
+      (should (string-search "var category = params.get('category')" source))
+      (should (string-search "function visibleNodes()" source))
+      (should (string-search "function showNode(node, pushHistory)" source))
+      (should (string-search "if (selectedNodeId) showNode(nodeById(selectedNodeId)" source)))))
 
 (ert-deftest org-museum-css-themes-scroll-regions-and-print-output ()
   "Scrollable UI stays Monokai on screen and articles become paper-friendly."
@@ -2093,11 +2151,58 @@
           (should (string-match-p "org-museum-index-data" html))
           (should (string-match-p "\"pageId\":\"alpha\"" html))
           (should (string-match-p "\\\\u003cAlpha\\\\u003e" html))
-          (should (string-match-p "搜索标题、分类或标签" html))
+          (should (string-match-p "搜索标题、章节、标签或主题" html))
           (should (string-match-p "全部笔记 · 按更新时间" html))
           (should (string-match-p "rel=\\\"icon\\\" href=\\\"data:,\\\"" html))
           (should (string-match-p "索引为空" empty))
           (should (string-match-p "\"pages\":\\[\\]" empty)))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-dashboard-source-changes-rebuild-facets ()
+  "Adding, editing, and deleting isolated Org notes updates the browser data."
+  (let* ((root (make-temp-file "org-museum-dashboard-changes-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum--index nil)
+         (pages (expand-file-name "pages" root))
+         (alpha (expand-file-name "alpha.org" pages))
+         (beta (expand-file-name "beta.org" pages)))
+    (unwind-protect
+        (progn
+          (make-directory pages t)
+          (with-temp-file alpha
+            (insert "#+TITLE: DuckDB Alpha\n#+WIKI_ID: alpha\n"
+                    "#+CATEGORY: Sql\n#+FILETAGS: :duckdb:\n"
+                    "#+WIKI_STATUS: draft\n* Notes\n"))
+          (org-museum-index-build t)
+          (should (= 1 (hash-table-count
+                        (org-museum-index-pages org-museum--index))))
+          (should (gethash "duckdb" (org-museum-index-tags org-museum--index)))
+          (with-temp-file beta
+            (insert "#+TITLE: PostgreSQL Beta\n#+WIKI_ID: beta\n"
+                    "#+CATEGORY: Data\n#+FILETAGS: :PostgreSQL:\n"
+                    "#+WIKI_STATUS: published\n* Notes\n"))
+          (org-museum-index-build t)
+          (should (= 2 (hash-table-count
+                        (org-museum-index-pages org-museum--index))))
+          (should (gethash "PostgreSQL" (org-museum-index-tags org-museum--index)))
+          (with-temp-file alpha
+            (insert "#+TITLE: Ontology Alpha\n#+WIKI_ID: alpha\n"
+                    "#+CATEGORY: Ontology\n#+FILETAGS: :concept:\n"
+                    "#+WIKI_STATUS: published\n* Revised notes\n"))
+          (org-museum-index-build t)
+          (let ((changed (gethash "alpha"
+                                  (org-museum-index-pages org-museum--index))))
+            (should (equal (org-museum-page-title changed) "Ontology Alpha"))
+            (should (equal (org-museum-page-category changed) "Ontology"))
+            (should (equal (org-museum-page-tags changed) '("concept"))))
+          (should-not (gethash "duckdb" (org-museum-index-tags org-museum--index)))
+          (delete-file beta)
+          (org-museum-index-build t)
+          (should (= 1 (hash-table-count
+                        (org-museum-index-pages org-museum--index))))
+          (should-not (gethash "PostgreSQL" (org-museum-index-tags org-museum--index)))
+          (should-not (gethash "Data" (org-museum-index-categories org-museum--index))))
       (delete-directory root t))))
 
 (ert-deftest org-museum-index-filters-share-one-url-backed-state ()
@@ -2108,7 +2213,8 @@
          (page (org-museum-test--page
                 "alpha" "Alpha" 42 "Sql" '("database") "draft"))
          (html (org-museum--build-index-html
-                `(("Sql" . (,page))) "graph.html" out-file)))
+                `(("Sql" . (,page))) "graph.html" out-file))
+         (script (org-museum--script-index)))
     (unwind-protect
         (progn
           (should (string-match-p "data-index-reset" html))
@@ -2118,21 +2224,18 @@
                    "<button type=\"button\" class=\"museum-entry-category\""
                    html))
           (should (string-match-p "aria-live=\"polite\"" html))
-          (should (string-match-p
-                   "var state={query:'',category:'',status:'all'}" html))
-          (should (string-match-p "history.pushState" html))
-          (should (string-match-p "addEventListener('popstate'" html))
-          (should (string-match-p "params.get('category')" html))
-          (should (string-match-p "params.get('status')" html))
-          (should (string-match-p "setAttribute('aria-pressed'" html))
-          (should (string-match-p
-                   (regexp-quote
-                    "'.topic-filter[data-category],[data-category-link]'")
-                   html))
-          (should-not (string-match-p
-                       (regexp-quote
-                        "querySelectorAll('[data-category],[data-category-link]')")
-                       html)))
+          (dolist (contract '("sourceData:sourceData"
+                              "filterSchema:buildSchema(sourceData)"
+                              "filteredData:[]"
+                              "aggregations:{metrics:"
+                              "function matches(page,except)"
+                              "function optionCounts(key)"
+                              "history.pushState"
+                              "addEventListener('popstate'"
+                              "key==='tags'?'tag':key"
+                              "params.get(parameter)"
+                              "setAttribute('aria-pressed'"))
+            (should (string-search contract script))))
       (delete-directory root t))))
 
 (ert-deftest org-museum-index-includes-drafts-headings-and-status-filters ()
@@ -2165,9 +2268,8 @@
             (should (string-match-p "\"level\":2" html))
             (should (string-match-p "data-status=\"draft\"" html))
             (should (string-match-p "museum-status-badge" html))
-            (should (string-match-p "data-status-filter=\"all\"" html))
-            (should (string-match-p "data-status-filter=\"published\"" html))
-            (should (string-match-p "data-status-filter=\"draft\"" html))
+            (should (string-match-p "id=\"index-dynamic-filters\"" html))
+            (should (string-search "dimensionLabel(key)" (org-museum--script-index)))
             (should (string-match-p ">SQL<" html))
             (should (string-match-p "2 篇索引" html))))
       (delete-directory root t))))
@@ -2251,6 +2353,8 @@
   (let* ((root (make-temp-file "org-museum-heading-health-test-" t))
          (org-museum-root-dir root)
          (org-museum-scan-dir "pages")
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
          (source (expand-file-name "pages/notes/page.org" root))
          (output (expand-file-name "exports/html/pages/notes/page.html" root))
          (pages (make-hash-table :test 'equal)))
@@ -2330,7 +2434,16 @@
                     "[[file:../../queries/查询 & sample.sql][查询]]\n"
                     "[[file:../../queries/guide.org][指南]]\n"
                     "[[file:../../queries/missing.org][缺失]]\n")
-            (org-museum--rewrite-org-museum-links (current-buffer) out-file source)
+            ;; Link lookup may perform another regexp search.  Rewriting must
+            ;; still replace the original Org link rather than that search.
+            (let ((fragment-function
+                   (symbol-function 'org-museum--file-link-fragment)))
+              (cl-letf (((symbol-function 'org-museum--file-link-fragment)
+                         (lambda (page search)
+                           (prog1 (funcall fragment-function page search)
+                             (string-match "clobber" "clobber")))))
+                (org-museum--rewrite-org-museum-links
+                 (current-buffer) out-file source)))
             (should (string-match-p "target.html" (buffer-string)))
             (should (string-match-p
                      "target.html#section-[0-9a-f]\\{12\\}"
@@ -2392,6 +2505,7 @@
           (make-directory (file-name-directory source) t)
           (with-temp-file source
             (insert "[[wiki:target][Wiki]]\n"
+                    "[[wiki:target.org][Wiki Org suffix]]\n"
                     "[[museum:target][Museum]]\n"
                     "[[id:target][ID]]\n"))
           (with-temp-file target
@@ -2407,11 +2521,12 @@
           (with-temp-buffer
             (setq buffer-file-name source)
             (insert "[[wiki:target][Wiki]]\n"
+                    "[[wiki:target.org][Wiki Org suffix]]\n"
                     "[[museum:target][Museum]]\n"
                     "[[id:target][ID]]\n")
             (org-museum--rewrite-org-museum-links
              (current-buffer) out-file source)
-            (dolist (description '("Wiki" "Museum" "ID"))
+            (dolist (description '("Wiki" "Wiki Org suffix" "Museum" "ID"))
               (should (string-match-p
                        (regexp-quote
                         (format "[[file:target.html][%s]]" description))
@@ -2713,24 +2828,21 @@
             (should (string-match-p "navigator.clipboard" html))
             (should (string-match-p "document.execCommand('copy')" html))
             (should (string-match-p "复制失败，请手动复制" html))
-            (should (string-match-p "forceSimulation(canvasNodes)" html))
+            (should (string-search "org-museum-graph-network.js" html))
             (should (string-match-p
                      (regexp-quote ".attr('role','group')") html))
             (should-not (string-match-p
                          (regexp-quote ".attr('role','img')") html))
-            (should (string-match-p "forceX(width/2)" html))
             (should (string-match-p "graph-node-neighbour" html))
-            (should (string-match-p "setGraphView('triage',false)" html))
-            (should (string-match-p "triagePanel.hidden=false" html))
-            (should (string-match-p "zeroNotice.hidden=true" html))
-            (should (string-match-p "renderFallbackList" html))
+            (should (string-match-p "graph-triage-panel" html))
+            (should (string-match-p "graph-zero-notice" html))
             (should-not
              (string-match-p
               "if(links.length===0)[[:space:]]*{[^}]*return;" html))))
       (delete-directory root t))))
 
-(ert-deftest org-museum-graph-deduplicates-reciprocal-page-connections ()
-  "Mutual references with one type render as one bidirectional connection."
+(ert-deftest org-museum-graph-keeps-reciprocal-page-connections-editable ()
+  "Each authored direction retains an independent editable edge identity."
   (let* ((pages (make-hash-table :test 'equal))
          (alpha (org-museum-test--page "alpha" "Alpha" 100))
          (beta (org-museum-test--page "beta" "Beta" 90))
@@ -2753,11 +2865,11 @@
            (data (json-read-from-string (org-museum--generate-graph-json)))
            (links (alist-get 'links data))
            (nodes (alist-get 'nodes data)))
-      (should (= 1 (length links)))
-      (should (equal "alpha" (alist-get 'source (car links))))
-      (should (equal "beta" (alist-get 'target (car links))))
-      (should (equal "相关" (alist-get 'type (car links))))
-      (should (eq t (alist-get 'bidirectional (car links))))
+      (should (= 2 (length links)))
+      (should (equal '("alpha" "beta")
+                     (sort (mapcar (lambda (edge) (alist-get 'ownerId edge)) links)
+                           #'string<)))
+      (should (seq-every-p (lambda (edge) (equal "相关" (alist-get 'type edge))) links))
       (should (equal '(1 1)
                      (sort (mapcar (lambda (node) (alist-get 'degree node)) nodes)
                            #'<))))))
@@ -2961,15 +3073,14 @@
     (should (string-search "params.get('focus')" graph))))
 
 (ert-deftest org-museum-graph-adapts-layout-to-a-sparse-relation-set ()
-  "Small factual networks use a compact relation path and omit overview chrome."
-  (let ((graph (org-museum--build-graph-html
-                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
-                "resources/org-museum.css" "resources/d3.v7.min.js")))
-    (should (string-search
-             "var compactRelationMode=canvasNodes.length>0&&canvasNodes.length<=4;"
-             graph))
-    (should (string-search "function applyAutoLayout()" graph))
-    (should (string-search "canvasNodes.length<8" graph))))
+  "The active graph uses factual edges for layout and visible nodes."
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum-graph-network.js" org-museum-test--repo-root))
+    (let ((source (buffer-string)))
+      (should (string-search "var visible = visibleNodes()" source))
+      (should (string-search "graph.links.filter(function (edge)" source))
+      (should (string-search "d3.forceSimulation(activeNodes)" source)))))
 
 (ert-deftest org-museum-graph-keeps-click-selection-reliable-after-drag-binding ()
   "Small pointer movement must not turn an ordinary node click into a drag."
@@ -3004,6 +3115,108 @@
       (goto-char (point-min))
       (should (search-forward pattern nil t)))))
 
+(ert-deftest org-museum-graph-uses-lightweight-progressive-labels ()
+  "The redesigned graph keeps nodes circular and reveals text progressively."
+  (let ((graph (org-museum--build-graph-html
+                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                "resources/org-museum.css" "resources/d3.v7.min.js")))
+    (should-not (string-search "graph-node-card" graph))
+    (should-not (string-search "graph-minimap" graph))
+    (should (string-search "event.transform.k>=0.62" graph))
+    (should (string-search "event.transform.k>=0.95" graph))
+    (should (string-search "event.transform.k>=1.05" graph))
+    (should (string-search "function fitView(ids)" graph))
+    (should (string-search "localStorage.getItem(layoutStorageKey)" graph))
+    (should (string-search "id=\"graph-relation-filter\"" graph))))
+
+(ert-deftest org-museum-graph-exposes-topology-layout-modes ()
+  "The topology picker exposes all twelve grouped graph arrangements."
+  (let ((graph (org-museum--build-graph-html
+                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
+                "resources/org-museum.css" "resources/d3.v7.min.js")))
+    (dolist (needle '("拓扑语义层级流" "Dagre 严格分层" "纵向层级树"
+                      "横向层级树" "有机力导向" "社区重心极坐标"
+                      "分组环形" "同心圆同轴径向" "星系辐射"
+                      "蒲公英扇形径向" "轮辐辐射骨架" "同质正交网格"
+                      "层级结构" "网状结构" "辐射结构" "网格结构"
+                      "id=\"graph-layout-search\"" "function setLayoutMode(mode)"
+                      "localStorage.setItem('org-museum-graph-layout'"))
+      (should (string-search needle graph)))))
+
+(ert-deftest org-museum-graph-edits-use-org-source-of-truth ()
+  "Graph mutations survive rescans and reject stale source hashes."
+  (let* ((root (make-temp-file "org-museum-network-" t))
+         (backup (make-temp-file "org-museum-network-backup-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir nil)
+         (org-museum-curation-backup-directory backup)
+         (org-museum--index nil)
+         (source (expand-file-name "pages/a.org" root))
+         (target (expand-file-name "pages/b.org" root)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory source) t)
+          (with-temp-file source
+            (insert "#+TITLE: Alpha\n#+WIKI_ID: alpha\n\n* Reading\nSee [[wiki:beta][Beta]].\n"))
+          (with-temp-file target
+            (insert "#+TITLE: Beta\n#+WIKI_ID: beta\n"))
+          (org-museum-index-build t)
+          (cl-letf (((symbol-function 'org-museum--export-graph-current)
+                     (lambda (&rest _args) nil)))
+            (let* ((request `(("action" . "upsert") ("ownerId" . "alpha")
+                              ("targetId" . "beta")
+                              ("expectedSha256" . ,(org-museum--curation-sha256 source))
+                              ("type" . "前置") ("label" . "先读 Beta")
+                              ("direction" . "both") ("weight" . 2)
+                              ("style" . "dashed")))
+                   (graph (org-museum--graph-edit-edge request))
+                   (data (let ((json-object-type 'alist) (json-array-type 'list))
+                           (json-read-from-string graph)))
+                   (edge (car (cdr (assq 'links data)))))
+              (should (equal (cdr (assq 'type edge)) "前置"))
+              (should (equal (cdr (assq 'label edge)) "先读 Beta"))
+              (should (equal (cdr (assq 'direction edge)) "both"))
+              (should (= (cdr (assq 'weight edge)) 2))
+              (should (equal (cdr (assq 'style edge)) "dashed"))
+              (should (string-search "MUSEUM_GRAPH_EDGE" (org-museum-test--file-string source)))
+              (should-error (org-museum--graph-edit-edge request)
+                            :type 'org-museum-curation-error))
+            (let* ((graph (org-museum--graph-edit-edge
+                           `(("action" . "delete") ("ownerId" . "alpha")
+                             ("targetId" . "beta")
+                             ("expectedSha256" . ,(org-museum--curation-sha256 source)))))
+                   (data (let ((json-object-type 'alist) (json-array-type 'list))
+                           (json-read-from-string graph))))
+              (should (= (length (cdr (assq 'links data))) 0))
+              (should (string-search "[[wiki:beta][Beta]]"
+                                     (org-museum-test--file-string source))))
+            (let* ((graph (org-museum--graph-edit-edge
+                           `(("action" . "upsert") ("ownerId" . "beta")
+                             ("targetId" . "alpha")
+                             ("expectedSha256" . ,(org-museum--curation-sha256 target))
+                             ("type" . "反例") ("label" . "对照 Alpha")
+                             ("direction" . "reverse") ("weight" . 1.5)
+                             ("style" . "dotted"))))
+                   (data (let ((json-object-type 'alist) (json-array-type 'list))
+                           (json-read-from-string graph)))
+                   (edge (car (cdr (assq 'links data)))))
+              (should (= (length (cdr (assq 'links data))) 1))
+              (should (equal (cdr (assq 'source edge)) "alpha"))
+              (should (equal (cdr (assq 'target edge)) "beta"))
+              (should (equal (cdr (assq 'ownerId edge)) "beta"))))
+          (let ((before (org-museum-test--file-string target)))
+            (cl-letf (((symbol-function 'org-museum--export-graph-current)
+                       (lambda (&rest _args) (error "fixture export failure"))))
+              (should-error
+               (org-museum--graph-edit-edge
+                `(("action" . "delete") ("ownerId" . "beta")
+                  ("targetId" . "alpha")
+                  ("expectedSha256" . ,(org-museum--curation-sha256 target))))
+               :type 'org-museum-curation-error))
+            (should (equal before (org-museum-test--file-string target)))))
+      (delete-directory root t)
+      (delete-directory backup t))))
+
 (ert-deftest org-museum-graph-keeps-isolated-focus-in-triage-context ()
   "A focused orphan should open its queue without dimming the factual network."
   (let ((graph (org-museum--build-graph-html
@@ -3015,15 +3228,15 @@
              "activeNeighborhood=(node.degree||0)>0?neighborhood(node):null" graph))))
 
 (ert-deftest org-museum-graph-stacks-a-compact-relation-path-on-mobile ()
-  "Long labels in a two-note relationship must not collide on narrow screens."
-  (let ((graph (org-museum--build-graph-html
-                "{\"nodes\":[],\"links\":[],\"meta\":{}}"
-                "resources/org-museum.css" "resources/d3.v7.min.js")))
-    (should (string-search "if(width<600){" graph))
-    (should (string-search "node.x=Math.min(62,width*.18);" graph))
-    (should (string-search "node.y=height*(0.14+0.72*ratio);" graph))
-    (should (string-search "width<600?'start'" graph))
-    (should (string-search "width<600?-6:-10" graph))))
+  "Mobile graph labels shorten while retaining full names for assistive tech."
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "resources/org-museum-graph-network.js" org-museum-test--repo-root))
+    (let ((source (buffer-string)))
+      (should (string-search "window.innerWidth <= 600 ? 9 : 16" source))
+      (should (string-search "shortName(node.name)" source))
+      (should (string-search "item.append('title')" source))
+      (should (string-search "nodeSelection.select('title').text" source)))))
 
 (ert-deftest org-museum-graph-keeps-triage-summary-inside-its-note ()
   "A queued note expands its own summary without reviving relation details."
@@ -3093,6 +3306,23 @@
                        (or (equal id "kept-custom")
                            (string-match-p "\\`section-[0-9a-f]\\{12\\}\\'" id)))
                      first-ids))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-heading-inventory-keeps-sibling-paths-distinct ()
+  "Different sibling sections must never reuse a cached outline path."
+  (let* ((root (make-temp-file "org-museum-sibling-test-" t))
+         (source (expand-file-name "page.org" root))
+         (page (org-museum-test--page "siblings" "Siblings" 1 "notes" nil
+                                      "published" source)))
+    (unwind-protect
+        (progn
+          (with-temp-file source
+            (insert "#+TITLE: Siblings\n* Parent\n** First\n*** Detail\n** Second\n"))
+          (let* ((inventory (org-museum--source-heading-inventory page))
+                 (ids (mapcar (lambda (item) (plist-get item :id)) inventory)))
+            (should (equal (mapcar (lambda (item) (plist-get item :path)) inventory)
+                           '("Parent" "Parent / First" "Parent / First / Detail" "Parent / Second")))
+            (should (= (length ids) (length (delete-dups (copy-sequence ids)))))))
       (delete-directory root t))))
 
 (ert-deftest org-museum-stable-heading-inventory-skips-non-exported-subtrees ()
@@ -3287,12 +3517,13 @@
                      (data (json-read-from-string
                             (match-string-no-properties 1)))
                      (links (alist-get 'links data)))
-                (should (= 1 (length links)))
+                (should (= 2 (length links)))
                 (should
-                 (equal '("alpha" "beta")
-                        (sort (list (alist-get 'source (car links))
-                                    (alist-get 'target (car links)))
-                              #'string<))))
+                 (equal '(("alpha" "beta") ("beta" "alpha"))
+                        (sort (mapcar (lambda (edge)
+                                        (list (alist-get 'source edge)
+                                              (alist-get 'target edge))) links)
+                              (lambda (a b) (string< (car a) (car b)))))))
               (goto-char (point-min))
               (should-not (search-forward "<script>" nil t))
               (goto-char (point-min))
@@ -3317,13 +3548,17 @@
                            (if (equal html-file alpha-file) 1 0)))))
             (with-temp-buffer
               (insert-file-contents graph-runtime)
-              (dolist (needle '("var meta=raw.meta||{}"
-                                "new URLSearchParams(location.search)"
-                                "orgMuseumThemeUrl(href)"
-                                ".alphaDecay(alphaDecay)"
-                                "var layoutTicks=Math.max(preTicks,180)"
-                                "simulation.stop();frozen=true"
+              (dolist (needle '("new URLSearchParams(location.search)"
                                 "window.addEventListener('popstate'"))
+                (goto-char (point-min))
+                (should (search-forward needle nil t))))
+            (with-temp-buffer
+              (insert-file-contents
+               (expand-file-name
+                "exports/html/resources/org-museum-graph-network.js" root))
+              (dolist (needle '("function setGraph(value)"
+                                "d3.forceSimulation(activeNodes)"
+                                "function visibleNodes()"))
                 (goto-char (point-min))
                 (should (search-forward needle nil t))))
             (should (file-exists-p index-runtime))
@@ -3428,12 +3663,21 @@
                 `(("Sql" . (,page))) "graph.html" out-file)))
     (unwind-protect
         (progn
-          (should (string-match-p
-                   "<h1 class=\"sr-only\">Org Museum</h1>" html))
-          (should (string-match-p
-                   (regexp-quote
-                    "document.body.classList.toggle('museum-index-filtering',listMode)")
-                   html))
+          (should (string-match-p "<h1>内容索引</h1>" html))
+          (should (= 1 (cl-loop with start = 0
+                                for at = (string-match
+                                          "id=\"org-museum-global-search\"" html start)
+                                while at count at
+                                do (setq start (1+ at)))))
+          (should (string-match-p "class=\"museum-index-dashboard\"" html))
+          (dolist (contract '("data-dashboard-metric=\"total\""
+                              "id=\"index-type-chart\""
+                              "id=\"index-trend-chart\""
+                              "id=\"index-dynamic-filters\""
+                              "id=\"index-filter-chips\""
+                              "function bestMatch(page)"
+                              "function renderResults()"))
+            (should (string-search contract html)))
           (should (string-match-p "normalizeHeadingTitle" html))
           (should (string-match-p
                    (regexp-quote "if(!headingValid){") html))
@@ -3526,6 +3770,7 @@
   (let* ((root (make-temp-file "org-museum-runtime-assets-test-" t))
          (org-museum-root-dir root)
          (org-museum-shared-export-dir "exports/html")
+         (org-museum-export-dir "exports/html/pages")
          (out-file (expand-file-name "exports/html/pages/alpha.html" root))
          (html (concat "<html><body>"
                        "<script type=\"application/json\" id=\"data\">{}</script>"
@@ -3598,7 +3843,9 @@
       (should (= (length (split-string topbar "data-theme-toggle" t)) 2))
       (should (string-match-p
                (regexp-quote "aria-label=\"切换为深色主题\"") topbar))
-      (should-not (string-match-p "aria-pressed=" topbar)))))
+      (should (string-match "<button[^>]*data-theme-toggle[^>]*>" topbar))
+      (should-not (string-search "aria-pressed=" (match-string 0 topbar)))
+      (should (string-search "data-theme-system aria-pressed=\"true\"" topbar)))))
 
 (ert-deftest org-museum-all-topbars-expose-one-drawer-trigger ()
   "Every shared shell exposes the same mobile notes drawer."
@@ -3616,6 +3863,20 @@
     (should (string-search "setPanelAvailable(drawer,false)" runtime))
     (should (string-search "releasePanelBackground" runtime))
     (should (string-search "lockPanelBackground" runtime))))
+
+(ert-deftest org-museum-topbar-unifies-settings-and-model-control ()
+  "The topbar merges theme switching and AI model settings into a unified settings menu."
+  (let ((ai-topbar (org-museum--build-topbar "ai-center.html" 'ai))
+        (home-topbar (org-museum--build-topbar "index.html" 'home)))
+    (should (string-search "museum-settings-menu" ai-topbar))
+    (should (string-search "museum-settings-menu" home-topbar))
+    (should (string-search "data-theme-toggle" ai-topbar))
+    (should (string-search "data-theme-system" ai-topbar))
+    (should (string-search "data-browser-config" ai-topbar))
+    (should (string-search "data-browser-models" ai-topbar))
+    (should (string-search "data-browser-load" ai-topbar))
+    (should (string-search "museum-settings-ai-section" ai-topbar))
+    (should-not (string-search "museum-settings-ai-section" home-topbar))))
 
 (ert-deftest org-museum-related-data-keeps-explicit-direction-and-deduplicates-pairs ()
   (let* ((pages (make-hash-table :test #'equal))
@@ -3719,6 +3980,21 @@
                       "if(!pageMap.has(state.focus))state.focus=''"))
       (should (string-search needle script)))))
 
+(ert-deftest org-museum-home-storage-failure-keeps-a-useful-empty-state ()
+  (let ((script (org-museum--script-index))
+        (html (org-museum--build-index-html nil "graph.html" "index.html")))
+    (should (string-search
+             "}).then(renderResume).catch(function(){renderResume([]);});"
+             script))
+    (should-not (string-search
+                 ").catch(function(){if(resume)resume.hidden=true;});"
+                 script))
+    (should (string-search
+             "id=\"continue-reading\" class=\"museum-resume\" aria-busy=\"true\""
+             html))
+    (should (string-search "<strong>继续探索</strong>" html))
+    (should (string-search "href=\"#recent-updates\">从全部笔记开始" html))))
+
 (ert-deftest org-museum-timeline-runtime-keeps-interaction-continuity ()
   "Focus, mobile details, and filters update without disruptive scrolling."
   (let ((script (org-museum--script-timeline)))
@@ -3734,8 +4010,20 @@
                       "document.body.style.position='fixed'"
                       "document.body.style.position=''"
                       "Math.abs(nextWidth-desktop.width)<1"
+                      "closest('.timeline-node,.timeline-mobile-node')"
+                      "function activeTimelineFocusId()"
+                      "var activeId=activeTimelineFocusId()"
+                      "focusedId=activeTimelineFocusId()"
+                      "var activeNode=activeId&&focusButton(activeId)"
+                      "focusControl:focusedId===state.focus"
                       "if(!event.target.closest||!event.target.closest('.timeline-node'))"))
       (should (string-search needle script)))
+    (should-not (string-search
+                 "coordinator.inputMode==='keyboard'?coordinator.lastFocusId:''"
+                 script))
+    (should-not (string-search
+                 "focusControl:coordinator.inputMode==='keyboard'&&coordinator.lastFocusId===state.focus"
+                 script))
     (should-not (string-search "focusCard.scrollIntoView" script))
     (should (string-search "timelineLayout.classList.toggle('has-focus',showInspector)" script))
     (should-not (string-search "function positionFocusCard" script))
@@ -3848,6 +4136,64 @@
                        (alist-get 'excerpts data)))
         (should (= 1 (length (alist-get 'headings data))))))))
 
+(ert-deftest org-museum-related-full-content-localizes-generated-toc ()
+  "Chinese relationship reading must not reintroduce Org's English TOC label."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-related-toc-test-" t)))
+         (source (expand-file-name "pages/alpha.org" root))
+         (page-file (expand-file-name "exports/html/pages/alpha.html" root))
+         (out-file (expand-file-name "exports/html/related.html" root))
+         (page (make-org-museum-page :id "alpha" :path source)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory source) t)
+          (with-temp-file source
+            (insert "#+TITLE: Alpha\n#+LANGUAGE: zh-CN\n"))
+          (cl-letf (((symbol-function 'org-museum--export-filename)
+                     (lambda (_source) page-file)))
+            (let ((result
+                   (org-museum--related-rebase-fragment
+                    (concat "<div id=\"table-of-contents\" role=\"doc-toc\">\n"
+                            "<h2>Table of Contents</h2>\n"
+                            "<div id=\"text-table-of-contents\"></div></div>")
+                    page out-file)))
+              (should (string-search "<h2>本文目录</h2>" result))
+              (should-not (string-search "Table of Contents" result)))
+            (with-temp-file source
+              (insert "#+TITLE: Alpha\n#+LANGUAGE: en\n"))
+            (let ((result
+                   (org-museum--related-rebase-fragment
+                    (concat "<div id=\"table-of-contents\" role=\"doc-toc\">\n"
+                            "<h2>Table of Contents</h2>\n"
+                            "<div id=\"text-table-of-contents\"></div></div>")
+                    page out-file)))
+              (should (string-search "<h2>Table of Contents</h2>" result))
+              (should-not (string-search "本文目录" result)))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-related-rebase-preserves-link-match ()
+  "Rebasing a relative URL must replace its HTML attribute exactly once."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-related-links-test-" t)))
+         (source (expand-file-name "pages/alpha.org" root))
+         (page-file (expand-file-name "exports/html/pages/alpha.html" root))
+         (out-file (expand-file-name "exports/html/related.html" root))
+         (page (make-org-museum-page :id "alpha" :path source)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'org-museum--export-filename)
+                   (lambda (_source) page-file)))
+          (should
+           (equal
+            (concat "<a href=\"pages/next.html?topic=one#part\">Next</a>"
+                    "<img src=\"pages/image.png\">"
+                    "<a href=\"#related-alpha-local\">Here</a>")
+            (org-museum--related-rebase-fragment
+             (concat "<a href=\"next.html?topic=one#part\">Next</a>"
+                     "<img src=\"image.png\">"
+                     "<a href=\"#local\">Here</a>")
+             page out-file))))
+      (delete-directory root t))))
+
 (ert-deftest org-museum-related-reader-is-offline-addressable-and-defensive ()
   (let* ((root (make-temp-file "org-museum-related-page-test-" t))
          (org-museum-root-dir root)
@@ -3874,6 +4220,16 @@
                                      :include))))
       (delete-directory root t)))
 
+(ert-deftest org-museum-related-highlight-skips-unsupported-languages ()
+  "Full relationship reading must not ask Highlight.js for unknown languages."
+  (let ((script (org-museum--script-related-reading)))
+    (should (string-search "className.indexOf('language-')===0" script))
+    (should (string-search "hljs.getLanguage(lang)" script))
+    (should (string-search "code.classList.add('no-highlight')" script))
+    (should-not (string-search
+                 "forEach(function(code){window.hljs.highlightElement(code);})"
+                 script))))
+
 (ert-deftest org-museum-theme-runtime-is-local-versioned-and-defensive ()
   "The blocking theme bootstrap is shared, offline, and rejects bad values."
   (let* ((root (file-name-as-directory
@@ -3897,6 +4253,7 @@
                               "document.documentElement.dataset.theme"
                               "new URL(href, location.href)"
                               "url.searchParams.set(key, currentTheme())"
+                              "history.replaceState(history.state, \"\", url.href)"
                               "readThemeFromUrl"
                               "window.orgMuseumThemeUrl"
                               "data-theme-toggle"
@@ -3904,7 +4261,9 @@
               (goto-char (point-min))
               (should (search-forward needle nil t)))
             (goto-char (point-min))
-            (should-not (search-forward "aria-pressed" nil t))))
+            (should (search-forward "data-theme-system" nil t))
+            (goto-char (point-min))
+            (should (search-forward "dataset.themePreference" nil t))))
       (delete-directory root t))))
 
 (ert-deftest org-museum-publish-sync-builds-a-managed-mirror ()
@@ -3914,7 +4273,7 @@
          (org-museum-root-dir root)
          (org-museum-shared-export-dir "exports/html")
          (org-museum-publish-directory
-          (expand-file-name "../published-site" root))
+          (org-museum-test--unique-sibling-path root "published-site"))
          (export-root (expand-file-name "exports/html" root))
          (old-page (expand-file-name "pages/old.html"
                                      org-museum-publish-directory))
@@ -4027,6 +4386,130 @@
                              (buffer-string)))))
       (delete-directory root t))))
 
+(ert-deftest org-museum-interactive-export-and-publish-commands-run-in-background ()
+  "Every user-facing export and publish command delegates to one background job."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-background-command-test-" t)))
+         (source (expand-file-name "page.org" root))
+         (org-museum-publish-directory root)
+         (org-museum-publish-repository "example/org-notes")
+         calls)
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name ".git" root) t)
+          (with-temp-file source (insert "#+TITLE: Page\n"))
+          (cl-letf (((symbol-function 'org-museum--start-background-job)
+                     (lambda (action args)
+                       (push (list action args) calls)
+                       'background-process))
+                    ((symbol-function 'called-interactively-p)
+                     (lambda (_kind) t))
+                    ((symbol-function 'read-string)
+                     (lambda (&rest _) org-museum--publish-full-confirmation)))
+            (with-temp-buffer
+              (setq buffer-file-name source)
+              (should (eq (call-interactively #'org-museum-export-page)
+                          'background-process)))
+            (should (eq (call-interactively #'org-museum-export-all)
+                        'background-process))
+            (should (eq (call-interactively #'org-museum-export-graph)
+                        'background-process))
+            (should (eq (call-interactively #'org-museum-export-related-reading)
+                        'background-process))
+            (should (eq (call-interactively #'org-museum-export-timeline)
+                        'background-process))
+            (should (eq (call-interactively #'org-museum-publish-sync)
+                        'background-process))
+            (should (eq (call-interactively #'org-museum-publish-sync-full)
+                        'background-process))
+            (should (eq (call-interactively #'org-museum-publish-deploy)
+                        'background-process)))
+          (should
+           (equal (sort (mapcar #'car calls)
+                        (lambda (left right)
+                          (string< (symbol-name left) (symbol-name right))))
+                  '(export-all export-graph export-page export-related-reading
+                    export-timeline publish-deploy publish-sync
+                    publish-sync-full))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-background-script-quotes-symbol-and-list-options ()
+  "Worker configuration is emitted as data rather than evaluated variables."
+  (let ((org-museum-curation-mode 'protocol)
+        (org-museum-open-page-after-export 'index)
+        (org-museum-graph-exclude-tags '("no-graph" "private")))
+    (let ((script (org-museum--background-script
+                   "C:/org-museum.el" 'export-all nil)))
+      (should (string-match-p
+               (regexp-quote
+                "org-museum-curation-mode (quote protocol)")
+               script))
+      (should (string-match-p
+               (regexp-quote
+                "org-museum-open-page-after-export (quote index)")
+               script))
+      (should (string-match-p
+               (regexp-quote
+                "org-museum-graph-exclude-tags (quote (\"no-graph\" \"private\"))")
+               script)))))
+
+(ert-deftest org-museum-background-success-actions-open-requested-results ()
+  "Successful full export and publish sync retain their user-visible outcomes."
+  (let ((org-museum-root-dir "C:/wiki/")
+        (org-museum-shared-export-dir "exports/html")
+        (org-museum-open-browser-after-export t)
+        (org-museum-open-page-after-export 'index)
+        (org-museum-publish-directory "C:/published/")
+        (org-museum-open-publish-directory-after-sync t))
+    (should
+     (equal (org-museum--background-success-action 'export-all)
+            '(browse-url . "file:///c:/wiki/exports/html/index.html")))
+    (should
+     (equal (org-museum--background-success-action 'publish-sync)
+            '(open-directory . "c:/published/")))))
+
+(ert-deftest org-museum-background-sentinel-opens-results-only-after-success ()
+  "Failed jobs never open stale export or publish results."
+  (let ((org-museum--background-process 'fixture-process)
+        opened
+        (status 'exit)
+        (exit-status 0))
+    (cl-letf (((symbol-function 'process-status) (lambda (_process) status))
+              ((symbol-function 'process-exit-status)
+               (lambda (_process) exit-status))
+              ((symbol-function 'process-get)
+               (lambda (_process property)
+                 (pcase property
+                   ('org-museum-script nil)
+                   ('org-museum-action 'export-all)
+                   ('org-museum-success-action
+                    '(browse-url . "file:///C:/wiki/index.html")))))
+              ((symbol-function 'org-museum--open-background-success-action)
+               (lambda (action) (setq opened action)))
+              ((symbol-function 'display-warning) #'ignore))
+      (org-museum--background-sentinel 'fixture-process "finished")
+      (should (equal opened '(browse-url . "file:///C:/wiki/index.html")))
+      (setq opened nil
+            org-museum--background-process 'fixture-process
+            exit-status 1)
+      (org-museum--background-sentinel 'fixture-process "failed")
+      (should-not opened))))
+
+(ert-deftest org-museum-background-emacs-resolves-windows-versioned-executable ()
+  "A daemon invocation name without .exe resolves to its real Windows binary."
+  (let ((org-museum-background-emacs-program nil)
+        (invocation-directory "C:/v/Emacs/bin/")
+        (invocation-name "emacs-31.1"))
+    (cl-letf (((symbol-function 'file-executable-p)
+               (lambda (path)
+                 (equal (downcase
+                         (replace-regexp-in-string "\\\\" "/" path))
+                        "c:/v/emacs/bin/emacs-31.1.exe")))
+              ((symbol-function 'executable-find) (lambda (_name) nil)))
+      (should
+       (equal (org-museum--background-emacs-executable)
+              "c:/v/Emacs/bin/emacs-31.1.exe")))))
+
 (ert-deftest org-museum-publish-deploy-refuses-a-blocked-preview-first ()
   "A blocked privacy status stops deployment before Git or GitHub runs."
   (let* ((root (file-name-as-directory
@@ -4055,7 +4538,7 @@
             (let ((error-data
                    (should-error (org-museum-publish-deploy)
                                  :type 'org-museum-publish-error)))
-              (should (string-match-p "privacy"
+              (should (string-match-p "隐私检查"
                                       (error-message-string error-data)))))
           (should-not process-called))
       (delete-directory root t))))
@@ -4147,8 +4630,9 @@
                 (make-temp-file "org-museum-publish-private-test-" t)))
          (org-museum-root-dir root)
          (org-museum-shared-export-dir "exports/html")
+         (org-museum-export-dir "exports/html/pages")
          (org-museum-publish-directory
-          (expand-file-name "../private-publish-site" root))
+          (org-museum-test--unique-sibling-path root "private-publish-site"))
          (export-root (expand-file-name "exports/html" root))
          (source (expand-file-name "pages/private.org" root))
          (page-output (expand-file-name "pages/private.html" export-root))
@@ -4198,7 +4682,7 @@
                  (org-museum-test--file-string
                   (expand-file-name ".org-museum-publish-manifest.json"
                                     org-museum-publish-directory))))
-            (should (string-match-p "privacy review" preview))
+            (should (string-match-p "公开检查" preview))
             (should-not (string-match-p "C:/private" preview))
             (should (string-match-p "\\\"state\\\":\\\"blocked\\\"" status))
             (should (string-match-p "pages/private\\.html" status))
@@ -4210,7 +4694,7 @@
            (file-exists-p
             (expand-file-name "resources/private.js"
                               org-museum-publish-directory)))
-          (with-current-buffer "*Org Museum Privacy Report*"
+          (with-current-buffer "*Org Museum 隐私报告*"
             (should (derived-mode-p 'special-mode))
             (should (string-match-p "private\\.org:2" (buffer-string)))
             (should (string-match-p "C:/private/secret\\.txt"
@@ -4256,13 +4740,13 @@
                    (org-museum-test--file-string
                     (expand-file-name ".org-museum-publish-status.json"
                                       org-museum-publish-directory))))
-          (with-current-buffer "*Org Museum Privacy Report*"
+          (with-current-buffer "*Org Museum 隐私报告*"
             (should (string-match-p "未发现隐私材料" (buffer-string)))))
       (delete-directory root t)
       (when (file-directory-p org-museum-publish-directory)
         (delete-directory org-museum-publish-directory t))
-      (when (get-buffer "*Org Museum Privacy Report*")
-        (kill-buffer "*Org Museum Privacy Report*")))))
+      (when (get-buffer "*Org Museum 隐私报告*")
+        (kill-buffer "*Org Museum 隐私报告*")))))
 
 (ert-deftest org-museum-publish-full-sync-copies-unresolved-content-for-review ()
   "Full sync keeps raw selected bytes locally but does not make them deployable."
@@ -4271,7 +4755,8 @@
          (user-emacs-directory root)
          (org-museum-root-dir root)
          (org-museum-shared-export-dir "exports/html")
-         (org-museum-publish-directory (expand-file-name "../full-publish" root))
+         (org-museum-publish-directory
+          (org-museum-test--unique-sibling-path root "full-publish"))
          (org-museum-publish-policy-file
           (expand-file-name "org-museum-publish-policy.json" root))
          (export-root (expand-file-name "exports/html" root))
@@ -4329,8 +4814,8 @@
                                     org-museum-publish-directory))))
             (should (string-match-p
                      "\"state\":\"review-required\"" status)))
-          (should (get-buffer "*Org Museum Full Sync Preview*"))
-          (with-current-buffer "*Org Museum Full Sync Preview*"
+          (should (get-buffer "*Org Museum 完整同步预览*"))
+          (with-current-buffer "*Org Museum 完整同步预览*"
             (let ((position (point-min)) buttons)
               (while (setq position
                            (text-property-any
@@ -4382,7 +4867,7 @@
                    (org-museum-test--file-string
                     (expand-file-name ".org-museum-publish-status.json"
                                       org-museum-publish-directory))))
-          (with-current-buffer "*Org Museum Full Sync Preview*"
+          (with-current-buffer "*Org Museum 完整同步预览*"
             (let ((position (point-min)) target)
               (while (and (not target)
                           (setq position
@@ -4417,8 +4902,8 @@
       (delete-directory root t)
       (when (file-directory-p org-museum-publish-directory)
         (delete-directory org-museum-publish-directory t))
-      (when (get-buffer "*Org Museum Full Sync Preview*")
-        (kill-buffer "*Org Museum Full Sync Preview*")))))
+      (when (get-buffer "*Org Museum 完整同步预览*")
+        (kill-buffer "*Org Museum 完整同步预览*")))))
 
 (ert-deftest org-museum-publish-full-sync-refuses-managed-file-conflicts ()
   "A full sync records hashes and never overwrites a post-sync manual edit."
@@ -4427,7 +4912,8 @@
          (user-emacs-directory root)
          (org-museum-root-dir root)
          (org-museum-shared-export-dir "exports/html")
-         (org-museum-publish-directory (expand-file-name "../full-conflict" root))
+         (org-museum-publish-directory
+          (org-museum-test--unique-sibling-path root "full-conflict"))
          (org-museum-publish-policy-file
           (expand-file-name "org-museum-publish-policy.json" root))
          (export-root (expand-file-name "exports/html" root))
@@ -4481,8 +4967,8 @@
       (delete-directory root t)
       (when (file-directory-p org-museum-publish-directory)
         (delete-directory org-museum-publish-directory t))
-      (when (get-buffer "*Org Museum Full Sync Preview*")
-        (kill-buffer "*Org Museum Full Sync Preview*")))))
+      (when (get-buffer "*Org Museum 完整同步预览*")
+        (kill-buffer "*Org Museum 完整同步预览*")))))
 
 (ert-deftest org-museum-publish-full-deploy-rejects-policy-drift-before-processes ()
   "Changing the local sharing policy invalidates a ready full-sync review."
@@ -4491,7 +4977,8 @@
          (user-emacs-directory root)
          (org-museum-root-dir root)
          (org-museum-shared-export-dir "exports/html")
-         (org-museum-publish-directory (expand-file-name "../policy-drift" root))
+         (org-museum-publish-directory
+          (org-museum-test--unique-sibling-path root "policy-drift"))
          (org-museum-publish-policy-file
           (expand-file-name "org-museum-publish-policy.json" root))
          (org-museum-publish-repository "owner/notes")
@@ -4529,8 +5016,8 @@
       (delete-directory root t)
       (when (file-directory-p org-museum-publish-directory)
         (delete-directory org-museum-publish-directory t))
-      (when (get-buffer "*Org Museum Full Sync Preview*")
-        (kill-buffer "*Org Museum Full Sync Preview*")))))
+      (when (get-buffer "*Org Museum 完整同步预览*")
+        (kill-buffer "*Org Museum 完整同步预览*")))))
 
 (ert-deftest org-museum-publish-policy-supports-scope-and-custom-detectors ()
   "Policy globs select scope and supplemental rules produce named findings."
@@ -4664,6 +5151,52 @@
       (delete-file public-url-file)
       (delete-file syntax-file))))
 
+(ert-deftest org-museum-publish-normalizes-org-html-windows-file-urls ()
+  "Org HTML's drive prefix must not duplicate an encoded Windows drive."
+  (let* ((root (file-name-as-directory
+                (make-temp-file "org-museum-publish-file-url-" t)))
+         (source (expand-file-name "pages/vibe/note.org" root))
+         (output (expand-file-name "exports/html/pages/vibe/note.html" root))
+         (pages (make-hash-table :test 'equal))
+         (org-museum-root-dir root)
+         (org-museum-pages-subdir "pages")
+         (org-museum-export-dir "exports/html/pages")
+         (org-museum-shared-export-dir "exports/html")
+         (org-museum--index
+          (make-org-museum-index
+           :pages pages
+           :tags (make-hash-table :test 'equal)
+           :categories (make-hash-table :test 'equal)
+           :graph (make-hash-table :test 'equal))))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory source) t)
+          (make-directory (file-name-directory output) t)
+          (with-temp-file source
+            (insert "#+TITLE: Note\n"
+                    "[workflow](recipe;file:///c%3A/Users/example/workflow.md)\n"))
+          (puthash "note"
+                   (org-museum-test--page
+                    "note" "Note" 1 nil nil "published" source)
+                   pages)
+          (with-temp-buffer
+            ;; This is the malformed URL emitted by Org HTML on Windows when
+            ;; the source file URL contains a percent-encoded drive colon.
+            (insert "<a href=\"file:///c:/c%3A/Users/example/workflow.md\">"
+                    "file:///c:/c%3A/Users/example/workflow.md</a>")
+            (org-museum--pp-annotate-local-file-links)
+            (write-region (point-min) (point-max) output nil 'silent))
+          (let ((findings
+                 (org-museum--publish-privacy-findings
+                  (list output) (expand-file-name "exports/html" root))))
+            (should (= 1 (length findings)))
+            (should (equal "c:/Users/example/workflow.md"
+                           (org-museum-publish-finding-match (car findings))))
+            (should (eq 'local-file-link
+                        (org-museum-publish-finding-kind (car findings))))
+            (should (= 2 (org-museum-publish-finding-line (car findings))))))
+      (delete-directory root t))))
+
 (ert-deftest org-museum-publish-sync-keeps-old-mirror-on-preview-build-failure ()
   "Placeholder and status failures occur before the old mirror is installed."
   (dolist (failure-function '(org-museum--publish-write-placeholder
@@ -4672,7 +5205,8 @@
                   (make-temp-file "org-museum-preview-build-failure-" t)))
            (org-museum-root-dir root)
            (org-museum-shared-export-dir "exports/html")
-           (org-museum-publish-directory (expand-file-name "../publish" root))
+           (org-museum-publish-directory
+            (org-museum-test--unique-sibling-path root "publish"))
            (export-root (expand-file-name "exports/html" root))
            (source (expand-file-name "pages/private.org" root))
            (pages (make-hash-table :test 'equal))
@@ -4733,7 +5267,8 @@
                 (make-temp-file "org-museum-staging-copy-failure-" t)))
          (org-museum-root-dir root)
          (org-museum-shared-export-dir "exports/html")
-         (org-museum-publish-directory (expand-file-name "../publish" root))
+         (org-museum-publish-directory
+          (org-museum-test--unique-sibling-path root "publish"))
          (export-root (expand-file-name "exports/html" root))
          (original-copy-file (symbol-function 'copy-file))
          (copy-count 0))
@@ -4805,7 +5340,7 @@
          (org-museum-root-dir root)
          (org-museum-shared-export-dir "exports/html")
          (org-museum-publish-directory
-          (expand-file-name "../rollback-publish-site" root))
+          (org-museum-test--unique-sibling-path root "rollback-publish-site"))
          (export-root (expand-file-name "exports/html" root))
          (published-index (expand-file-name "index.html"
                                              org-museum-publish-directory))
@@ -5025,12 +5560,75 @@
                            (member "POST" (cdr call))
                            (member "source[path]=/" (cdr call))))
                     calls))
-          (with-current-buffer "*Org Museum Publish*"
+          (with-current-buffer "*Org Museum 发布*"
             (should (string-match-p "0123456789abcdef" (buffer-string)))
             (should (string-match-p
                      "https://github.com/example/org-notes"
                      (buffer-string)))))
       (delete-directory root t))))
+
+(ert-deftest org-museum-publish-push-retries-github-commit-refs-failure ()
+  "A transient GitHub ref-commit failure is retried exactly once."
+  (let ((org-museum-publish-remote "origin")
+        calls
+        sleeps)
+    (cl-letf (((symbol-function 'org-museum--publish-run)
+               (lambda (program arguments &optional accepted)
+                 (push (list program arguments accepted) calls)
+                 (if (= (length calls) 1)
+                     (cons 1 (concat "remote: fatal error in commit_refs\n"
+                                     "! [remote rejected] main -> main (failure)"))
+                   (cons 0 ""))))
+              ((symbol-function 'sleep-for)
+               (lambda (seconds &optional _milliseconds)
+                 (push seconds sleeps))))
+      (should (equal (org-museum--publish-push "main") (cons 0 "")))
+      (should (= (length calls) 2))
+      (should (equal sleeps '(2)))
+      (should (equal (cadar calls) '("push" "-u" "origin" "main"))))))
+
+(ert-deftest org-museum-publish-push-does-not-retry-policy-failures ()
+  "A normal Git rejection remains visible and is not retried."
+  (let ((org-museum-publish-remote "origin")
+        (calls 0))
+    (cl-letf (((symbol-function 'org-museum--publish-run)
+               (lambda (_program _arguments &optional _accepted)
+                 (cl-incf calls)
+                 (cons 1 "remote: push declined due to repository rule"))))
+      (should-error (org-museum--publish-push "main")
+                    :type 'org-museum-publish-error)
+      (should (= calls 1)))))
+
+(ert-deftest org-museum-publish-deploy-configures-missing-identity-locally ()
+  "A deploy can commit without relying on global Git identity settings."
+  (let ((org-museum-publish-directory "C:/publish/")
+        (org-museum-publish-repository "example/org-notes")
+        calls)
+    (cl-letf (((symbol-function 'org-museum--publish-run)
+               (lambda (program arguments &optional _accepted)
+                 (push (cons program arguments) calls)
+                 (cond
+                  ((and (equal program "git")
+                        (equal arguments '("config" "--local" "--get" "user.name")))
+                   (cons 1 ""))
+                  ((and (equal program "git")
+                        (equal arguments '("config" "--local" "--get" "user.email")))
+                   (cons 1 ""))
+                  ((and (equal program "gh")
+                        (equal arguments
+                               '("api" "user" "--jq" "[.id, .login] | @tsv")))
+                   (cons 0 "12345\texample\n"))
+                  (t (cons 0 ""))))))
+      (org-museum--publish-ensure-git-identity
+       org-museum-publish-repository)
+      (should (member
+               '("git" "config" "--local" "user.name" "example") calls))
+      (should (member
+               '("git" "config" "--local" "user.email"
+                 "12345+example@users.noreply.github.com")
+               calls))
+      (should-not
+       (cl-find-if (lambda (call) (member "--global" (cdr call))) calls)))))
 
 (ert-deftest org-museum-publish-deploy-rejects-a-lookalike-remote-host ()
   "A repository-shaped path on a non-GitHub host is never pushed."
@@ -5114,8 +5712,8 @@
          (payload " M pages/ghp_legitimate-name.html\0"))
     (unwind-protect
         (progn
-          (when (get-buffer "*Org Museum Publish*")
-            (kill-buffer "*Org Museum Publish*"))
+          (when (get-buffer "*Org Museum 发布*")
+            (kill-buffer "*Org Museum 发布*"))
           (cl-letf (((symbol-function 'executable-find) (lambda (_) t))
                     ((symbol-function 'process-file)
                      (lambda (_program _in destination _display &rest _args)
@@ -5123,7 +5721,7 @@
                        0)))
             (should (equal (cdr (org-museum--publish-run "git" '("status")))
                            payload)))
-          (with-current-buffer "*Org Museum Publish*"
+          (with-current-buffer "*Org Museum 发布*"
             (should-not (search-forward "ghp_legitimate" nil t))))
       (delete-directory root t))))
 
@@ -5244,9 +5842,9 @@
     (insert-file-contents (expand-file-name "org-museum.el"
                                             org-museum-test--repo-root))
     (should (search-forward
-             "(\"p\" \"Sync Publish Site\" org-museum-publish-sync)" nil t))
+             "(\"p\" \"同步发布站点\"   org-museum-publish-sync)" nil t))
     (should (search-forward
-             "(\"P\" \"Deploy to GitHub\"  org-museum-publish-deploy)"
+             "(\"P\" \"部署到 GitHub\" org-museum-publish-deploy)"
              nil t))))
 
 (defun org-museum-test--curation-fixture (root)
@@ -5403,7 +6001,7 @@
                 "{\"nodes\":[],\"links\":[],\"meta\":{}}"
                 "resources/org-museum.css" nil))
         (related (org-museum--script-related-reading)))
-    (should (string-match-p (regexp-quote "aria-label=\"切换图谱布局方向") graph))
+    (should (string-match-p (regexp-quote "id=\"btn-layout\"") graph))
     (should (string-match-p (regexp-quote "workspaceFooter.hidden=state.view==='triage'") graph))
     (should (string-match-p
              (regexp-quote "<h2 id=\"graph-selected-title\">尚未选择笔记</h2>")
@@ -5420,6 +6018,473 @@
                                             org-museum-test--repo-root))
     (goto-char (point-min))
     (should (search-forward "sessionStorage" nil t))))
+
+(ert-deftest org-museum-timeline-states-published-boundary-explicitly ()
+  (let ((html (org-museum--build-timeline-html
+               "timeline.html"
+               "{\"pages\":[],\"edges\":[],\"palette\":[]}")))
+    (should (string-match-p
+             (regexp-quote "按创建时间浏览已发布笔记") html))
+    (should (string-match-p
+             (regexp-quote "已发布笔记") html))
+    (should (string-match-p
+             (regexp-quote "当前时间轴仅展示已发布笔记") html))
+    (should-not (string-match-p
+                 (regexp-quote "id=\"timeline-status-filters\" class=\"timeline-filter-list\"")
+                 html))))
+
+(ert-deftest org-museum-assets-classify-by-mime-and-render-by-kind ()
+  "Asset behaviour is selected from MIME-derived kinds, not filename branches."
+  (should (equal (org-museum--asset-mime-for-name "query.sql")
+                 "application/sql"))
+  (should (equal (org-museum--asset-published-name "abc" "application/sql")
+                 "abc.sql"))
+  (should (eq (org-museum--asset-kind-for-mime "image/png") 'image))
+  (should (eq (org-museum--asset-kind-for-mime "video/mp4") 'video))
+  (should (eq (org-museum--asset-kind-for-mime "audio/mpeg") 'audio))
+  (should (eq (org-museum--asset-kind-for-mime "application/pdf") 'pdf))
+  (should (eq (org-museum--asset-kind-for-mime
+               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+              'spreadsheet))
+  (should (eq (org-museum--asset-kind-for-mime "application/x-fixture")
+              'unknown))
+  (let* ((asset (make-org-museum-asset
+                 :id (make-string 64 ?a) :filename "demo.png"
+                 :mime "image/png" :kind 'image :size 3
+                 :sha256 (make-string 64 ?a)
+                 :source-path "file:demo.png"
+                 :published-url (concat "assets/" (make-string 64 ?a) ".png")
+                 :thumbnail (concat "assets/" (make-string 64 ?a) ".png")
+                 :filenames '("demo.png") :sources '("file:demo.png"))))
+    (let ((html (org-museum--asset-render-html asset "../../../dist/pages/demo.html"
+                                                "Demo image" nil)))
+      (should (string-match-p "loading=\"lazy\"" html))
+      (should (string-match-p "decoding=\"async\"" html))
+      (should (string-match-p "data-lightbox" html)))
+    (should (string-match-p
+             "download=\"demo.png\""
+             (org-museum--asset-render-html
+              asset "../../../dist/pages/demo.html" nil t)))))
+
+(ert-deftest org-museum-assets-deduplicate-content-and-write-stable-manifest ()
+  "Two references with identical bytes publish one content-addressed asset."
+  (let* ((root (make-temp-file "org-museum-assets-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "dist")
+         (org-museum-assets-subdir "assets")
+         (left (expand-file-name "left/demo.bin" root))
+         (right (expand-file-name "right/copy.bin" root))
+         (org-museum--asset-registry (make-hash-table :test #'equal))
+         (org-museum--page-assets (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (dolist (file (list left right))
+            (make-directory (file-name-directory file) t)
+            (with-temp-file file (set-buffer-multibyte nil) (insert "same")))
+          (let ((first (org-museum--asset-register-local
+                        left "file:left/demo.bin" "page-a" "First" t))
+                (second (org-museum--asset-register-local
+                         right "file:right/copy.bin" "page-b" "Second" t)))
+            (should (equal (org-museum-asset-id first)
+                           (org-museum-asset-id second)))
+            (should (= 1 (hash-table-count org-museum--asset-registry)))
+            (org-museum--publish-assets)
+            (org-museum--write-assets-manifest)
+            (should (= 1 (length (directory-files
+                                  (expand-file-name "dist/assets" root)
+                                  nil "^[^.].*"))))
+            (with-temp-buffer
+              (insert-file-contents (expand-file-name "dist/assets.json" root))
+              (let ((json (buffer-string)))
+                (should (string-match-p "\"schema_version\":1" json))
+                (should (string-match-p "\"page-a\"" json))
+                (should (string-match-p "\"page-b\"" json))
+                (should-not (string-match-p "[A-Za-z]:[/\\\\]" json))))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-assets-reject-missing-and-empty-local-files ()
+  "Broken local assets fail before publication instead of degrading silently."
+  (let* ((root (make-temp-file "org-museum-broken-asset-test-" t))
+         (empty (expand-file-name "empty.pdf" root))
+         (missing (expand-file-name "missing.pdf" root))
+         (org-museum-root-dir root)
+         (org-museum--asset-registry (make-hash-table :test #'equal))
+         (org-museum--page-assets (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file empty)
+          (should-error
+           (org-museum--asset-register-local
+            missing "file:missing.pdf" "page" "Missing" t)
+           :type 'org-museum-asset-error)
+          (should-error
+           (org-museum--asset-register-local
+            empty "file:empty.pdf" "page" "Empty" t)
+           :type 'org-museum-asset-error))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-assets-ignore-hidden-headline-links ()
+  "Private Org trees must not leak files into the public asset list."
+  (with-temp-buffer
+    (insert "* COMMENT Hidden\n[[file:private.pdf]]\n"
+            "* Tagged :noexport:\n[[file:tagged.pdf]]\n"
+            "* Visible\n[[file:public.pdf]]\n")
+    (org-mode)
+    (let ((links (org-element-map (org-element-parse-buffer) 'link #'identity)))
+      (should (equal (mapcar #'org-museum--asset-link-exported-p links)
+                     '(nil nil t))))))
+
+(ert-deftest org-museum-assets-list-only-adds-media-downloads ()
+  "An inline file card must not be repeated in the article resource list."
+  (let* ((org-museum--asset-registry (make-hash-table :test #'equal))
+         (org-museum--page-assets (make-hash-table :test #'equal))
+         (page (make-org-museum-page :id "page"))
+         (file (make-org-museum-asset :id "file" :filename "query.sql"
+                                      :kind 'unknown))
+         (image (make-org-museum-asset :id "image" :filename "chart.png"
+                                       :kind 'image :published-url "assets/chart.png")))
+    (puthash "file" file org-museum--asset-registry)
+    (puthash "image" image org-museum--asset-registry)
+    (puthash "page" '("file") org-museum--page-assets)
+    (should-not (org-museum--page-assets-html page "dist/pages/page.html"))
+    (puthash "page" '("file" "image") org-museum--page-assets)
+    (let ((org-museum-root-dir temporary-file-directory)
+          (org-museum-shared-export-dir "dist"))
+      (let ((html (org-museum--page-assets-html page "dist/pages/page.html")))
+        (should (string-match-p "chart.png" html))
+        (should-not (string-match-p "query.sql" html))))))
+
+(ert-deftest org-museum-assets-single-page-manifest-merge-preserves-other-pages ()
+  "Single-page asset updates retain records belonging to other pages."
+  (let* ((root (make-temp-file "org-museum-asset-merge-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "dist")
+         (org-museum-assets-subdir "assets")
+         (one (expand-file-name "one.pdf" root))
+         (two (expand-file-name "two.pdf" root)))
+    (unwind-protect
+        (progn
+          (with-temp-file one (insert "one"))
+          (with-temp-file two (insert "two"))
+          (let ((org-museum--asset-registry (make-hash-table :test #'equal))
+                (org-museum--page-assets (make-hash-table :test #'equal)))
+            (org-museum--asset-register-local
+             one "file:one.pdf" "page-one" "One" t)
+            (org-museum--asset-register-local
+             two "file:two.pdf" "page-two" "Two" t)
+            (org-museum--publish-assets)
+            (org-museum--write-assets-manifest))
+          (let ((org-museum--asset-registry (make-hash-table :test #'equal))
+                (org-museum--page-assets (make-hash-table :test #'equal)))
+            (org-museum--load-assets-manifest)
+            (should (= 2 (hash-table-count org-museum--asset-registry)))
+            (should (= 1 (length (gethash "page-two" org-museum--page-assets))))
+            (puthash "page-one" nil org-museum--page-assets)
+            (org-museum--prune-unreferenced-assets)
+            (org-museum--write-assets-manifest)
+            (with-temp-buffer
+              (insert-file-contents (org-museum--assets-manifest-path))
+              (let ((json (buffer-string)))
+                (should (string-match-p "\"page-two\"" json))
+                (should-not (string-match-p "\"page-one\"" json))))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-assets-single-page-detects-asset-only-change ()
+  "Single-page export rehashes an attachment even when the Org file is unchanged."
+  (let* ((root (make-temp-file "org-museum-asset-page-refresh-" t))
+         (pages (expand-file-name "pages/Test" root))
+         (source (expand-file-name "page.org" pages))
+         (asset (expand-file-name "data.bin" pages))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (org-museum-export-dir "dist/pages")
+         (org-museum-shared-export-dir "dist")
+         (org-museum-open-browser-after-export nil)
+         old-id new-id)
+    (unwind-protect
+        (progn
+          (make-directory pages t)
+          (with-temp-file asset (insert "first"))
+          (with-temp-file source
+            (insert "#+TITLE: Page\n#+WIKI_ID: page\n#+CATEGORY: Test\n"
+                    "[[file:data.bin][Data]]\n"))
+          (org-museum-export-all)
+          (setq old-id (org-museum--file-content-hash asset))
+          (let ((source-time (file-attribute-modification-time
+                              (file-attributes source))))
+            (with-temp-file asset (insert "second"))
+            (org-museum-export-page source nil)
+            (should (equal source-time
+                           (file-attribute-modification-time
+                            (file-attributes source)))))
+          (setq new-id (org-museum--file-content-hash asset))
+          (should-not (equal old-id new-id))
+          (with-temp-buffer
+            (insert-file-contents (expand-file-name "dist/assets.json" root))
+            (should (search-forward new-id nil t))
+            (should-not (search-forward old-id nil t)))
+          (with-temp-buffer
+            (insert-file-contents
+             (expand-file-name "dist/pages/Test/page.html" root))
+            (should (search-forward new-id nil t))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-assets-full-export-publishes-mixed-media-and-page-list ()
+  "A real full export publishes mixed asset kinds under dist/assets."
+  (let* ((root (make-temp-file "org-museum-assets-export-test-" t))
+         (pages (expand-file-name "pages/Test" root))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (org-museum-pages-subdir "pages")
+         (org-museum-export-dir "dist/pages")
+         (org-museum-shared-export-dir "dist")
+         (org-museum-assets-subdir "assets")
+         (org-museum-open-browser-after-export nil)
+         (org-museum--plugin-dir org-museum-test--repo-root)
+         (default-buffer-file-coding-system 'utf-8-unix)
+         (coding-system-for-write 'utf-8-unix)
+         (process-environment
+          (cons "SOURCE_DATE_EPOCH=1700000000" process-environment)))
+    (unwind-protect
+        (progn
+          (make-directory pages t)
+          (dolist (fixture '(("photo.png" . "png-bytes")
+                             ("movie.mp4" . "mp4-bytes")
+                             ("sound.mp3" . "mp3-bytes")
+                             ("paper.pdf" . "pdf-bytes")
+                             ("sheet.xlsx" . "xlsx-bytes")
+                             ("blob.mystery" . "mystery-bytes")
+                             ("photo-copy.png" . "png-bytes")))
+            (with-temp-file (expand-file-name (car fixture) pages)
+              (set-buffer-multibyte nil)
+              (insert (cdr fixture))))
+          (with-temp-file (expand-file-name "article.org" pages)
+            (insert "#+TITLE: Assets\n#+WIKI_ID: assets\n#+CATEGORY: Test\n\n"
+                    "[[file:photo.png][Photo alt]]\n"
+                    "[[file:movie.mp4][Movie]]\n"
+                    "[[file:sound.mp3][Sound]]\n"
+                    "[[file:paper.pdf][Paper]]\n"
+                    "[[file:sheet.xlsx][Sheet]]\n"
+                    "[[file:blob.mystery][Blob]]\n"
+                    "[[file:photo-copy.png][Duplicate photo]]\n"))
+          (cl-letf (((symbol-function 'url-copy-file)
+                     (lambda (&rest _) (ert-fail "asset fixture used network")))
+                    ((symbol-function 'browse-url) (lambda (&rest _) nil)))
+            (org-museum-export-all))
+          (let ((html (expand-file-name "dist/pages/Test/article.html" root))
+                (manifest (expand-file-name "dist/assets.json" root))
+                (assets-dir (expand-file-name "dist/assets" root)))
+            (should (file-regular-p html))
+            (should (file-regular-p manifest))
+            (should (= 6 (length (directory-files assets-dir nil "^[^.].*"))))
+            (with-temp-buffer
+              (insert-file-contents html)
+              (should (search-forward "museum-asset-image" nil t))
+              (should (search-forward "<video controls preload=\"none\">" nil t))
+              (should (search-forward "<audio controls preload=\"none\">" nil t))
+              (should (search-forward "museum-asset-pdf" nil t))
+              (should (search-forward "id=\"museum-page-assets-title\"" nil t))
+              (should-not
+               (string-match-p
+                "<!-- [0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}"
+                (buffer-string))))
+            (with-temp-buffer
+              (insert-file-contents manifest)
+              (let ((json (buffer-string)))
+                (should (string-match-p "\"kind\":\"spreadsheet\"" json))
+                (should (string-match-p "\"kind\":\"unknown\"" json))
+                (should-not (string-match-p "[A-Za-z]:[/\\\\]" json))))
+            (let ((first (org-museum-test--tree-hashes
+                          (expand-file-name "dist" root))))
+              (delete-directory (expand-file-name "dist" root) t)
+              (cl-letf (((symbol-function 'url-copy-file)
+                         (lambda (&rest _) (ert-fail "repeat export used network")))
+                        ((symbol-function 'browse-url) (lambda (&rest _) nil)))
+                (org-museum-export-all))
+              (should (equal first
+                             (org-museum-test--tree-hashes
+                              (expand-file-name "dist" root)))))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-assets-attachment-resolution-survives-page-move ()
+  "attachment: resolves from the Org heading ID, not the page directory."
+  (let* ((root (make-temp-file "org-museum-attachment-asset-test-" t))
+         (org-attach-id-dir (expand-file-name "attach" root))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "dist")
+         (old (expand-file-name "pages/old/page.org" root))
+         (moved (expand-file-name "pages/new/page.org" root))
+         (out (expand-file-name "dist/pages/new/page.html" root))
+         (org-museum--asset-registry (make-hash-table :test #'equal))
+         (org-museum--page-assets (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory old) t)
+          (with-temp-file old
+            (insert "#+TITLE: Attachment\n#+WIKI_ID: attachment\n"
+                    "* Entry\n:PROPERTIES:\n:ID: asset-entry-id\n:END:\n"
+                    "[[attachment:manual.pdf][Manual]]\n"))
+          (let ((buffer (find-file-noselect old)))
+            (unwind-protect
+                (with-current-buffer buffer
+                  (org-mode)
+                  (goto-char (point-min))
+                  (search-forward "* Entry")
+                  (let ((directory (org-attach-dir t)))
+                    (make-directory directory t)
+                    (with-temp-file (expand-file-name "manual.pdf" directory)
+                      (insert "pdf"))))
+              (when (buffer-live-p buffer) (kill-buffer buffer))))
+          (make-directory (file-name-directory moved) t)
+          (rename-file old moved)
+          (with-temp-buffer
+            (insert-file-contents moved)
+            (setq buffer-file-name moved)
+            (org-mode)
+            (org-museum--prepare-page-assets (current-buffer) moved out))
+          (should (= 1 (hash-table-count org-museum--asset-registry))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-assets-remote-cache-locks-content-until-refresh ()
+  "A warm URL mapping rebuilds without network access until explicitly refreshed."
+  (let* ((root (make-temp-file "org-museum-remote-asset-test-" t))
+         (org-museum-asset-cache-directory root)
+         (url "https://example.test/media/demo.mp3")
+         (calls 0))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'url-retrieve-synchronously)
+                     (lambda (&rest _)
+                       (cl-incf calls)
+                       (let ((buffer (generate-new-buffer " *remote asset*")))
+                         (with-current-buffer buffer
+                           (set-buffer-multibyte nil)
+                           (insert "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\n\r\n")
+                           (setq-local url-http-end-of-headers (point))
+                           (insert "remote-audio"))
+                         buffer))))
+            (let ((first (org-museum--asset-download-remote url)))
+              (should (file-regular-p (plist-get first :path)))
+              (should (equal "audio/mpeg" (plist-get first :mime)))))
+          (cl-letf (((symbol-function 'url-retrieve-synchronously)
+                     (lambda (&rest _) (ert-fail "warm cache used network"))))
+            (should (file-regular-p
+                     (plist-get (org-museum--asset-download-remote url) :path))))
+          (should (= calls 1))
+          (should (= 1 (org-museum-refresh-remote-assets url)))
+          (should-not (file-exists-p (org-museum--asset-cache-url-path url))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-assets-remote-candidate-rejects-version-page ()
+  "A dotted release version remains a web page while known assets are fetched."
+  (should-not
+   (org-museum--remote-asset-candidate-p
+    "https://github.com/magit/magit/releases/tag/v4.7.0"))
+  (should
+   (org-museum--remote-asset-candidate-p
+    "https://example.test/download/archive.tar.xz"))
+  (should
+   (org-museum--remote-asset-candidate-p
+    "https://example.test/media/opaque.bin")))
+
+(ert-deftest org-museum-assets-remote-html-response-remains-link ()
+  "A candidate URL returning HTML is not registered as an asset."
+  (let ((org-museum--asset-remote-results (make-hash-table :test #'equal))
+        (calls 0))
+    (cl-letf (((symbol-function 'org-museum--asset-download-remote)
+               (lambda (_url)
+                 (cl-incf calls)
+                 (signal 'org-museum-asset-error
+                         '("Remote asset returned HTML: https://example.test/file.pdf")))))
+      (dotimes (_ 2)
+        (should-not
+         (org-museum--asset-register-remote
+          "https://example.test/file.pdf" "page" "Reference" t)))
+      (should (= calls 1)))))
+
+(ert-deftest org-museum-assets-preflight-preserves-source-mtime ()
+  "Asset discovery never changes an unchanged Org source timestamp."
+  (let* ((root (make-temp-file "org-museum-asset-mtime-test-" t))
+         (source (expand-file-name "page.org" root))
+         (asset (expand-file-name "file.bin" root))
+         (old-time (seconds-to-time 1700000000))
+         (org-museum-root-dir root)
+         (org-museum-export-dir "dist/pages")
+         (org-museum-shared-export-dir "dist")
+         (org-museum--asset-registry (make-hash-table :test #'equal))
+         (org-museum--page-assets (make-hash-table :test #'equal))
+         (org-museum--asset-remote-results (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file asset (insert "binary"))
+          (with-temp-file source
+            (insert "#+TITLE: Page\n#+WIKI_ID: page\n[[file:file.bin][File]]\n"))
+          (set-file-times source old-time)
+          (org-museum--preflight-page-assets source)
+          (should (equal old-time
+                         (file-attribute-modification-time
+                          (file-attributes source)))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-assets-root-requires-safe-strict-descendant ()
+  "Asset cleanup can never target the shared output root or reserved trees."
+  (let ((org-museum-root-dir temporary-file-directory)
+        (org-museum-shared-export-dir "dist"))
+    (dolist (value '("" "." "pages" "resources" "../assets"))
+      (let ((org-museum-assets-subdir value))
+        (should-error (org-museum--assets-root)
+                      :type 'org-museum-asset-error)))))
+
+(ert-deftest org-museum-assets-remote-http-error-retains-link-with-warning ()
+  "A missing remote file leaves its link intact and reports each location."
+  (let ((org-museum-asset-cache-directory
+         (make-temp-file "org-museum-http-error-cache-" t))
+        (org-museum--asset-remote-results (make-hash-table :test #'equal))
+        (org-museum--asset-warnings nil)
+        (calls 0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'url-retrieve-synchronously)
+                   (lambda (&rest _)
+                     (cl-incf calls)
+                     (let ((buffer (generate-new-buffer " *asset 404*")))
+                       (with-current-buffer buffer
+                         (insert "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\n\r\nmissing")
+                         (setq-local url-http-end-of-headers
+                                     (save-excursion
+                                       (goto-char (point-min))
+                                       (search-forward "\r\n\r\n")))
+                         (setq-local url-http-response-status 404))
+                       buffer))))
+          (dolist (location '("page.org:1" "page.org:2"))
+            (let ((org-museum--asset-current-location location))
+              (should-not
+               (org-museum--asset-register-remote
+                "https://example.test/missing.pdf" "page" "PDF" t))))
+          (should (= calls 1))
+          (should (= (length org-museum--asset-warnings) 2))
+          (should (equal (mapcar (lambda (warning)
+                                   (plist-get warning :location))
+                                 (nreverse org-museum--asset-warnings))
+                         '("page.org:1" "page.org:2")))
+          (should (eq (plist-get (car org-museum--asset-warnings) :kind)
+                      'remote-unavailable)))
+      (delete-directory org-museum-asset-cache-directory t))))
+
+(ert-deftest org-museum-generated-list-anchors-are-deterministic ()
+  "Process-random Org list anchors normalize by stable document order."
+  (let (outputs)
+    (dolist (ids '(("orgabcdef1" "org1234567")
+                   ("org7654321" "orgfedcba9")))
+      (with-temp-buffer
+        (insert (format "<li><a id=\"%s\"></a><a href=\"#%s\">One</a></li>"
+                        (car ids) (car ids)))
+        (insert (format "<li><a id=\"%s\"></a>Two</li>" (cadr ids)))
+        (org-museum--pp-stabilize-generated-anchors "page.org")
+        (push (buffer-string) outputs)))
+    (should (equal (car outputs) (cadr outputs)))
+    (should (string-match-p "href=\"#org-museum-ref-" (car outputs)))
+    (should-not (string-match-p "orgabcdef1\\|org7654321" (car outputs)))))
 
 (provide 'org-museum-test)
 

@@ -1,11 +1,19 @@
 # Build and Export
 exports/
+dist/
 *.html
 !README.md
 !test.md
 
 # Cache and Index
 .org-museum-index.json
+.org-museum-ai-state.json
+.org-museum-ai-sessions.json
+.org-museum-ai-captures.json
+.org-museum-knowledge.json
+.org-museum-derived.json
+.org-museum-gap.json
+org-museum-knowledge.elc
 .org-museum-cache.el
 .wiki-index.json
 *.db

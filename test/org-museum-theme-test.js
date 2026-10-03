@@ -14,16 +14,19 @@ const ratio=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.0
 let minimum=Infinity;
 for(const [i,block] of blocks.entries()) {
  const map={...parse(blocks[0][1]),...parse(block[1])};
- for(const surface of ['bg','surface','surface-raised','hover'])for(const text of ['text','text-muted','accent','success','warning','error']){
+ for(const surface of ['bg','surface','surface-raised','hover'])for(const text of ['text','text-muted','text-subtle','accent','secondary-text','success','warning','error']){
   const r=ratio(resolve(map,'--museum-'+text),resolve(map,'--museum-'+surface));minimum=Math.min(minimum,r);assert(r>=4.5,`${i} ${text}/${surface}: ${r}`);
  }
- for(const surface of ['bg','surface','surface-raised'])assert(ratio(resolve(map,'--museum-border'),resolve(map,'--museum-'+surface))>=3);
+ for(const surface of ['bg','surface','surface-raised']){
+  assert(ratio(resolve(map,'--museum-border'),resolve(map,'--museum-'+surface))>=3);
+  assert(ratio(resolve(map,'--museum-control-border'),resolve(map,'--museum-'+surface))>=3);
+ }
  for(const surface of ['bg','surface','surface-raised','hover'])assert(ratio(resolve(map,'--museum-focus-ring'),resolve(map,'--museum-'+surface))>=3);
  assert(ratio(resolve(map,'--museum-on-accent'),resolve(map,'--museum-accent'))>=4.5);
  assert.equal(resolve(map,'--museum-paper'),resolve(map,'--museum-surface'));
- for(const token of ['text-subtle','secondary','secondary-text','disabled','node-fill','relation-default','relation-primary','relation-selected','relation-1','relation-2','relation-3','relation-4','radius-control','radius-panel'])assert(map['--museum-'+token],`Missing ${token}`);
+for(const token of ['surface-muted','selected-surface','success-surface','warning-surface','error-surface','code-surface','code-border','text-subtle','secondary','secondary-text','disabled','node-fill','relation-default','relation-primary','relation-selected','relation-1','relation-2','relation-3','relation-4','radius-control','radius-panel'])assert(map['--museum-'+token],`Missing ${token}`);
  assert.notEqual(resolve(map,'--museum-relation-primary'),resolve(map,'--museum-accent'));
- for(const token of ['type-body','type-ui','type-meta','type-caption','leading-body','leading-ui'])assert(map['--museum-'+token],`Missing ${token}`);
+ for(const token of ['type-display','type-h1','type-h2','type-h3','type-h4','type-h5','type-h6','type-title','type-heading','type-subheading','type-body','type-ui','type-meta','type-caption','weight-regular','weight-medium','weight-semibold','weight-bold','leading-body','leading-ui'])assert(map['--museum-'+token],`Missing ${token}`);
 }
 const darkMap=parse(blocks[0][1]);
 assert.notEqual(resolve(darkMap,'--museum-node-fill'),resolve(darkMap,'--museum-text'),'Dark graph nodes must use a tuned material colour rather than inverted body text');
@@ -42,8 +45,35 @@ for(const selector of ['museum-topbar-link', 'museum-index-entry h3', 'resume-co
  assert(round24.includes(selector),`Missing readable type override: ${selector}`);
 }
 assert.match(round24,/\.article-container table\s*\{[^}]*font-size:\s*var\(--museum-type-ui\)[^}]*line-height:\s*1\.6/s);
-assert.match(round24,/:where\(input, select, textarea\)\s*\{[^}]*border-color:\s*var\(--museum-border-soft\)[^}]*background:\s*var\(--museum-surface-raised\)/s);
+assert.match(round24,/:where\(input, select, textarea\)\s*\{[^}]*border-color:\s*var\(--museum-control-border\)[^}]*background:\s*var\(--museum-surface-raised\)/s);
 assert.match(round24,/\.related-index\s*\{[^}]*align-content:\s*start/s);
+assert.match(css,/\.related-index-arrow\s*\{[^}]*color:\s*var\(--museum-secondary-text\)/s);
+for(const selector of ['museum-filter-summary','museum-status-filters b','museum-status-badge','timeline-node-date','museum-article-toc-trigger','data-toc-count','data-toc-close','graph-selection-prompt','graph-tooltip span']) {
+ assert(css.includes(selector),`Missing readable caption override: ${selector}`);
+}
+assert.match(css,/\.article-container :where\(figcaption, \.org-src-name, \.example-label\)[^}]*font-size:\s*var\(--museum-type-caption\)/s);
+assert.match(css,/\.article-container pre code:not\(\.org-museum-code\)\s*\{[^}]*font-size:\s*inherit/s);
+assert.match(css,/\.museum-search-line\s*\{[^}]*border:\s*1px solid var\(--museum-control-border\)/s);
+assert.match(css,/\.graph-page \.graph-view-controls button\s*\{[^}]*border:\s*1px solid var\(--museum-control-border\)/s);
+assert.match(css,/\.graph-mode-tabs button\.is-active\s*\{[^}]*border-color:\s*var\(--museum-control-border\)/s);
+assert.match(css,/\.museum-status-filters button\.is-active,[^}]*background:\s*var\(--museum-selected-surface\)/s);
+assert.match(css,/\.article-container blockquote\s*\{[^}]*border-left:\s*3px solid var\(--museum-accent\)[^}]*border-radius:\s*var\(--museum-radius-control\)[^}]*background:\s*var\(--museum-surface-muted\)/s);
+assert.match(css,/\.museum-table-scroll\s*\{[^}]*border:\s*1px solid var\(--museum-border-soft\)[^}]*border-radius:\s*var\(--museum-radius-control\)/s);
+assert.match(css,/(?:pre\.src|pre\.example|pre\.org-museum-code-block)\s*\{[^}]*border:\s*1px solid var\(--museum-code-border\)[^}]*border-radius:\s*var\(--museum-radius-control\)[^}]*background:\s*var\(--museum-code-surface\)/s);
+assert.match(css,/\.article-container img\s*\{[^}]*border-radius:\s*var\(--museum-radius-control\)/s);
+assert.match(css,/\.article-container a:hover,[\s\S]*?text-decoration-thickness:\s*2px/s);
+assert.match(css,/\.museum-table-scroll:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--museum-focus-ring\)/s);
+assert.match(css,/\.reading-restore-notice\s*\{[^}]*border-radius:\s*var\(--museum-radius-panel\)/s);
+assert.match(css,/\.museum-curation-form select,[\s\S]*?\.museum-curation-form input\s*\{[^}]*border:\s*1px solid var\(--museum-control-border\)/s);
+assert.match(css,/\.museum-curation-form button:not\(\.is-primary\):hover[^}]*background:\s*var\(--museum-selected-surface\)/s);
+assert.match(css,/\.article-container h2\s*\{[^}]*font-size:\s*var\(--museum-type-h2\)[^}]*font-weight:\s*var\(--museum-weight-semibold\)/s);
+assert.match(css,/\.article-container h3\s*\{[^}]*font-size:\s*var\(--museum-type-h3\)[^}]*font-weight:\s*var\(--museum-weight-semibold\)/s);
+for(const level of [4,5,6]) {
+ assert.match(css,new RegExp(`\\.article-container h${level}\\s*\\{[^}]*font-size:\\s*var\\(--museum-type-h${level}\\)[^}]*font-weight:\\s*var\\(--museum-weight-semibold\\)`,'s'));
+}
+assert.match(css,/\.timeline-hero h1\s*\{[^}]*font:[^;}]*var\(--museum-weight-bold\)[^;}]*var\(--museum-type-display\)[^;}]*var\(--museum-serif-font\)/s);
+assert.match(css,/\.museum-index-entry h3\s*\{[^}]*font-size:\s*var\(--museum-type-h5\)/s);
+assert.match(blocks[1][1],/--museum-control-border:\s*#[0-9a-f]{6}/i,'Light theme must own its control boundary token');
 // Theme runtime: URL priority, default, blocked storage, toggle and cross-tab change.
 const themeSource=fs.readFileSync(path.join(root,'resources/org-museum-theme.js'),'utf8');
 // Final-cascade regressions: desktop-only home columns, mobile natural height and touch targets.
@@ -93,20 +123,63 @@ loopbackCuration.window.orgMuseumCuration.mode='loopback';
 loopbackCuration.window.orgMuseumCuration.openRelation({sourceId:'source',sourceTitle:'Source',targets:[{id:'target',title:'Target'}]});
 assert.match(loopbackCuration.dialog.innerHTML,/>预览差异<\/button>/);
 assert.match(loopbackCuration.nodes.guidance.textContent,/浏览器中生成写入前差异/);
-function themeFixture(url,stored,blocked=false){
+function themeFixture(url,stored,blocked=false,homeHref=null,media=null){
  const listeners={},button={setAttribute(){},querySelector(){return null;},addEventListener(e,f){this[e]=f;}};
- const document={documentElement:{dataset:{},style:{}},querySelector(){return null;},querySelectorAll(){return [button];},readyState:'complete',addEventListener(){}};
+ const systemButton={setAttribute(){},addEventListener(e,f){this[e]=f;}};
+ const returnLink={href:'',textContent:''};
+ const document={documentElement:{dataset:{},style:{}},querySelector(selector){
+  if(selector==='.museum-wordmark[href]'&&homeHref)return {getAttribute(){return homeHref;}};
+  if(selector==='[data-reading-return]')return returnLink;
+  return null;
+ },querySelectorAll(selector){return selector==='[data-theme-toggle]'?[button]:selector==='[data-theme-system]'?[systemButton]:[];},readyState:'complete',addEventListener(){}};
  const window={addEventListener(e,f){listeners[e]=f;}};
+ if(media) window.matchMedia=()=>media;
  const store={getItem(){if(blocked)throw Error('blocked');return stored;},setItem(k,v){stored=v;}};
- const context={window,document,localStorage:store,URL,location:new URL(url)};vm.runInNewContext(themeSource,context);
- return {document,window,button,listeners};
+ const history={state:null,replaced:'',replaceState(_state,_title,next){this.replaced=String(next);}};
+ const context={window,document,localStorage:store,URL,location:new URL(url),history};vm.runInNewContext(themeSource,context);
+ return {document,window,button,systemButton,listeners,history,returnLink};
+}
+// Real URL transitions: nested exports, local files, filtering, and untrusted returns.
+for(const rootUrl of ['https://example.test/wiki/','file:///C:/notes/dist/']){
+ const home=themeFixture(rootUrl+'index.html?q=DuckDB&category=Sql&tag=duckdb&status=draft&from=2026-09-01&to=2026-09-30&sort=title-asc',null,true,'index.html');
+ const article=new URL(home.window.orgMuseumThemeUrl('pages/sql/duckdb.html#section-1'));
+ assert.equal(article.searchParams.get('museum-from'),'index.html?q=DuckDB&category=Sql&tag=duckdb&status=draft&from=2026-09-01&to=2026-09-30&sort=title-asc');
+ assert.equal(article.hash,'#section-1');
+ const reader=themeFixture(article.href,null,true,'../../index.html');
+ assert.equal(new URL(reader.returnLink.href).searchParams.get('q'),'DuckDB');
+ assert.equal(new URL(reader.returnLink.href).searchParams.get('tag'),'duckdb');
+ assert.equal(new URL(reader.returnLink.href).searchParams.get('from'),'2026-09-01');
+ assert.equal(new URL(reader.returnLink.href).searchParams.get('sort'),'title-asc');
+ assert.equal(reader.returnLink.textContent,'← 返回筛选结果');
+ const next=new URL(reader.window.orgMuseumThemeUrl('other.html'));
+ assert.equal(next.searchParams.get('museum-from'),article.searchParams.get('museum-from'));
+ assert(!new URL(reader.window.orgMuseumThemeUrl('../../graph.html')).searchParams.has('museum-from'));
+ for(const from of ['https://evil.test/index.html','../index.html','pages/article.html','javascript:alert(1)']){
+  const unsafe=themeFixture(rootUrl+'pages/a.html?museum-from='+encodeURIComponent(from),null,true,'../index.html');
+  assert.equal(unsafe.returnLink.href,'');
+ }
+ const graph=themeFixture(rootUrl+'graph.html?focus=a&view=triage&token=secret',null,true,'index.html');
+ const graphArticle=new URL(graph.window.orgMuseumThemeUrl('pages/a.html'));
+ assert.equal(graphArticle.searchParams.get('museum-from'),'graph.html?focus=a&view=triage');
 }
 for(const [query,stored,expected] of [['',null,'light'],['','dark','dark'],['','light','light'],['?org-museum-theme=light','dark','light'],['?org-museum-theme=invalid','dark','dark']]){
  const f=themeFixture('https://example.test/index.html'+query,stored);assert.equal(f.document.documentElement.dataset.theme,expected);f.button.click();assert.notEqual(f.document.documentElement.dataset.theme,expected);
 }
 assert.equal(themeFixture('file:///notes/index.html',null,true).document.documentElement.dataset.theme,'light');
 const f=themeFixture('https://example.test/index.html',null);f.listeners.storage({key:'org-museum-theme',newValue:'light'});assert.equal(f.document.documentElement.dataset.theme,'light');assert(f.window.orgMuseumThemeUrl('timeline.html').includes('org-museum-theme=light'));
+const toggled=themeFixture('https://example.test/index.html?org-museum-theme=dark','dark');toggled.button.click();assert.equal(new URL(toggled.history.replaced).searchParams.get('org-museum-theme'),'light');
 assert.equal(f.window.orgMuseumCategoryColor('AI'),f.window.orgMuseumCategoryColor('ail'));
+let systemChanged;
+const media={matches:true,addEventListener(_event,listener){systemChanged=listener;}};
+const system=themeFixture('https://example.test/index.html',null,false,null,media);
+assert.equal(system.document.documentElement.dataset.theme,'dark');
+assert.equal(system.document.documentElement.dataset.themePreference,'system');
+assert(new URL(system.window.orgMuseumThemeUrl('graph.html')).searchParams.get('org-museum-theme')==='system');
+media.matches=false; systemChanged(); assert.equal(system.document.documentElement.dataset.theme,'light');
+system.button.click(); assert.equal(system.document.documentElement.dataset.themePreference,'dark');
+systemChanged(); assert.equal(system.document.documentElement.dataset.theme,'dark','System changes must not override a manual choice');
+system.systemButton.click(); assert.equal(system.document.documentElement.dataset.theme,'light');
+media.matches=true;systemChanged();assert.equal(system.document.documentElement.dataset.theme,'dark');
 // Execute the actual lane allocation against same-day and sparse records.
 const source=fs.readFileSync(path.join(root,'org-museum.el'),'utf8');
 const begin=source.indexOf('var laneLast=[]'),end=source.indexOf('var groups=layer.append',begin);

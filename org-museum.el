@@ -30,12 +30,16 @@
 ;;; Code:
 
 (require 'org)
+(require 'org-attach)
 (require 'ox-html)
 (require 'ox-publish)
 (require 'cl-lib)
 (require 'json)
+(require 'mailcap)
 (require 'seq)
 (require 'subr-x)
+(require 'url)
+(require 'url-http)
 (require 'url-util)
 
 ;; ============================================================
@@ -61,18 +65,18 @@
   "Relative status file that gates deployment of a publish checkout.")
 
 (defconst org-museum--publish-privacy-buffer
-  "*Org Museum Privacy Report*"
+  "*Org Museum 隐私报告*"
   "Buffer used for local-only publish privacy findings.")
 
 (defconst org-museum--publish-full-preview-buffer
-  "*Org Museum Full Sync Preview*"
+  "*Org Museum 完整同步预览*"
   "Buffer used to review a configurable raw publication mirror.")
 
 (defconst org-museum--publish-full-confirmation "COPY PRIVATE EXPORTS"
   "Exact confirmation required before installing a raw publication mirror.")
 
 (define-error 'org-museum-publish-error
-  "Org Museum publish stopped"
+  "Org Museum 发布已停止"
   'user-error)
 
 ;; ============================================================
@@ -89,14 +93,30 @@
   :type 'directory
   :group 'org-museum)
 
-(defcustom org-museum-export-dir "exports/html/pages"
+(defcustom org-museum-export-dir "dist/pages"
   "HTML export directory for pages, relative to `org-museum-root-dir'."
   :type 'string
   :group 'org-museum)
 
-(defcustom org-museum-shared-export-dir "exports/html"
+(defcustom org-museum-shared-export-dir "dist"
   "Shared export directory (index.html, graph.html, resources/)."
   :type 'string
+  :group 'org-museum)
+
+(defcustom org-museum-assets-subdir "assets"
+  "Asset directory below `org-museum-shared-export-dir'."
+  :type 'string
+  :group 'org-museum)
+
+(defcustom org-museum-asset-cache-directory
+  (expand-file-name ".cache/org-museum/assets/" user-emacs-directory)
+  "Private content-addressed cache used for locked remote assets."
+  :type 'directory
+  :group 'org-museum)
+
+(defcustom org-museum-asset-large-file-threshold (* 100 1024 1024)
+  "Size in bytes above which an asset produces a build warning."
+  :type 'integer
   :group 'org-museum)
 
 (defcustom org-museum-publish-directory nil
@@ -118,6 +138,31 @@ This directory must be outside `org-museum-root-dir' and its export tree."
 (defcustom org-museum-publish-remote "origin"
   "Git remote used by `org-museum-publish-deploy'."
   :type 'string
+  :group 'org-museum)
+
+(defcustom org-museum-open-publish-directory-after-sync t
+  "When non-nil, open the publish directory after a successful interactive sync."
+  :type 'boolean
+  :group 'org-museum)
+
+(defcustom org-museum-publish-git-user-name nil
+  "Fallback Git author name for the publish repository only.
+When nil, deployment uses the authenticated GitHub login or repository owner.
+An existing repository-local Git setting always takes precedence."
+  :type '(choice (const :tag "Derive automatically" nil) string)
+  :group 'org-museum)
+
+(defcustom org-museum-publish-git-user-email nil
+  "Fallback Git author email for the publish repository only.
+When nil, deployment derives a GitHub noreply address.  This setting is never
+written to the global Git configuration."
+  :type '(choice (const :tag "Derive automatically" nil) string)
+  :group 'org-museum)
+
+(defcustom org-museum-background-emacs-program nil
+  "Emacs executable used for background export and publish commands.
+nil means use the executable that started the current Emacs instance."
+  :type '(choice (const :tag "Current Emacs executable" nil) file)
   :group 'org-museum)
 
 (defcustom org-museum-publish-policy-file
@@ -216,7 +261,7 @@ Each entry is (RAW . DISPLAY), for example ((\"Sql\" . \"SQL\"))."
   :type '(alist :key-type string :value-type string)
   :group 'org-museum)
 
-(defcustom org-museum-article-max-width 960
+(defcustom org-museum-article-max-width 1320
   "Maximum desktop article width in CSS pixels.
 The exporter writes this value as a page-local CSS custom property so the
 bundled responsive layout can preserve the configured reading measure."
@@ -378,6 +423,11 @@ regeneration.")
   links-to linked-from relation-types relation-diagnostics
   theme status description)
 
+(cl-defstruct org-museum-asset
+  "One resolved, content-addressed published asset."
+  id filename mime kind size sha256 source-path published-url thumbnail
+  width height duration filenames sources local-path)
+
 (cl-defstruct org-museum-index
   "Full wiki index."
   pages        ; hash-table id -> page
@@ -399,8 +449,32 @@ regeneration.")
   "Org Museum index scan failed")
 (define-error 'org-museum-export-failed
   "Org Museum full export failed")
+(define-error 'org-museum-asset-error
+  "Org Museum asset validation failed"
+  'org-museum-export-failed)
 (define-error 'org-museum-invalid-page-status
   "Invalid Org Museum page status")
+
+(defvar org-museum--asset-registry nil
+  "Dynamically bound hash table from content hash to `org-museum-asset'.")
+
+(defvar org-museum--page-assets nil
+  "Dynamically bound hash table from page id to ordered asset ids.")
+
+(defvar org-museum--asset-warnings nil
+  "Dynamically bound asset warning records for the current build.")
+
+(defvar org-museum--asset-remote-results nil
+  "Dynamically bound URL result cache for one build.")
+
+(defvar org-museum--asset-created-files nil
+  "Dynamically bound public asset files created by the current transaction.")
+
+(defvar org-museum--asset-current-location nil
+  "Dynamically bound source file and line for asset diagnostics.")
+
+(defvar org-museum--build-time nil
+  "Dynamically bound deterministic timestamp for one export transaction.")
 
 ;; ============================================================
 ;; §5  PATH HELPERS
@@ -536,10 +610,36 @@ without sacrificing file:// or offline operation."
              (insert-file-contents file)
              (buffer-string)))))
     (unless (equal current content)
-      (make-directory (file-name-directory file) t)
-      (let ((coding-system-for-write 'utf-8-unix))
-        (with-temp-file file (insert content))))
+      (let* ((directory (file-name-directory file))
+             (temp nil))
+        (make-directory directory t)
+        (setq temp (make-temp-file
+                    (expand-file-name ".org-museum-write-" directory)))
+        (unwind-protect
+            (progn
+              (let ((coding-system-for-write 'utf-8-unix))
+                (with-temp-file temp (insert content)))
+              (rename-file temp file t)
+              (setq temp nil))
+          (when (and temp (file-exists-p temp))
+            (delete-file temp)))))
     file))
+
+(defun org-museum--copy-file-atomically (source target)
+  "Copy binary SOURCE to TARGET through a same-directory temporary file."
+  (let* ((directory (file-name-directory target))
+         (temp nil))
+    (make-directory directory t)
+    (setq temp (make-temp-file
+                (expand-file-name ".org-museum-copy-" directory)))
+    (unwind-protect
+        (progn
+          (copy-file source temp t)
+          (rename-file temp target t)
+          (setq temp nil))
+      (when (and temp (file-exists-p temp))
+        (delete-file temp)))
+    target))
 
 (defun org-museum--externalize-page-runtime (html out-file kind)
   "Move executable inline scripts in HTML to KIND's shared runtime asset.
@@ -573,7 +673,7 @@ rewritten document with a content-versioned local script reference."
           (org-museum--write-content-if-changed runtime content)
           (goto-char (point-max))
           (unless (re-search-backward "</body>" nil t)
-            (error "Org Museum cannot attach the %s runtime: </body> missing"
+            (error "Org Museum 无法附加 %s 运行脚本：缺少 </body>"
                    kind))
           (insert
            (format "<script defer src=\"%s\"></script>\n"
@@ -658,13 +758,13 @@ the repository and link-tree sources over the generated build copy."
          (source (plist-get before :canonical))
          (expected (plist-get before :canonical-hash)))
     (unless (and source expected)
-      (error "Org Museum runtime source is missing"))
+      (error "找不到 Org Museum 运行脚本源码"))
     (load source nil t t)
     (let ((after (org-museum--runtime-source-status)))
       (unless (and (plist-get after :in-sync)
                    (string= expected (plist-get after :loaded-hash)))
-        (error "Org Museum runtime reload verification failed"))
-      (message "Org Museum runtime reloaded: %s" source)
+        (error "Org Museum 运行脚本重新加载后验证失败"))
+      (message "Org Museum 运行环境已重新加载：%s" source)
       t)))
 
 (defun org-museum--run-with-current-runtime (command args thunk)
@@ -677,6 +777,265 @@ the repository and link-tree sources over the generated build copy."
           (org-museum-reload)
           (apply command args))
       (funcall thunk))))
+
+(defconst org-museum--background-option-symbols
+  '(org-museum-root-dir
+    org-museum-export-dir
+    org-museum-shared-export-dir
+    org-museum-assets-subdir
+    org-museum-asset-cache-directory
+    org-museum-asset-large-file-threshold
+    org-museum-publish-directory
+    org-museum-publish-repository
+    org-museum-publish-branch
+    org-museum-publish-remote
+    org-museum-publish-policy-file
+    org-museum-publish-git-user-name
+    org-museum-publish-git-user-email
+    org-museum-scan-dir
+    org-museum-scan-excluded-directories
+    org-museum-curation-mode
+    org-museum-curation-port
+    org-museum-curation-backup-directory
+    org-museum-pages-subdir
+    org-museum-index-file
+    org-museum-css-file
+    org-museum-open-page-after-export
+    org-museum-default-language
+    org-museum-clean-stale-html-on-full-export
+    org-museum-category-label-alist
+    org-museum-article-max-width
+    org-museum-background-effects-enabled
+    org-museum-local-graph-neighbour-limit
+    org-museum-graph-exclude-tags
+    org-museum-graph-exclude-orphans
+    org-museum-graph-exclude-id-regexp
+    org-museum-code-highlight-method
+    org-museum-latex-code-highlight)
+  "Configuration copied into isolated background Emacs jobs.")
+
+(defconst org-museum--background-buffer "*Org Museum 后台任务*"
+  "Log buffer shared by the current background export or publish job.")
+
+(defvar org-museum--background-process nil
+  "Currently running Org Museum background process, or nil.")
+
+(defvar org-museum--background-bootstrap-preapproved nil
+  "Non-nil only in a background deploy whose repository creation was approved.")
+
+(defvar org-museum--background-full-sync-preapproved nil
+  "Non-nil only in a background full sync whose warning was approved.")
+
+(defvar org-museum--background-worker-active nil
+  "Non-nil while an isolated worker is executing an Org Museum job.")
+
+(defun org-museum--background-emacs-executable ()
+  "Return the executable used to run an isolated Org Museum job."
+  (cl-labels
+      ((path-candidates
+        (path)
+        (when path
+          (if (and (eq system-type 'windows-nt)
+                   (not (string-suffix-p ".exe" path t)))
+              (list path (concat path ".exe"))
+            (list path))))
+       (first-executable
+        (candidates)
+        (seq-find (lambda (path)
+                    (and (stringp path) (file-executable-p path)))
+                  (delete-dups (delq nil candidates)))))
+    (if org-museum-background-emacs-program
+        (or (first-executable
+             (path-candidates
+              (expand-file-name org-museum-background-emacs-program)))
+            (user-error
+             "Configured Org Museum background Emacs is not executable: %s"
+             org-museum-background-emacs-program))
+      (let* ((invoked
+              (and invocation-directory invocation-name
+                   (expand-file-name invocation-name invocation-directory)))
+             (program
+              (first-executable
+               (append
+                (path-candidates invoked)
+                (when invocation-directory
+                  (list (expand-file-name "emacs.exe" invocation-directory)
+                        (expand-file-name "runemacs.exe" invocation-directory)))
+                (list (and invocation-name (executable-find invocation-name))
+                      (executable-find "emacs")
+                      (executable-find "emacs.exe"))))))
+        (or program
+            (user-error
+             "Org Museum cannot find an Emacs executable for background jobs (invocation: %s)"
+             (or invoked invocation-name "unknown")))))))
+
+(defun org-museum--background-execute (action args)
+  "Execute background ACTION with ARGS inside the isolated worker."
+  (let ((org-museum-open-browser-after-export nil)
+        (org-museum-auto-reload-before-export nil)
+        (org-museum--background-worker-active t))
+    (pcase action
+      ('export-page (apply #'org-museum--export-page-current args))
+      ('export-all (org-museum--export-all-current))
+      ('export-graph (org-museum--export-graph-current :silent t))
+      ('export-related-reading (org-museum--export-related-reading-current))
+      ('export-timeline (org-museum--export-timeline-current))
+      ('publish-sync (org-museum--publish-sync-current))
+      ('publish-sync-full
+       (let ((org-museum--background-full-sync-preapproved t))
+         (org-museum--publish-sync-full-current t)))
+      ('publish-deploy
+       (let ((org-museum--background-bootstrap-preapproved (car args)))
+         (org-museum--publish-deploy-current)))
+      (_ (error "未知的 Org Museum 后台操作：%S" action)))))
+
+(defun org-museum--background-script (source action args)
+  "Return worker source loading SOURCE and executing ACTION with ARGS."
+  (concat
+   ";;; -*- lexical-binding: t; -*-\n"
+   ";; Generated Org Museum background job.\n"
+   "(setq load-prefer-newer t)\n"
+   (format "(load %S nil nil t)\n" source)
+   "(setq\n"
+   (mapconcat
+    (lambda (symbol)
+      (format " %S (quote %S)" symbol (symbol-value symbol)))
+    org-museum--background-option-symbols
+    "\n")
+   "\n org-museum-open-browser-after-export nil\n"
+   " org-museum-auto-reload-before-export nil)\n"
+   "(condition-case err\n"
+   (format "    (let ((result (org-museum--background-execute (quote %S) (quote %S))))\n"
+           action args)
+   "      (when result (princ (format \"\\nResult: %s\\n\" result)))\n"
+   "      (kill-emacs 0))\n"
+   "  (error\n"
+   "   (princ (format \"\\nOrg Museum background job failed: %s\\n\"\n"
+   "                  (error-message-string err))\n"
+   "          'external-debugging-output)\n"
+   "   (kill-emacs 1)))\n"))
+
+(defun org-museum--background-success-action (action)
+  "Return the parent-Emacs success action for background ACTION."
+  (pcase action
+    ('export-all
+     (when (and org-museum-open-browser-after-export
+                org-museum-open-page-after-export)
+       (let ((file
+              (pcase org-museum-open-page-after-export
+                ('timeline (org-museum--timeline-output-path))
+                ('graph (expand-file-name "graph.html"
+                                          (org-museum--shared-root)))
+                (_ (expand-file-name "index.html"
+                                     (org-museum--shared-root))))))
+         (cons 'browse-url
+               (concat "file:///"
+                       (replace-regexp-in-string "\\\\" "/" file))))))
+    ('publish-sync
+     (when (and org-museum-open-publish-directory-after-sync
+                (stringp org-museum-publish-directory)
+                (not (string-empty-p org-museum-publish-directory)))
+       (cons 'open-directory
+             (file-name-as-directory
+              (expand-file-name org-museum-publish-directory)))))))
+
+(defun org-museum--open-directory (directory)
+  "Open DIRECTORY in the platform file manager without changing Emacs windows."
+  (let ((target (directory-file-name (expand-file-name directory))))
+    (cond
+     ((eq system-type 'windows-nt)
+      (w32-shell-execute "open" (convert-standard-filename target)))
+     ((eq system-type 'darwin)
+      (start-process "org-museum-open-directory" nil "open" target))
+     ((executable-find "xdg-open")
+      (start-process "org-museum-open-directory" nil "xdg-open" target))
+     (t (dired target)))))
+
+(defun org-museum--open-background-success-action (success-action)
+  "Perform SUCCESS-ACTION in the parent Emacs process."
+  (pcase success-action
+    (`(browse-url . ,url) (browse-url url))
+    (`(open-directory . ,directory)
+     (org-museum--open-directory directory))))
+
+(defun org-museum--background-sentinel (process _event)
+  "Clean up PROCESS and report its completion without changing window layout."
+  (when (memq (process-status process) '(exit signal))
+    (when-let* ((script (process-get process 'org-museum-script)))
+      (ignore-errors (delete-file script)))
+    (when (eq process org-museum--background-process)
+      (setq org-museum--background-process nil))
+    (let ((action (process-get process 'org-museum-action))
+          (success-action
+           (process-get process 'org-museum-success-action)))
+      (if (and (eq (process-status process) 'exit)
+               (= (process-exit-status process) 0))
+          (progn
+            (when success-action
+              (condition-case err
+                  (org-museum--open-background-success-action success-action)
+                (error
+                 (display-warning
+                  'org-museum
+                  (format "Background %s completed, but opening its result failed: %s"
+                          action (error-message-string err))
+                  :warning))))
+            (message "Org Museum 后台任务已完成：%s" action))
+        (display-warning
+         'org-museum
+         (format "Background %s failed; inspect %s" action
+                 org-museum--background-buffer)
+         :error)))))
+
+(defun org-museum--start-background-job (action args)
+  "Start isolated background ACTION with ARGS and return its process.
+Only one exporter or publisher runs at a time so generated files cannot race."
+  (when (process-live-p org-museum--background-process)
+    (user-error "Org Museum 后台任务正在运行：%s"
+                (process-get org-museum--background-process
+                             'org-museum-action)))
+  (let* ((source (org-museum--canonical-elisp-source-path))
+         (script (make-temp-file "org-museum-background-" nil ".el"))
+         (buffer (get-buffer-create org-museum--background-buffer))
+         process)
+    (unless (and source (file-regular-p source))
+      (ignore-errors (delete-file script))
+      (user-error "找不到 Org Museum 主源码"))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "Org Museum background action: %s\nSource: %s\n\n"
+                        action source))))
+    (let ((coding-system-for-write 'utf-8-unix))
+      (with-temp-file script
+        (insert (org-museum--background-script source action args))))
+    (condition-case err
+        (setq process
+              (make-process
+               :name (format "org-museum-%s" action)
+               :buffer buffer
+               :command (list (org-museum--background-emacs-executable)
+                              "--quick" "--batch" "--load" script)
+               :connection-type 'pipe
+               :noquery t
+               :sentinel #'org-museum--background-sentinel))
+      (error
+       (ignore-errors (delete-file script))
+       (signal (car err) (cdr err))))
+    (process-put process 'org-museum-script script)
+    (process-put process 'org-museum-action action)
+    (process-put process 'org-museum-success-action
+                 (org-museum--background-success-action action))
+    (setq org-museum--background-process process)
+    (message "Org Museum 后台任务已启动：%s；Emacs 可继续使用" action)
+    process))
+
+;;;###autoload
+(defun org-museum-background-status ()
+  "Display the current background job log without waiting for completion."
+  (interactive)
+  (display-buffer (get-buffer-create org-museum--background-buffer))
+  org-museum--background-process)
 
 (defun org-museum--resource-source-path (relative-path)
   "Return the authoritative package resource for RELATIVE-PATH.
@@ -719,7 +1078,7 @@ LABEL names the asset in diagnostics.  Missing assets fail closed; Org Museum
 never downloads runtime code during export."
   (let ((bundled (org-museum--resource-source-path relative-path)))
     (unless (and bundled (file-regular-p bundled))
-      (error "Org Museum bundled resource missing: %s (%s)"
+      (error "找不到 Org Museum 内置资源：%s（%s）"
              label relative-path))
     (make-directory (file-name-directory dest) t)
     (unless (or (equal (expand-file-name bundled) (expand-file-name dest))
@@ -847,15 +1206,830 @@ Exported pages never fall back to a remote resource."
   "Absolute path to per-page export root."
   (expand-file-name org-museum-export-dir org-museum-root-dir))
 
+;; ============================================================
+;; §5A  CONTENT-ADDRESSED ARTICLE ASSETS
+;; ============================================================
+
+(defconst org-museum--asset-mime-fallbacks
+  '(("png" . "image/png") ("jpg" . "image/jpeg")
+    ("jpeg" . "image/jpeg") ("gif" . "image/gif")
+    ("svg" . "image/svg+xml") ("webp" . "image/webp")
+    ("mp4" . "video/mp4") ("webm" . "video/webm")
+    ("mp3" . "audio/mpeg") ("wav" . "audio/wav")
+    ("ogg" . "audio/ogg") ("m4a" . "audio/mp4")
+    ("pdf" . "application/pdf")
+    ("docx" . "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    ("pptx" . "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+    ("xlsx" . "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    ("csv" . "text/csv") ("json" . "application/json")
+    ("parquet" . "application/vnd.apache.parquet")
+    ("zip" . "application/zip") ("7z" . "application/x-7z-compressed")
+    ("rar" . "application/vnd.rar") ("tar" . "application/x-tar")
+    ("gz" . "application/gzip") ("xz" . "application/x-xz")
+    ("bz2" . "application/x-bzip2")
+    ;; Generic binary extensions are intentionally explicit.  Treating every
+    ;; dotted URL as an asset misclassifies release pages such as /v4.7.0.
+    ("bin" . "application/octet-stream") ("dat" . "application/octet-stream")
+    ("sql" . "application/sql"))
+  "Small MIME fallback table for formats missing from platform mailcap data.")
+
+(defconst org-museum--asset-canonical-extensions
+  '(("image/png" . "png") ("image/jpeg" . "jpg")
+    ("image/webp" . "webp") ("image/svg+xml" . "svg")
+    ("image/gif" . "gif") ("video/mp4" . "mp4")
+    ("video/webm" . "webm") ("audio/mpeg" . "mp3")
+    ("audio/x-mpeg" . "mp3")
+    ("audio/wav" . "wav") ("audio/x-wav" . "wav")
+    ("audio/ogg" . "ogg") ("audio/mp4" . "m4a")
+    ("application/pdf" . "pdf")
+    ("application/vnd.openxmlformats-officedocument.wordprocessingml.document" . "docx")
+    ("application/vnd.openxmlformats-officedocument.presentationml.presentation" . "pptx")
+    ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" . "xlsx")
+    ("text/csv" . "csv") ("application/json" . "json")
+    ("application/vnd.apache.parquet" . "parquet")
+    ("application/zip" . "zip") ("application/x-7z-compressed" . "7z")
+    ("application/vnd.rar" . "rar") ("application/x-tar" . "tar")
+    ("application/gzip" . "gz") ("application/sql" . "sql"))
+  "Canonical published extension for MIME types with reliable file semantics.")
+
+(defconst org-museum--asset-document-mimes
+  '("application/msword"
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    "application/vnd.ms-powerpoint"
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+  "MIME types rendered as document cards.")
+
+(defconst org-museum--asset-spreadsheet-mimes
+  '("application/vnd.ms-excel"
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    "text/csv" "application/csv" "application/json"
+    "application/vnd.apache.parquet" "application/x-parquet")
+  "MIME types rendered as spreadsheet or data cards.")
+
+(defconst org-museum--asset-archive-mimes
+  '("application/zip" "application/x-7z-compressed" "application/vnd.rar"
+    "application/x-rar-compressed" "application/x-tar" "application/gzip"
+    "application/x-xz" "application/x-bzip2")
+  "MIME types rendered as archive download cards.")
+
+(defun org-museum--assets-root ()
+  "Return the absolute published article asset directory."
+  (let* ((shared (file-name-as-directory
+                  (expand-file-name (org-museum--shared-root))))
+         (portable (replace-regexp-in-string
+                    "\\\\" "/" (or org-museum-assets-subdir "")))
+         (components (split-string portable "/" t))
+         (root (expand-file-name portable shared)))
+    (unless (and components
+                 (not (file-name-absolute-p portable))
+                 (not (member ".." components))
+                 (not (member "." components))
+                 (not (member (downcase (car components))
+                              '("pages" "resources")))
+                 (not (equal (downcase shared)
+                             (downcase (file-name-as-directory root))))
+                 (string-prefix-p
+                  (downcase shared)
+                  (downcase (file-name-as-directory root))))
+      (signal 'org-museum-asset-error
+              (list (format "Asset output must stay below the shared root: %s"
+                            root))))
+    (let ((cursor shared))
+      (dolist (component components)
+        (setq cursor (expand-file-name component cursor))
+        (when (and (file-exists-p cursor)
+                   (or (file-symlink-p cursor)
+                       (not (equal
+                             (downcase (file-name-as-directory
+                                        (expand-file-name cursor)))
+                             (downcase (file-name-as-directory
+                                        (file-truename cursor)))))))
+          (signal 'org-museum-asset-error
+                  (list (format "Linked asset output component is unsafe: %s"
+                                cursor))))))
+    root))
+
+(defun org-museum--assets-manifest-path ()
+  "Return the absolute public asset manifest path."
+  (expand-file-name "assets.json" (org-museum--shared-root)))
+
+(defun org-museum--deterministic-build-time ()
+  "Return SOURCE_DATE_EPOCH or the newest Org source timestamp."
+  (let ((epoch (getenv "SOURCE_DATE_EPOCH")))
+    (cond
+     ((and epoch (string-match-p "\\`[0-9]+\\'" epoch))
+      (seconds-to-time (string-to-number epoch)))
+     (t
+      (let ((latest 0))
+        (dolist (file (ignore-errors (org-museum--scan-files)))
+          (when (file-regular-p file)
+            (setq latest
+                  (max latest
+                       (float-time
+                        (file-attribute-modification-time
+                         (file-attributes file)))))))
+        (seconds-to-time latest))))))
+
+(defun org-museum--build-time-string (format)
+  "Format the current deterministic build time using FORMAT in UTC."
+  (format-time-string format
+                      (or org-museum--build-time
+                          (org-museum--deterministic-build-time))
+                      t))
+
+(defun org-museum--call-preserving-source-mtime (file thunk)
+  "Call THUNK and restore FILE's mtime when its content did not change.
+This protects the Org source from libraries that touch the visited filename
+while resolving links in a temporary export buffer.  A concurrent real edit
+changes the content hash and therefore keeps its new timestamp."
+  (let ((before-time (and (file-regular-p file)
+                          (file-attribute-modification-time
+                           (file-attributes file))))
+        (before-hash (and (file-regular-p file)
+                          (org-museum--file-content-hash file))))
+    (unwind-protect
+        (funcall thunk)
+      (when (and before-time before-hash (file-regular-p file)
+                 (string= before-hash (org-museum--file-content-hash file)))
+        (set-file-times file before-time)))))
+
+(defun org-museum--asset-mime-for-name (filename &optional supplied)
+  "Return a normalized MIME type for FILENAME, preferring SUPPLIED."
+  (let* ((header (and supplied (car (split-string supplied ";" t "[[:space:]]*"))))
+         (extension (downcase (or (file-name-extension
+                                   (car (split-string filename "[?#]"))) "")))
+         (mailcap (and (not (string-empty-p extension))
+                       (mailcap-extension-to-mime extension))))
+    (downcase
+     (or (and header (not (string-empty-p header)) header)
+         (cdr (assoc extension org-museum--asset-mime-fallbacks)) mailcap
+         "application/octet-stream"))))
+
+(defun org-museum--asset-kind-for-mime (mime)
+  "Return the renderer kind selected for MIME."
+  (cond
+   ((string-prefix-p "image/" mime) 'image)
+   ((string-prefix-p "video/" mime) 'video)
+   ((string-prefix-p "audio/" mime) 'audio)
+   ((string= mime "application/pdf") 'pdf)
+   ((member mime org-museum--asset-document-mimes) 'document)
+   ((member mime org-museum--asset-spreadsheet-mimes) 'spreadsheet)
+   ((member mime org-museum--asset-archive-mimes) 'archive)
+   (t 'unknown)))
+
+(defun org-museum--asset-published-name (sha mime)
+  "Return the stable published filename for SHA and MIME."
+  (format "%s.%s" sha
+          (or (cdr (assoc mime org-museum--asset-canonical-extensions)) "bin")))
+
+(defun org-museum--asset-image-dimensions (path)
+  "Return pixel dimensions (WIDTH . HEIGHT) for PATH when Emacs can decode it."
+  (condition-case nil
+      (let ((size (image-size (create-image path) t)))
+        (and (consp size) (integerp (car size)) (integerp (cdr size)) size))
+    (error nil)))
+
+(defun org-museum--asset-media-duration (path)
+  "Return PATH duration in seconds when an optional ffprobe is available."
+  (when-let* ((program (executable-find "ffprobe")))
+    (with-temp-buffer
+      (when (zerop
+             (process-file program nil (current-buffer) nil
+                           "-v" "error" "-show_entries" "format=duration"
+                           "-of" "default=noprint_wrappers=1:nokey=1" path))
+        (goto-char (point-min))
+        (when (looking-at "[0-9]+\\(?:\\.[0-9]+\\)?")
+          (string-to-number (match-string 0)))))))
+
+(defun org-museum--asset-warning (kind source detail)
+  "Record a KIND warning for SOURCE with DETAIL."
+  (let ((record (list :kind kind :source source :detail detail
+                      :location org-museum--asset-current-location)))
+    (push record org-museum--asset-warnings)
+    record))
+
+(defun org-museum--asset-portable-source (source path)
+  "Return a publish-safe SOURCE label for resolved PATH."
+  (cond
+   ((string-match-p "\\`https?://" source) source)
+   ((string-prefix-p "attachment:" source) source)
+   ((and path org-museum-root-dir
+         (file-in-directory-p (expand-file-name path)
+                              (file-name-as-directory
+                               (expand-file-name org-museum-root-dir))))
+    (concat "file:"
+            (replace-regexp-in-string
+             "\\\\" "/" (file-relative-name path org-museum-root-dir))))
+   (t (concat "file:" (file-name-nondirectory (or path source))))))
+
+(defun org-museum--asset-page-add (page-id asset-id)
+  "Add ASSET-ID once to PAGE-ID while preserving reference order."
+  (when (and page-id org-museum--page-assets)
+    (let ((current (gethash page-id org-museum--page-assets)))
+      (unless (member asset-id current)
+        (puthash page-id (append current (list asset-id))
+                 org-museum--page-assets)))))
+
+(defun org-museum--asset-register-local
+    (path source page-id _description alt-present &optional supplied-mime filename)
+  "Validate and register local PATH referenced by SOURCE on PAGE-ID."
+  (unless (and path (file-exists-p path))
+    (signal 'org-museum-asset-error
+            (list (format "Missing asset: %s (%s)" source path))))
+  (unless (file-regular-p path)
+    (signal 'org-museum-asset-error
+            (list (format "Asset is not a regular file: %s" path))))
+  (let ((size (file-attribute-size (file-attributes path))))
+    (when (zerop size)
+      (signal 'org-museum-asset-error
+              (list (format "Empty asset: %s" path))))
+    (let* ((display-name (or filename (file-name-nondirectory path)))
+           (mime (org-museum--asset-mime-for-name display-name supplied-mime))
+           (kind (org-museum--asset-kind-for-mime mime))
+           (sha (org-museum--file-content-hash path))
+           (portable (org-museum--asset-portable-source source path))
+           (existing (and org-museum--asset-registry
+                          (gethash sha org-museum--asset-registry)))
+           (published (concat (string-remove-suffix
+                               "/" (replace-regexp-in-string
+                                    "\\\\" "/" org-museum-assets-subdir))
+                              "/"
+                              (org-museum--asset-published-name sha mime))))
+      (when (> size org-museum-asset-large-file-threshold)
+        (org-museum--asset-warning
+         'large-file source
+         (format "%s bytes exceeds %s" size org-museum-asset-large-file-threshold)))
+      (when (and (string-match-p "\\`\\(?:file:\\)?[A-Za-z]:[/\\\\]" source)
+                 (not (string-match-p "\\`https?://" source)))
+        (org-museum--asset-warning
+         'windows-absolute-path source "Use a relative file: or attachment: link"))
+      (when (eq kind 'unknown)
+        (org-museum--asset-warning
+         'unsupported-mime source (format "Using generic attachment card for %s" mime)))
+      (when (and (eq kind 'image) (not alt-present))
+        (org-museum--asset-warning
+         'missing-alt source "Add a non-empty Org link description for image alt text"))
+      (if existing
+          (progn
+            (unless (member display-name (org-museum-asset-filenames existing))
+              (setf (org-museum-asset-filenames existing)
+                    (sort (cons display-name (org-museum-asset-filenames existing))
+                          #'string<))
+              (setf (org-museum-asset-filename existing)
+                    (car (org-museum-asset-filenames existing))))
+            (unless (member portable (org-museum-asset-sources existing))
+              (setf (org-museum-asset-sources existing)
+                    (sort (cons portable (org-museum-asset-sources existing))
+                          #'string<))
+              (setf (org-museum-asset-source-path existing)
+                    (car (org-museum-asset-sources existing)))
+              (org-museum--asset-warning
+               'duplicate-resource source (format "Reuses content %s" sha)))
+            (org-museum--asset-page-add page-id sha)
+            existing)
+        (let* ((dimensions (and (eq kind 'image)
+                                (org-museum--asset-image-dimensions path)))
+               (duration (and (memq kind '(video audio))
+                              (org-museum--asset-media-duration path)))
+               (asset (make-org-museum-asset
+                      :id sha :filename display-name :mime mime :kind kind
+                      :size size :sha256 sha :source-path portable
+                      :published-url published
+                      :thumbnail (and (eq kind 'image) published)
+                      :width (car-safe dimensions) :height (cdr-safe dimensions)
+                      :duration duration
+                      :filenames (list display-name) :sources (list portable)
+                      :local-path path)))
+          (when (and (eq kind 'image) (null dimensions))
+            (org-museum--asset-warning
+             'metadata-unavailable source "Image dimensions could not be detected"))
+          (when (and (memq kind '(video audio)) (null duration))
+            (org-museum--asset-warning
+             'metadata-unavailable source "Media duration could not be detected"))
+          (unless org-museum--asset-registry
+            (setq org-museum--asset-registry (make-hash-table :test #'equal)))
+          (puthash sha asset org-museum--asset-registry)
+          (org-museum--asset-page-add page-id sha)
+          asset)))))
+
+(defun org-museum--asset-cache-url-path (url)
+  "Return metadata path for locked remote URL."
+  (expand-file-name (concat "urls/" (secure-hash 'sha256 url) ".json")
+                    org-museum-asset-cache-directory))
+
+(defun org-museum--asset-cache-object-path (sha)
+  "Return private cached object path for SHA."
+  (expand-file-name (concat "objects/" sha) org-museum-asset-cache-directory))
+
+(defun org-museum--asset-cache-read (url)
+  "Return cached metadata for URL when its content object still exists."
+  (let ((meta (org-museum--asset-cache-url-path url)))
+    (when (file-regular-p meta)
+      (condition-case nil
+          (with-temp-buffer
+            (insert-file-contents meta)
+            (let* ((json-object-type 'alist)
+                   (json-array-type 'list)
+                   (data (json-read))
+                   (sha (alist-get 'sha256 data))
+                   (object (and sha (org-museum--asset-cache-object-path sha))))
+              (and (stringp sha)
+                   (string-match-p "\\`[0-9a-f]\\{64\\}\\'" sha)
+                   object (file-regular-p object)
+                   (string= sha (org-museum--file-content-hash object))
+                   (list :path object :mime (alist-get 'mime data)
+                         :filename (alist-get 'filename data)))))
+        (error nil)))))
+
+(defun org-museum--asset-download-remote (url)
+  "Download URL once and return locked local cache metadata."
+  (or (org-museum--asset-cache-read url)
+      (let ((buffer (url-retrieve-synchronously url t t 30)))
+        (unless buffer
+          (signal 'org-museum-asset-error
+                  (list (format "Remote asset download failed: %s" url))))
+        (unwind-protect
+            (with-current-buffer buffer
+              (let* ((header-end (or (and (boundp 'url-http-end-of-headers)
+                                          url-http-end-of-headers)
+                                     (save-excursion
+                                       (goto-char (point-min))
+                                       (and (re-search-forward "\r?\n\r?\n" nil t)
+                                            (point)))))
+                     (status (and (boundp 'url-http-response-status)
+                                  url-http-response-status))
+                     (mime (save-excursion
+                             (goto-char (point-min))
+                             (and (re-search-forward
+                                   "^Content-Type:[[:space:]]*\\([^;\r\n]+\\)" header-end t)
+                                  (downcase (match-string 1)))))
+                     (name (file-name-nondirectory
+                            (or (url-filename (url-generic-parse-url url)) "asset")))
+                     (name (car (split-string name "[?#]")))
+                     (temp (make-temp-file "org-museum-remote-asset-")))
+                (unless header-end
+                  (signal 'org-museum-asset-error
+                          (list (format "Invalid remote asset response: %s" url))))
+                (when (and status (or (< status 200) (>= status 400)))
+                  (signal 'org-museum-asset-error
+                          (list (format "Remote asset HTTP %s: %s" status url))))
+                (when (and mime (string-prefix-p "text/html" mime))
+                  (signal 'org-museum-asset-error
+                          (list (format "Remote asset returned HTML: %s" url))))
+                (unwind-protect
+                    (progn
+                      (let ((coding-system-for-write 'no-conversion))
+                        (write-region header-end (point-max) temp nil 'silent))
+                      (when (zerop (file-attribute-size (file-attributes temp)))
+                        (signal 'org-museum-asset-error
+                                (list (format "Remote asset is empty: %s" url))))
+                      (let* ((sha (org-museum--file-content-hash temp))
+                             (object (org-museum--asset-cache-object-path sha))
+                             (meta (org-museum--asset-cache-url-path url))
+                             (resolved-mime (org-museum--asset-mime-for-name name mime)))
+                        (make-directory (file-name-directory object) t)
+                        (make-directory (file-name-directory meta) t)
+                        (unless (file-exists-p object)
+                          (org-museum--copy-file-atomically temp object))
+                        (org-museum--write-content-if-changed
+                         meta
+                         (concat (json-encode
+                                  `((url . ,url) (sha256 . ,sha)
+                                    (mime . ,resolved-mime) (filename . ,name)))
+                                 "\n"))
+                        (list :path object :mime resolved-mime :filename name)))
+                  (when (file-exists-p temp) (delete-file temp)))))
+          (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(defun org-museum--remote-asset-candidate-p (url)
+  "Return non-nil when URL names a downloadable asset rather than a web page."
+  (let ((extension (downcase
+                    (or (file-name-extension
+                         (car (split-string
+                               (url-filename (url-generic-parse-url url)) "[?#]"))) ""))))
+    (and (not (string-empty-p extension))
+         (assoc extension org-museum--asset-mime-fallbacks))))
+
+(defun org-museum--asset-register-remote
+    (url page-id description alt-present)
+  "Register a remote asset, or retain its URL with a located warning."
+  (let ((result (and org-museum--asset-remote-results
+                     (gethash url org-museum--asset-remote-results))))
+    (cond
+     ((eq result :html) nil)
+     ((and (consp result) (eq (car result) :unavailable))
+      (org-museum--asset-warning 'remote-unavailable url (cdr result))
+      nil)
+     (t
+      ;; Only download failures degrade to ordinary links.  Registration and
+      ;; publication errors still fail, so local asset integrity is preserved.
+      (let ((cached
+             (condition-case err
+                 (org-museum--asset-download-remote url)
+               (error
+                (let ((detail (error-message-string err)))
+                  (if (string-match-p "Remote asset returned HTML:" detail)
+                      (when org-museum--asset-remote-results
+                        (puthash url :html org-museum--asset-remote-results))
+                    (when org-museum--asset-remote-results
+                      (puthash url (cons :unavailable detail)
+                               org-museum--asset-remote-results))
+                    (org-museum--asset-warning 'remote-unavailable url detail))
+                  nil)))))
+        (when cached
+          (org-museum--asset-register-local
+           (plist-get cached :path) url page-id description alt-present
+           (plist-get cached :mime) (plist-get cached :filename))))))))
+
+(defun org-museum--asset-href (asset out-file)
+  "Return ASSET's published URL relative to OUT-FILE."
+  (org-museum--relative-path
+   (expand-file-name (org-museum-asset-published-url asset)
+                     (org-museum--shared-root))
+   out-file))
+
+(defun org-museum--asset-render-html
+    (asset out-file description &optional compact)
+  "Render ASSET for OUT-FILE using DESCRIPTION and optional COMPACT card mode."
+  (let* ((href (org-museum--html-escape
+                (org-museum--asset-href asset out-file) t))
+         (name (org-museum--html-escape
+                (or description (org-museum-asset-filename asset))))
+         (kind (org-museum-asset-kind asset))
+         (mime (org-museum--html-escape (org-museum-asset-mime asset) t))
+         (download-name (org-museum--html-escape
+                         (org-museum-asset-filename asset) t))
+         (download (format
+                    (concat "<a class=\"museum-asset-card museum-asset-%s\" "
+                            "data-asset-id=\"%s\" href=\"%s\" download=\"%s\">"
+                            "<span class=\"museum-asset-kind\">%s</span>"
+                            "<span class=\"museum-asset-name\">%s</span></a>")
+                    kind (org-museum-asset-id asset) href download-name
+                    (capitalize (symbol-name kind)) name)))
+    (if compact download
+      (pcase kind
+        ('image
+         (format (concat "<figure class=\"museum-asset museum-asset-image\" "
+                         "data-asset-id=\"%s\"><img src=\"%s\" alt=\"%s\" "
+                         "loading=\"lazy\" decoding=\"async\" data-lightbox></figure>")
+                 (org-museum-asset-id asset) href name))
+        ('video
+         (format (concat "<figure class=\"museum-asset museum-asset-video\" "
+                         "data-asset-id=\"%s\"><video controls preload=\"none\">"
+                         "<source src=\"%s\" type=\"%s\">%s</video></figure>")
+                 (org-museum-asset-id asset) href mime name))
+        ('audio
+         (format (concat "<figure class=\"museum-asset museum-asset-audio\" "
+                         "data-asset-id=\"%s\"><audio controls preload=\"none\">"
+                         "<source src=\"%s\" type=\"%s\">%s</audio></figure>")
+                 (org-museum-asset-id asset) href mime name))
+        ('pdf
+         (format (concat "<div class=\"museum-asset museum-asset-pdf\">%s"
+                         "<a class=\"museum-asset-preview\" href=\"%s\" "
+                         "target=\"_blank\" rel=\"noopener noreferrer\">预览 PDF</a></div>")
+                 download href))
+        (_ download)))))
+
+(defun org-museum--asset-description (link)
+  "Return LINK's plain description, or nil."
+  (when-let* ((begin (org-element-property :contents-begin link))
+              (end (org-element-property :contents-end link)))
+    (string-trim (buffer-substring-no-properties begin end))))
+
+(defun org-museum--page-id-for-file (file)
+  "Return indexed page id for FILE, falling back to its base name."
+  (let ((page (and org-museum--index (org-museum--page-for-file file))))
+    (if page (org-museum-page-id page) (file-name-base file))))
+
+(defun org-museum--asset-link-exported-p (link)
+  "Return non-nil if LINK is outside hidden Org headline trees."
+  (not (cl-some
+        (lambda (node)
+          (and (eq (org-element-type node) 'headline)
+               (or (org-element-property :commentedp node)
+                   (org-element-property :archivedp node)
+                   (member "noexport" (org-element-property :tags node)))))
+        (org-element-lineage link))))
+
+(defun org-museum--prepare-page-assets (buffer source-file out-file)
+  "Resolve and replace asset links in BUFFER for SOURCE-FILE and OUT-FILE."
+  (with-current-buffer buffer
+    (let ((page-id (org-museum--page-id-for-file source-file)) replacements)
+      (org-element-map (org-element-parse-buffer) 'link
+        (lambda (link)
+          (when (org-museum--asset-link-exported-p link)
+          (let* ((type (org-element-property :type link))
+                 (raw (org-element-property :raw-link link))
+                 (path (org-element-property :path link))
+                 (description (org-museum--asset-description link))
+                 (alt-present (and description (not (string-empty-p description))))
+                 asset)
+            (let ((org-museum--asset-current-location
+                   (format "%s:%d" source-file
+                           (line-number-at-pos (org-element-property :begin link)))))
+              (condition-case err
+                  (progn
+                    (cond
+                     ((string= type "attachment")
+                      (save-excursion
+                        (goto-char (org-element-property :begin link))
+                        (setq asset
+                              (org-museum--asset-register-local
+                               (org-attach-expand path) raw page-id
+                               description alt-present))))
+                     ((and (string= type "file")
+                           (not (string= (downcase
+                                          (or (file-name-extension path) ""))
+                                         "org")))
+                      (let ((resolved (expand-file-name
+                                       (url-unhex-string
+                                        (car (org-museum--file-link-parts path)))
+                                       (file-name-directory source-file))))
+                        (setq asset
+                              (org-museum--asset-register-local
+                               resolved raw page-id description alt-present))))
+                     ((and (member type '("http" "https"))
+                           (org-museum--remote-asset-candidate-p raw))
+                      (setq asset
+                            (org-museum--asset-register-remote
+                             raw page-id description alt-present))))
+                    (when asset
+                      (push (list (org-element-property :begin link)
+                                  (org-element-property :end link)
+                                  (concat "@@html:"
+                                          (org-museum--asset-render-html
+                                           asset out-file description nil)
+                                          "@@"))
+                            replacements)))
+                (org-museum-asset-error
+                 (signal 'org-museum-asset-error
+                         (list (format "%s: %s"
+                                       org-museum--asset-current-location
+                                        (error-message-string err)))))))))))
+      (dolist (replacement (sort replacements
+                                 (lambda (left right) (> (car left) (car right)))))
+        (goto-char (nth 0 replacement))
+        (delete-region (nth 0 replacement) (nth 1 replacement))
+        (insert (nth 2 replacement))))))
+
+(defun org-museum--preflight-page-assets (source-file)
+  "Resolve every asset in SOURCE-FILE without writing public output."
+  (org-museum--call-preserving-source-mtime
+   source-file
+   (lambda ()
+     (with-temp-buffer
+       (insert-file-contents source-file)
+       (setq buffer-file-name source-file)
+       ;; Asset discovery only needs Org syntax and link context.  Running the
+       ;; user's full `org-mode-hook' here can start unrelated integrations once
+       ;; per page and make a build appear to hang before its transaction writes
+       ;; any output.
+       (delay-mode-hooks (org-mode))
+       (org-museum--prepare-page-assets
+        (current-buffer) source-file
+        (org-museum--export-filename source-file))))))
+
+(defun org-museum--publish-assets (&optional cleanup)
+  "Copy registered assets into the public tree; remove stale files with CLEANUP."
+  (let ((root (org-museum--assets-root)) expected)
+    (when (file-symlink-p root)
+      (signal 'org-museum-asset-error
+              (list (format "Refusing linked asset output directory: %s" root))))
+    (make-directory root t)
+    (when org-museum--asset-registry
+      (maphash
+       (lambda (_id asset)
+         (let ((target (expand-file-name
+                        (file-name-nondirectory
+                         (org-museum-asset-published-url asset)) root)))
+           (push (downcase (expand-file-name target)) expected)
+           (unless (and (file-regular-p target)
+                        (org-museum--files-have-same-content-p
+                         (org-museum-asset-local-path asset) target))
+             (unless (file-exists-p target)
+               (push target org-museum--asset-created-files))
+             (org-museum--copy-file-atomically
+              (org-museum-asset-local-path asset) target))))
+       org-museum--asset-registry))
+    (when cleanup
+      (dolist (file (directory-files root t "^[^.].*" t))
+        (when (and (file-regular-p file)
+                   (not (member (downcase (expand-file-name file)) expected)))
+          (delete-file file))))
+    root))
+
+(defun org-museum--asset-to-alist (asset)
+  "Return public deterministic JSON data for ASSET."
+  `((id . ,(org-museum-asset-id asset))
+    (filename . ,(org-museum-asset-filename asset))
+    (mime . ,(org-museum-asset-mime asset))
+    (kind . ,(symbol-name (org-museum-asset-kind asset)))
+    (size . ,(org-museum-asset-size asset))
+    (sha256 . ,(org-museum-asset-sha256 asset))
+    (source_path . ,(org-museum-asset-source-path asset))
+    (published_url . ,(org-museum-asset-published-url asset))
+    (thumbnail . ,(org-museum-asset-thumbnail asset))
+    (width . ,(org-museum-asset-width asset))
+    (height . ,(org-museum-asset-height asset))
+    (duration . ,(org-museum-asset-duration asset))
+    (filenames . ,(vconcat (org-museum-asset-filenames asset)))
+    (sources . ,(vconcat (org-museum-asset-sources asset)))))
+
+(defun org-museum--write-assets-manifest ()
+  "Write stable assets.json for the current registry and page map."
+  (let (assets pages)
+    (when org-museum--asset-registry
+      (maphash (lambda (_id asset) (push asset assets))
+               org-museum--asset-registry))
+    (setq assets (sort assets (lambda (left right)
+                               (string< (org-museum-asset-id left)
+                                        (org-museum-asset-id right)))))
+    (when org-museum--page-assets
+      (maphash (lambda (page-id ids)
+                 (when ids
+                   (push (cons page-id (vconcat ids)) pages)))
+               org-museum--page-assets))
+    (setq pages (sort pages (lambda (left right) (string< (car left) (car right)))))
+    (make-directory (org-museum--shared-root) t)
+    (org-museum--write-content-if-changed
+     (org-museum--assets-manifest-path)
+     (let ((json-encoding-pretty-print nil))
+       (concat (json-encode
+                `((schema_version . 1)
+                  (assets . ,(vconcat (mapcar #'org-museum--asset-to-alist assets)))
+                  (pages . ,pages)))
+               "\n")))))
+
+(defun org-museum--load-assets-manifest ()
+  "Merge an existing public assets.json into the dynamically bound registries."
+  (let ((manifest (org-museum--assets-manifest-path)))
+    (when (file-regular-p manifest)
+      (with-temp-buffer
+        (insert-file-contents manifest)
+        (let* ((json-object-type 'alist)
+               (json-array-type 'list)
+               (json-key-type 'string)
+               (data (json-read))
+               (assets (alist-get "assets" data nil nil #'string=))
+               (pages (alist-get "pages" data nil nil #'string=)))
+          (dolist (record assets)
+            (let* ((id (alist-get "id" record nil nil #'string=))
+                   (sha (alist-get "sha256" record nil nil #'string=))
+                   (published (alist-get "published_url" record nil nil #'string=))
+                   (local (and published
+                               (expand-file-name published
+                                                 (org-museum--shared-root))))
+                   (assets-root (org-museum--assets-root))
+                   (assets-prefix
+                    (concat
+                     (string-remove-suffix
+                      "/" (replace-regexp-in-string
+                           "\\\\" "/" org-museum-assets-subdir))
+                     "/"))
+                   (valid
+                    (and (stringp id)
+                         (string-match-p "\\`[0-9a-f]\\{64\\}\\'" id)
+                         (equal id sha)
+                         (stringp published)
+                         (string-prefix-p assets-prefix published)
+                         (string-match-p
+                          (format "\\`%s%s\\.[a-z0-9]+\\'"
+                                  (regexp-quote assets-prefix)
+                                  (regexp-quote id))
+                          published)
+                         local (file-regular-p local)
+                         (file-in-directory-p local assets-root)
+                         (string= id (org-museum--file-content-hash local)))))
+              (unless valid
+                (signal 'org-museum-asset-error
+                        (list (format "Unsafe or corrupt assets.json record: %S"
+                                      published))))
+              (when valid
+                (puthash
+                 id
+                 (make-org-museum-asset
+                  :id id
+                  :filename (alist-get "filename" record nil nil #'string=)
+                  :mime (alist-get "mime" record nil nil #'string=)
+                  :kind (intern (alist-get "kind" record nil nil #'string=))
+                  :size (alist-get "size" record nil nil #'string=)
+                  :sha256 sha
+                  :source-path (alist-get "source_path" record nil nil #'string=)
+                  :published-url published
+                  :thumbnail (alist-get "thumbnail" record nil nil #'string=)
+                  :width (alist-get "width" record nil nil #'string=)
+                  :height (alist-get "height" record nil nil #'string=)
+                  :duration (alist-get "duration" record nil nil #'string=)
+                  :filenames (alist-get "filenames" record nil nil #'string=)
+                  :sources (alist-get "sources" record nil nil #'string=)
+                  :local-path local)
+                 org-museum--asset-registry))))
+          (dolist (entry pages)
+            (puthash (car entry) (append (cdr entry) nil)
+                     org-museum--page-assets)))))))
+
+(defun org-museum--prune-unreferenced-assets ()
+  "Remove manifest records not referenced by any page, retaining public files."
+  (let ((referenced (make-hash-table :test #'equal)) stale)
+    (when org-museum--page-assets
+      (maphash (lambda (_page ids)
+                 (dolist (id ids) (puthash id t referenced)))
+               org-museum--page-assets))
+    (when org-museum--asset-registry
+      (maphash (lambda (id _asset)
+                 (unless (gethash id referenced)
+                   (push id stale)))
+               org-museum--asset-registry)
+      (dolist (id stale)
+        (remhash id org-museum--asset-registry)))))
+
+(defun org-museum--report-asset-warnings ()
+  "Display all collected asset warnings without hiding build success."
+  (when org-museum--asset-warnings
+    (let* ((records (nreverse (copy-sequence org-museum--asset-warnings)))
+           (count (length records))
+           (report
+            (concat
+             (format "* Asset warnings (%d)\n\n" count)
+             (mapconcat
+              (lambda (warning)
+                (format "- [%s] %s\n  %s\n  %s"
+                        (plist-get warning :kind)
+                        (plist-get warning :source)
+                        (or (plist-get warning :location) "unknown location")
+                        (plist-get warning :detail)))
+              records "\n"))))
+      (with-current-buffer (get-buffer-create "*Org Museum 资源警告*")
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert report "\n")))
+      (when noninteractive
+        (princ (concat "\n" report "\n") 'external-debugging-output))
+      (message "Org Museum 有 %d 项资源警告，请查看 *Org Museum 资源警告*"
+               count))))
+
+(defun org-museum--page-assets-html (page out-file)
+  "Return the compact resource section for PAGE relative to OUT-FILE."
+  (let ((ids (and page org-museum--page-assets
+                  (seq-filter
+                   (lambda (id)
+                     (when-let* ((asset (gethash id org-museum--asset-registry)))
+                       (memq (org-museum-asset-kind asset) '(image video audio))))
+                   (gethash (org-museum-page-id page) org-museum--page-assets)))))
+    (when ids
+      (concat
+       "<section class=\"museum-page-assets\" aria-labelledby=\"museum-page-assets-title\">"
+       "<div class=\"museum-section-heading\"><p class=\"eyebrow\">资源</p>"
+       "<h2 id=\"museum-page-assets-title\">资源</h2></div>"
+       "<div class=\"museum-asset-list\">"
+       (mapconcat
+        (lambda (id)
+          (when-let* ((asset (gethash id org-museum--asset-registry)))
+            (org-museum--asset-render-html asset out-file nil t)))
+        ids "")
+       "</div></section>"))))
+
+;;;###autoload
+(defun org-museum-refresh-remote-assets (&optional url)
+  "Forget the locked remote asset mapping for URL, or all mappings when nil."
+  (interactive
+   (list (let ((value (read-string "远程资源地址（留空则全部刷新）：")))
+           (unless (string-empty-p value) value))))
+  (let ((directory (expand-file-name "urls" org-museum-asset-cache-directory))
+        (removed 0))
+    (if url
+        (let ((file (org-museum--asset-cache-url-path url)))
+          (when (file-regular-p file) (delete-file file) (setq removed 1)))
+      (when (file-directory-p directory)
+        (dolist (file (directory-files directory t "\\.json\\'" t))
+          (when (file-regular-p file) (delete-file file) (cl-incf removed)))))
+    (message "Org Museum 已更新 %d 项远程资源映射" removed)
+    removed))
+
 (defun org-museum--scan-root ()
   "Absolute path to the .org scan root."
   (expand-file-name (or org-museum-scan-dir "") org-museum-root-dir))
+
+(defcustom org-museum-scan-excluded-directories
+  '(".git" ".cache" "node_modules" "output")
+  "Directories relative to the project root omitted from note discovery.
+Export directories are always omitted.  Remove an entry if it intentionally
+contains source notes; ordinary notes outside the pages directory remain valid."
+  :type '(repeat directory)
+  :group 'org-museum)
 
 (defun org-museum--scan-files ()
   "Return the complete, de-duplicated set of Org files used by the index."
   (let* ((scan-root (file-name-as-directory (org-museum--scan-root)))
          (project-root (file-name-as-directory
                         (expand-file-name org-museum-root-dir)))
+         (excluded
+          (cl-remove-if
+           (lambda (dir) (or (equal dir project-root) (equal dir scan-root)))
+           (mapcar
+            (lambda (dir) (file-name-as-directory (expand-file-name dir project-root)))
+            (append org-museum-scan-excluded-directories
+                    (list org-museum-export-dir org-museum-shared-export-dir)))))
          (dirs (cond
                 ((file-in-directory-p scan-root project-root)
                  (list project-root))
@@ -866,9 +2040,17 @@ Exported pages never fall back to a remote resource."
         files)
     (dolist (dir dirs)
       (when (file-directory-p dir)
-        (dolist (file (directory-files-recursively dir "\\.org\\'"))
+        (dolist (file (directory-files-recursively
+                      dir "\\.org\\'" nil
+                      (lambda (candidate)
+                        (not (seq-some
+                              (lambda (excluded-dir)
+                                (or (equal (file-name-as-directory candidate) excluded-dir)
+                                    (file-in-directory-p candidate excluded-dir)))
+                              excluded)))))
           (let ((key (org-museum--normalised-path file)))
-            (unless (gethash key seen)
+            (unless (or (string-prefix-p ".#" (file-name-nondirectory file))
+                        (gethash key seen))
               (puthash key t seen)
               (push (expand-file-name file) files))))))
     (sort files #'string-lessp)))
@@ -966,6 +2148,14 @@ Layout: <org-museum-root-dir>/<org-museum-pages-subdir>/"
   "Decode a file URL produced by `org-museum--path-to-file-url'."
   (when (string-match "\\`file:/+\\(.*\\)\\'" (or url ""))
     (let ((path (url-unhex-string (match-string 1 url))))
+      ;; Org HTML treats a percent-encoded Windows drive colon as a relative
+      ;; file URL and prefixes the current drive, producing paths such as
+      ;; c:/c:/Users/example/note.md.  A colon cannot name a Windows path
+      ;; component, so the leading drive is necessarily exporter noise.
+      (when (and (eq system-type 'windows-nt)
+                 (string-match
+                  "\\`[[:alpha:]]:/\\([[:alpha:]]:/.*\\)\\'" path))
+        (setq path (match-string 1 path)))
       (if (and (eq system-type 'windows-nt)
                (string-match-p "\\`[[:alpha:]]:/" path))
           path
@@ -1035,7 +2225,28 @@ When DOTTED is non-nil, use YYYY.MM.DD; otherwise use YYYY-MM-DD."
 (defun org-museum--category-label (category)
   "Return the configured display label for CATEGORY."
   (or (cdr (assoc-string category org-museum-category-label-alist t))
+      (and (equal category "uncategorized") "其他笔记")
       category))
+
+(defun org-museum--graph-semantic-category (page)
+  "Return a meaningful graph category for PAGE, or the empty string.
+An internal fallback category is never exposed as a graph topic."
+  (let ((category (string-trim (or (org-museum-page-category page) ""))))
+    (cond
+     ((and (not (string-empty-p category))
+           (not (member (downcase category) '("uncategorized" "未分类"))))
+      (org-museum--category-label category))
+     (t
+      (let* ((relative (file-relative-name
+                        (org-museum-page-path page)
+                        (expand-file-name org-museum-pages-subdir
+                                          org-museum-root-dir)))
+             (parts (split-string (or (file-name-directory relative) "") "[/\\\\]" t))
+             (folder (car parts)))
+        (if (and folder (not (member (downcase folder)
+                                     '("uncategorized" "未分类" "pages"))))
+            (org-museum--category-label folder)
+          ""))))))
 
 (defun org-museum--strip-html (value)
   "Return VALUE with simple HTML markup removed and entities decoded."
@@ -1138,7 +2349,7 @@ headline options used by supported bundled Org versions."
                   (let* ((title (org-get-heading t t t t))
                          (custom (or (org-entry-get nil "CUSTOM_ID")
                                      (org-entry-get nil "ID")))
-                         (path (org-get-outline-path t t))
+                         (path (org-get-outline-path t))
                          (path-key (mapconcat #'identity path "\0"))
                          (occurrence
                           (1+ (gethash path-key occurrences 0)))
@@ -1196,6 +2407,37 @@ Org outline-container IDs follow the stable heading ID."
             (while (search-forward (car pair) nil t)
               (replace-match (cdr pair) t t))))))))
 
+(defun org-museum--pp-stabilize-generated-anchors (org-file)
+  "Replace remaining transient Org-generated anchors for ORG-FILE.
+Org assigns process-random `orgXXXXXXX' IDs to items such as descriptive
+lists.  Preserve references while deriving replacements from the page and
+document order so clean builds are byte-identical."
+  (let ((page-key (if-let* ((page (org-museum--page-for-file org-file)))
+                      (org-museum-page-id page)
+                    (file-name-base org-file)))
+        (seen (make-hash-table :test #'equal))
+        (ordinal 0)
+        rewrites)
+    (goto-char (point-min))
+    (while (re-search-forward
+            "\\bid=\"\\(org[[:xdigit:]]\\{7,\\}\\)\"" nil t)
+      (let ((old-id (match-string-no-properties 1)))
+        (unless (gethash old-id seen)
+          (setq ordinal (1+ ordinal))
+          (puthash old-id t seen)
+          (push
+           (cons old-id
+                 (concat "org-museum-ref-"
+                         (substring
+                          (secure-hash 'sha256
+                                       (format "%s\0%d" page-key ordinal))
+                          0 12)))
+           rewrites))))
+    (dolist (rewrite rewrites)
+      (goto-char (point-min))
+      (while (search-forward (car rewrite) nil t)
+        (replace-match (cdr rewrite) t t)))))
+
 (defun org-museum--exported-headings (page)
   "Return exact exported heading metadata for PAGE when its HTML exists."
   (let ((html-file (ignore-errors
@@ -1244,7 +2486,7 @@ Org outline-container IDs follow the stable heading ID."
 (defun org-museum--index-data-alist (pages out-file)
   "Return embedded browser index data for PAGES relative to OUT-FILE."
   `((schemaVersion . 2)
-    (generatedAt . ,(format-time-string "%Y-%m-%dT%H:%M:%S%z"))
+    (generatedAt . ,(org-museum--build-time-string "%Y-%m-%dT%H:%M:%S+0000"))
     (pages . ,(vconcat
                (mapcar (lambda (page)
                          (org-museum--page-index-alist page out-file))
@@ -1258,6 +2500,22 @@ Org outline-container IDs follow the stable heading ID."
   "Copy source CSS to the export directory when its content differs."
   (org-museum--ensure-fonts-deployed)
   (org-museum--ensure-icons-deployed)
+  (dolist (name '("resources/vendor/markdown-it.umd.min.js"
+                  "resources/vendor/markdown-it.LICENSE"
+                  "resources/org-museum-markdown.js"
+                  "resources/org-museum-ai.js"
+                  "resources/org-museum-ai-browser.js"
+                  "resources/org-museum-ai-workspace.js"
+                  "resources/org-museum-org-view.js"
+                  "resources/org-museum-graph-layout.js"
+                  "resources/org-museum-graph-edges.js"
+                  "resources/org-museum-graph-network.js"))
+    (let ((source (expand-file-name name (org-museum--plugin-dir)))
+          (target (expand-file-name name (org-museum--shared-root))))
+      (when (and (file-regular-p source)
+                 (not (org-museum--files-have-same-content-p source target)))
+        (make-directory (file-name-directory target) t)
+        (copy-file source target t))))
   (let ((src (org-museum--css-source-path))
         (dst (org-museum--css-output-path)))
     (when (and src (file-exists-p src))
@@ -1265,7 +2523,7 @@ Org outline-container IDs follow the stable heading ID."
       (when (or (not (file-exists-p dst))
                 (not (org-museum--files-have-same-content-p src dst)))
         (copy-file src dst t)
-        (message "Org Museum CSS updated: %s" dst)))))
+        (message "Org Museum 样式已更新：%s" dst)))))
 
 ;; ============================================================
 ;; §7  INDEX — BUILD / SCAN
@@ -1281,10 +2539,10 @@ With prefix FORCE, always rebuild from scratch."
              (file-exists-p index-path)
              (org-museum--index-fresh-p index-path))
         (org-museum--index-load index-path)
-      (message "Building Org Museum index…")
+      (message "正在建立 Org Museum 索引…")
       (setq org-museum--index (org-museum--index-scan))
       (org-museum--index-save org-museum--index index-path)
-      (message "Org Museum index built: %d pages"
+      (message "Org Museum 索引已建立：%d 篇笔记"
                (hash-table-count (org-museum-index-pages org-museum--index))))))
 
 (defun org-museum--index-scan ()
@@ -1533,18 +2791,26 @@ WIKI_ID rather than the Org-roam UUID."
 ;; ============================================================
 
 (defun org-museum--index-fresh-p (index-path)
-  "Return non-nil when INDEX-PATH is newer than every .org file."
-  (let ((index-mtime (org-museum--file-mtime index-path)))
+  "Return non-nil when INDEX-PATH covers exactly the current source files."
+  (let ((index-mtime (org-museum--file-mtime index-path))
+        (files (org-museum--scan-files)))
     (and (file-directory-p (org-museum--scan-root))
          (condition-case nil
-             (let ((json-object-type 'alist)
-                   (json-key-type 'symbol))
-               (= org-museum--index-schema-version
-                  (or (cdr (assq 'schema-version
-                                 (json-read-file index-path))) -1)))
+             (let* ((json-object-type 'alist)
+                    (json-array-type 'list)
+                    (json-key-type 'symbol)
+                    (data (json-read-file index-path))
+                    (cached (mapcar (lambda (page)
+                                      (org-museum--normalised-path (alist-get 'path page)))
+                                    (alist-get 'pages data))))
+               (and (= org-museum--index-schema-version
+                       (or (alist-get 'schema-version data) -1))
+                    (equal (sort cached #'string-lessp)
+                           (sort (mapcar #'org-museum--normalised-path files)
+                                 #'string-lessp))))
            (error nil))
          (not (cl-some (lambda (f) (> (org-museum--file-mtime f) index-mtime))
-                       (org-museum--scan-files)))
+                       files))
          (or (null org-museum--index)
              (not (org-museum--index-has-ghost-pages-p org-museum--index))))))
 
@@ -1640,14 +2906,14 @@ Known limitation: cloning and inbound verification are O(n); acceptable for
 wikis up to roughly 5000 pages."
   (cl-block org-museum--index-update-file
     (unless (org-museum--file-in-project-p file)
-      (message "Org Museum [Index]: skipping out-of-project file %s" file)
+      (message "Org Museum 索引：已跳过知识库外文件 %s" file)
       (cl-return-from org-museum--index-update-file nil))
 
     (unless org-museum--index
       (condition-case err
           (org-museum-index-build)
         (error
-         (message "Org Museum [Index]: build failed: %s" (error-message-string err))
+         (message "Org Museum 索引建立失败：%s" (error-message-string err))
          (cl-return-from org-museum--index-update-file nil))))
 
     (let ((working (org-museum--alist-to-index
@@ -1661,7 +2927,7 @@ wikis up to roughly 5000 pages."
                                       (org-museum--index-file-path))
               (setq committed org-museum--index))
           (error
-           (message "Org Museum [Index]: incremental update failed for %s: %s"
+           (message "Org Museum 索引增量更新失败：%s：%s"
                     file (error-message-string err)))))
       (when committed
         (setq org-museum--index committed))
@@ -1804,26 +3070,60 @@ The previous cache remains intact when serialization or disk writing fails."
 
 ;;;###autoload
 (defun org-museum-export-page (file &optional force)
-  "Export a single Org Museum FILE to HTML."
+  "Export a single Org Museum FILE to HTML.
+Interactive calls run in an isolated background Emacs process."
   (interactive (list (buffer-file-name) current-prefix-arg))
-  (org-museum--run-with-current-runtime
-   'org-museum-export-page (list file force)
-   (lambda () (org-museum--export-page-current file force))))
+  (if (called-interactively-p 'interactive)
+      (org-museum--start-background-job 'export-page (list file force))
+    (org-museum--run-with-current-runtime
+     'org-museum-export-page (list file force)
+     (lambda () (org-museum--export-page-current file force)))))
 
 (defun org-museum--export-page-current (file &optional force)
   "Export FILE using the currently loaded runtime."
-  (org-museum--guard-init)
-  (org-museum--ensure-css-deployed)
-  (org-museum--hljs-assets)
-  (let ((out-file (org-museum--export-filename file)))
-    (if (and (not force) (not (org-museum--needs-export-p file out-file)))
-        (message "Skipping unchanged page: %s" (file-name-nondirectory file))
-      (make-directory (file-name-directory out-file) t)
-      (org-museum--export-with-theme file out-file))
-    (org-museum--delete-legacy-source-html file out-file)
-    (unless org-museum--full-export-in-progress
-      (org-museum--export-related-reading-current)
-      (org-museum--export-timeline-current))))
+  (let* ((own-assets (null org-museum--asset-registry))
+        (org-museum--asset-registry
+         (or org-museum--asset-registry (make-hash-table :test #'equal)))
+        (org-museum--page-assets
+         (or org-museum--page-assets (make-hash-table :test #'equal)))
+        (org-museum--asset-warnings
+         (if own-assets nil org-museum--asset-warnings))
+        (org-museum--asset-remote-results
+         (or org-museum--asset-remote-results
+             (make-hash-table :test #'equal)))
+        (org-museum--build-time
+         (or org-museum--build-time (org-museum--deterministic-build-time))))
+    (org-museum--guard-init)
+    (when own-assets
+      (org-museum--load-assets-manifest))
+    (let* ((page-id (org-museum--page-id-for-file file))
+           (old-assets (and own-assets
+                            (copy-sequence
+                             (gethash page-id org-museum--page-assets))))
+           asset-changed)
+      (when own-assets
+        (puthash page-id nil org-museum--page-assets)
+        (org-museum--preflight-page-assets file)
+        (setq asset-changed
+              (not (equal old-assets
+                          (gethash page-id org-museum--page-assets)))))
+      (org-museum--ensure-css-deployed)
+      (org-museum--hljs-assets)
+      (let ((out-file (org-museum--export-filename file)))
+      (if (and (not force) (not asset-changed)
+               (not (org-museum--needs-export-p file out-file)))
+          (message "已跳过未变化的笔记：%s" (file-name-nondirectory file))
+        (make-directory (file-name-directory out-file) t)
+        (org-museum--export-with-theme file out-file))
+      (org-museum--delete-legacy-source-html file out-file)
+      (unless org-museum--full-export-in-progress
+        (when own-assets
+          (org-museum--prune-unreferenced-assets)
+          (org-museum--publish-assets nil)
+          (org-museum--write-assets-manifest)
+          (org-museum--report-asset-warnings))
+        (org-museum--export-related-reading-current)
+        (org-museum--export-timeline-current))))))
 ;; Fix-03: CSS mtime now included in staleness check.
 (defun org-museum--needs-export-p (org-file html-file)
   "Return non-nil when export inputs are newer than HTML-FILE.
@@ -1914,12 +3214,18 @@ user Org settings remain untouched."
 
 (defun org-museum--export-with-theme (org-file out-file)
   "Export ORG-FILE to OUT-FILE with CSS, link-rewriting, and post-processing."
-  (let ((tmp (make-temp-file "org-museum-" nil ".org")))
-    (unwind-protect
-        (progn
+  (org-museum--call-preserving-source-mtime
+   org-file
+   (lambda ()
+     (let ((tmp (make-temp-file "org-museum-" nil ".org")))
+       (unwind-protect
+           (progn
           (with-temp-buffer
             (insert-file-contents org-file)
+            (setq buffer-file-name org-file)
             (org-mode)
+            (org-museum--prepare-page-assets
+             (current-buffer) org-file out-file)
             (org-museum--strip-drawers)
             (org-museum--rewrite-org-museum-links
              (current-buffer) out-file org-file)
@@ -1947,6 +3253,10 @@ user Org settings remain untouched."
                          (org-html-head-include-default-style nil)
                          (org-html-preamble                   nil)
                          (org-html-postamble                  nil)
+                         ;; Org's default exporter comment embeds the wall
+                         ;; clock to minute precision and makes otherwise
+                         ;; identical clean builds byte-different.
+                         (org-export-time-stamp-file          nil)
                          (org-export-with-broken-links        'mark)
                          (org-export-with-drawers             nil)
                          (org-export-with-properties          nil)
@@ -1962,7 +3272,7 @@ user Org settings remain untouched."
               (when (buffer-live-p export-buf) (kill-buffer export-buf))))
           (when (file-exists-p out-file)
             (org-museum--postprocess-html out-file org-file)))
-      (when (file-exists-p tmp) (delete-file tmp)))))
+         (when (file-exists-p tmp) (delete-file tmp)))))))
 
 (defun org-museum--strip-drawers ()
   "Remove all property drawers and orphaned :END: markers from current buffer."
@@ -1997,11 +3307,11 @@ malformed HTML."
     (org-museum--pp-inject-page-attributes org-file out-file)
     (org-museum--pp-annotate-local-file-links)
     (org-museum--pp-stabilize-heading-anchors org-file)
+    (org-museum--pp-stabilize-generated-anchors org-file)
     (org-museum--pp-wrap-tables)
     (if (not (org-museum--pp-wrap-content-div out-file org-file))
         (progn
-          (message "Org Museum [Export]: aborting post-processing for %s \
-(#content div not found)" out-file)
+          (message "Org Museum 已停止处理 %s：找不到 #content 元素" out-file)
           nil)
       (org-museum--pp-append-nav-and-graph out-file org-file)
       (org-museum--pp-inject-sidebars-and-scripts out-file)
@@ -2127,11 +3437,10 @@ tables retain their native markup."
       "  <dl>\n"
       "    <div><dt>修改日期</dt><dd><time datetime=\"%s\">%s</time></dd></div>\n"
       "    <div><dt>阅读时间</dt><dd>约 %d 分钟</dd></div>\n"
-      "    <div><dt>标签</dt><dd>%s</dd></div>\n"
+      "    <div class=\"museum-meta-tags-item%s\"><dt>标签</dt><dd class=\"museum-meta-tags\">%s</dd></div>\n"
       "  </dl>\n"
       "  <nav class=\"article-back-nav\" aria-label=\"文章返回导航\">\n"
-      "    <a href=\"%s#recent-updates\">← 全部笔记</a>\n"
-      "    <a href=\"%s\">返回索引</a>\n"
+      "    <a data-reading-return href=\"%s#recent-updates\">← 全部笔记</a>\n"
       "  </nav>\n"
       "</aside>\n"
       "</details>\n")
@@ -2145,10 +3454,18 @@ tables retain their native markup."
      (org-museum--format-page-date page)
      (org-museum--format-page-date page)
      (org-museum--source-reading-minutes org-file)
+     (if tags "" " is-empty")
      (if tags
-         (mapconcat #'org-museum--html-escape tags " · ")
-       "—")
-     (org-museum--html-escape home-href t)
+         (mapconcat
+          (lambda (tag)
+            (format "<a class=\"museum-tag-chip\" href=\"%s?tag=%s#recent-updates\" data-tag=\"%s\" title=\"查看包含标签 #%s 的笔记\"><span class=\"museum-tag-hash\" aria-hidden=\"true\">#</span><span class=\"museum-tag-name\">%s</span></a>"
+                    (org-museum--html-escape home-href t)
+                    (url-hexify-string tag)
+                    (org-museum--html-escape tag t)
+                    (org-museum--html-escape tag t)
+                    (org-museum--html-escape tag)))
+          tags "")
+       "<span class=\"museum-tag-empty\">—</span>")
      (org-museum--html-escape home-href t))))
 
 (defun org-museum--article-identity-html (page out-file)
@@ -2322,6 +3639,75 @@ Only runs when `org-museum-code-highlight-method' is `hljs'."
               (insert (format "<code class=\"language-%s\">" hljs-lang)))))))))
 
 ;; Fix-05: now returns t on success, nil on failure.
+(defun org-museum--org-source-html (org-file)
+  "Return the exportable body of ORG-FILE, highlighted by Org font-lock.
+Use the Org exporter first so excluded headings, drawers and private export
+content cannot leak through the syntax view.  Do not evaluate source blocks."
+  (require 'ox-org)
+  (let ((source
+         (with-temp-buffer
+           (insert-file-contents org-file)
+           (delay-mode-hooks (org-mode))
+           (let ((org-export-use-babel nil))
+             (org-export-as 'org nil nil t
+                            '(:with-toc nil :with-properties nil :with-drawers nil)))))
+        lines)
+    (with-temp-buffer
+      (insert source)
+      (delay-mode-hooks (org-mode))
+      (setq-local org-src-fontify-natively t org-hide-leading-stars nil)
+      (font-lock-ensure)
+      (goto-char (point-min))
+      (let (lines (in-block nil))
+        (while (< (point) (point-max))
+          (let* ((end (line-end-position))
+                 (line-class
+                  (cond
+                   ((looking-at "^\\(\\*+\\)[ \t]")
+                    (setq in-block nil)
+                    (format "museum-org-line museum-org-heading museum-org-heading-%d"
+                            (min 8 (- (match-end 1) (match-beginning 1)))))
+                   ((looking-at "^[ \t]*#\\+begin_")
+                    (setq in-block t)
+                    "museum-org-line museum-org-block-delimiter")
+                   ((looking-at "^[ \t]*#\\+end_")
+                    (setq in-block nil)
+                    "museum-org-line museum-org-block-delimiter")
+                   (in-block
+                    "museum-org-line museum-org-block-line")
+                   ((looking-at "^[ \t]*|")
+                    "museum-org-line museum-org-table-line")
+                   ((looking-at "^[ \t]*#\\+")
+                    "museum-org-line museum-org-meta-line")
+                   ((looking-at "^[ \t]*:[A-Z_]+:[ \t]*$")
+                    "museum-org-line museum-org-drawer-line")
+                   (t "museum-org-line")))
+                 fragments)
+            (while (< (point) end)
+              (let* ((begin (point))
+                     (next (next-property-change begin nil end))
+                     (face (or (get-text-property begin 'face)
+                               (get-text-property begin 'font-lock-face)))
+                     (faces (seq-filter #'symbolp (if (listp face) face (list face))))
+                     (classes (mapconcat
+                               (lambda (item) (concat "org-face-" (replace-regexp-in-string
+                                               "[^a-zA-Z0-9_-]" "-" (symbol-name item))))
+                               (delq nil faces) " "))
+                     (text (org-museum--html-escape (buffer-substring-no-properties begin next))))
+                (push (if (string-empty-p classes) text
+                        (format "<span class=\"%s\">%s</span>" classes text)) fragments)
+                (goto-char next)))
+            (push (concat "<span class=\"" line-class "\">"
+                          (if fragments
+                              (apply #'concat (nreverse fragments))
+                            "&nbsp;")
+                          "</span>\n") lines)
+            (forward-line 1)))
+        (concat (format "<section class=\"museum-org-view\" hidden aria-label=\"Org Mode 正文\" data-source-hash=\"%s\">"
+                        (org-museum-knowledge--file-hash org-file))
+              "<pre class=\"museum-org-source\" tabindex=\"0\"><code>"
+              (apply #'concat (nreverse lines)) "</code></pre></section>")))))
+
 (defun org-museum--pp-wrap-content-div (out-file org-file)
   "Wrap #content with scroll/article containers in current buffer.
 Returns t on success, nil when #content is not found.
@@ -2358,10 +3744,18 @@ Applicable scope: org-museum--postprocess-html."
           "<article class=\"article-container\"" article-attrs ">"
           "<button type=\"button\" class=\"museum-article-toc-trigger\" "
           "data-toc-toggle>打开目录</button>"
-          meta))
+          meta
+          (when (file-readable-p org-file)
+            (concat
+             "<div class=\"museum-article-view-toolbar\" role=\"group\" aria-label=\"正文显示方式\">"
+             "<button type=\"button\" data-article-syntax aria-pressed=\"false\">切换为 Org Mode</button>"
+             "<button type=\"button\" data-org-copy hidden>复制 Org 正文</button>"
+             "<button type=\"button\" data-org-toggle-blocks aria-pressed=\"false\" hidden>展开全部代码</button>"
+             "<button type=\"button\" data-org-wrap aria-pressed=\"true\" hidden>自动换行</button>"
+             "<span data-org-view-status role=\"status\" aria-live=\"polite\"></span></div>"
+             (org-museum--org-source-html org-file)))))
         t)
-    (message "Org Museum [PostProcess]: #content not found in %s — \
-check org-export output for this file" out-file)
+    (message "Org Museum 后处理：%s 中找不到 #content，请检查 Org 导出结果" out-file)
     nil))
 
 (defun org-museum--toc-sidebar-html ()
@@ -2391,7 +3785,12 @@ check org-export output for this file" out-file)
                        links backs out-file (org-museum-page-id page))))
          (graph-html (when page
                        (org-museum--generate-local-graph-html page out-file)))
-         (appended  (concat (or nav-html "") (or graph-html ""))))
+         (assets-html (when page
+                        (org-museum--page-assets-html page out-file)))
+         (knowledge-html (when (fboundp 'org-museum-knowledge--page-html)
+                           (org-museum-knowledge--page-html page out-file)))
+         (appended  (concat (or knowledge-html "") (or assets-html "")
+                            (or nav-html "") (or graph-html ""))))
     (goto-char (point-max))
     (cond
      ((re-search-backward "</div>\\([\n\r\t ]*\\)</body>" nil t)
@@ -2400,12 +3799,14 @@ check org-export output for this file" out-file)
         appended
         "\n</article>\n"
         (org-museum--toc-sidebar-html)
+        (org-museum-ai-web--article-panel-html page)
         "</div></main>\\1</body>")))
      (t
       (when (re-search-backward "</div>" nil t)
         (replace-match
          (concat
           appended "\n</article>" (org-museum--toc-sidebar-html)
+          (org-museum-ai-web--article-panel-html page)
           "</div></main>")))))))
 
 (defun org-museum--pp-inject-sidebars-and-scripts (out-file)
@@ -2430,7 +3831,7 @@ check org-export output for this file" out-file)
   (unless (and org-museum--index
                (> (hash-table-count
                    (org-museum-index-pages org-museum--index)) 0))
-    (user-error "Org Museum refuses stale cleanup with an empty index"))
+    (user-error "索引为空，无法清理过期页面"))
   (let (files)
     (maphash
      (lambda (_id page)
@@ -2461,12 +3862,12 @@ check org-export output for this file" out-file)
               pages-root
             (file-name-directory (directory-file-name pages-root)))))
     (unless (and existing-parent (file-exists-p existing-parent))
-      (user-error "Org Museum cleanup pages root has no existing parent"))
+      (user-error "页面目录的上级目录不存在，无法清理"))
     (when (file-symlink-p pages-root)
-      (user-error "Org Museum refuses cleanup through a symlinked pages root"))
+      (user-error "页面目录是符号链接，无法清理"))
     (unless (file-in-directory-p
              (file-truename existing-parent) project-root)
-      (user-error "Org Museum refuses cleanup outside the museum root"))
+      (user-error "无法清理知识库目录外的页面"))
     pages-root))
 
 (defun org-museum--existing-safe-page-html-files ()
@@ -2498,7 +3899,7 @@ export would remove."
         (push (expand-file-name file) stale)))
     (setq stale (sort stale #'string<))
     (when (called-interactively-p 'interactive)
-      (with-current-buffer (get-buffer-create "*Org Museum Stale Exports*")
+      (with-current-buffer (get-buffer-create "*Org Museum 过期导出*")
         (erase-buffer)
         (insert (format "* Stale exports preview (%d)\n\n" (length stale)))
         (if stale
@@ -2526,8 +3927,11 @@ export would remove."
       (insert
        (org-museum--json-for-html
         `((schemaVersion . 1)
-          (generatedAt . ,(format-time-string "%Y-%m-%dT%H:%M:%S%z"))
-          (pagesRoot . ,(replace-regexp-in-string "\\\\" "/" pages-root))
+          (generatedAt . ,(org-museum--build-time-string "%Y-%m-%dT%H:%M:%S+0000"))
+          (pagesRoot . ,(replace-regexp-in-string
+                         "\\\\" "/"
+                         (file-relative-name pages-root
+                                             (org-museum--shared-root))))
           (pages . ,(vconcat relative))))))
     manifest))
 
@@ -2539,8 +3943,7 @@ export would remove."
       (when (org-museum--safe-page-html-p file (org-museum--pages-root))
         (delete-file file)
         (cl-incf deleted)))
-    (message "Org Museum stale cleanup: %d page HTML file%s deleted"
-             deleted (if (= deleted 1) "" "s"))
+    (message "Org Museum 已清理 %d 个过期页面" deleted)
     deleted))
 
 (defun org-museum--clean-stale-exports-if-safe ()
@@ -2561,10 +3964,13 @@ errors still propagate so the full-export transaction can roll back."
 
 ;;;###autoload
 (defun org-museum-export-all ()
-  "Export the entire Org Museum as a static HTML site."
+  "Export the entire Org Museum as a static HTML site.
+Interactive calls run in an isolated background Emacs process."
   (interactive)
-  (org-museum--run-with-current-runtime
-   'org-museum-export-all nil #'org-museum--export-all-current))
+  (if (called-interactively-p 'interactive)
+      (org-museum--start-background-job 'export-all nil)
+    (org-museum--run-with-current-runtime
+     'org-museum-export-all nil #'org-museum--export-all-current)))
 
 (defun org-museum--publish-normalise-relative-path (path)
   "Return PATH with portable separators, or nil when it is unsafe."
@@ -2578,10 +3984,17 @@ errors still propagate so the full-export transaction can roll back."
   "Return non-nil when relative PATH is owned by Org Museum publishing."
   (when-let* ((relative (org-museum--publish-normalise-relative-path path)))
     (or (member relative
-                (list "index.html" "timeline.html" "graph.html" "related.html" ".nojekyll"
+                (list "index.html" "timeline.html" "graph.html" "related.html"
+                      "ai-center.html" "ai-public.json"
+                      "assets.json" ".nojekyll"
                       org-museum--publish-status-name))
         (string-prefix-p "pages/" relative)
-        (string-prefix-p "resources/" relative))))
+        (string-prefix-p "resources/" relative)
+        (when-let* ((assets
+                     (org-museum--publish-normalise-relative-path
+                      org-museum-assets-subdir)))
+          (string-prefix-p (concat (string-remove-suffix "/" assets) "/")
+                           relative)))))
 
 (defun org-museum--publish-path-key (path)
   "Return a comparison key for absolute PATH on the current platform."
@@ -2666,16 +4079,34 @@ errors still propagate so the full-export transaction can roll back."
     (signal 'org-museum-publish-error
             (list (format "Linked export root cannot be published: %s"
                           export-root))))
-  (let ((required (mapcar (lambda (name) (expand-file-name name export-root))
-                          '("index.html" "timeline.html" "graph.html" "related.html"))))
+  (let* ((required (mapcar (lambda (name) (expand-file-name name export-root))
+                           '("index.html" "timeline.html" "graph.html" "related.html")))
+         (ai-files (mapcar (lambda (name) (expand-file-name name export-root))
+                           '("ai-center.html" "ai-public.json"))))
     (dolist (file required)
       (when (or (file-symlink-p file) (not (file-regular-p file)))
         (signal 'org-museum-publish-error
                 (list (format "Required export file is missing or unsafe: %s"
                               file)))))
-    (append required
+    (when (cl-some #'file-exists-p ai-files)
+      (unless (cl-every (lambda (file)
+                          (and (file-regular-p file) (not (file-symlink-p file))))
+                        ai-files)
+        (signal 'org-museum-publish-error
+                '("AI Center export is incomplete; export the site again"))))
+    (append required (when (cl-every #'file-regular-p ai-files) ai-files)
+            (let ((manifest (expand-file-name "assets.json" export-root)))
+              (when (file-regular-p manifest) (list manifest)))
             (org-museum--publish-tree-files export-root "pages")
-            (org-museum--publish-tree-files export-root "resources"))))
+            (org-museum--publish-tree-files export-root "resources")
+            (let ((assets-relative
+                   (org-museum--publish-normalise-relative-path
+                    org-museum-assets-subdir)))
+              (when (and assets-relative
+                         (file-directory-p
+                          (expand-file-name assets-relative export-root)))
+                (org-museum--publish-tree-files
+                 export-root assets-relative))))))
 
 (defun org-museum--publish-text-file-p (file)
   "Return non-nil when FILE should be scanned for local paths."
@@ -2750,6 +4181,18 @@ errors still propagate so the full-export transaction can roll back."
               (when (equal normal-needle
                            (org-museum--normalised-path expanded))
                 (record (match-beginning 0) 'local-file-link))))
+          ;; Org also autolinks bare file URLs embedded in imported Markdown-
+          ;; style or tool-reference text.  Attribute those URLs to their real
+          ;; source line instead of reporting the exported anchor as generated.
+          (goto-char (point-min))
+          (while (re-search-forward
+                  "file:/+[^][()<>\"'[:space:]\n\r]+" nil t)
+            (let ((position (match-beginning 0))
+                  (target (org-museum--file-url-to-path (match-string 0))))
+              (when (and target
+                         (equal normal-needle
+                                (org-museum--normalised-path target)))
+                (record position 'local-file-link))))
           (goto-char (point-min))
           (while (search-forward needle nil t)
             (record (match-beginning 0) 'absolute-path)))
@@ -2945,6 +4388,7 @@ errors still propagate so the full-export transaction can roll back."
 (defun org-museum--publish-default-policy ()
   "Return the default local full-sync sharing policy."
   (list :include '("index.html" "timeline.html" "graph.html" "related.html"
+                   "ai-center.html" "ai-public.json"
                    "pages/**" "resources/**")
         :exclude nil
         :authorizations nil
@@ -3142,7 +4586,7 @@ paths outside the effective sharing scope."
          (fingerprint (button-get button 'org-museum-fingerprint))
          (finding (button-get button 'org-museum-finding))
          (reason (string-trim
-                  (read-string "Why is this exact content safe to share? "))))
+                  (read-string "这项内容为何可以公开？"))))
     (when (string-empty-p reason)
       (signal 'org-museum-publish-error
               '("An authorisation reason is required")))
@@ -3163,7 +4607,7 @@ paths outside the effective sharing scope."
                 (reason . ,reason)
                 (approvedAt . ,(format-time-string "%FT%T%z"))))))
       (org-museum--publish-write-policy policy))
-    (message "Org Museum authorised this exact finding; rerun full sync")))
+    (message "Org Museum 已允许这项检查结果；请重新完整同步")))
 
 (defun org-museum--publish-policy-revoke-button (button)
   "Remove BUTTON's exact finding authorisation from the local policy."
@@ -3175,7 +4619,7 @@ paths outside the effective sharing scope."
              (equal fingerprint (alist-get 'fingerprint entry)))
            (plist-get policy :authorizations)))
     (org-museum--publish-write-policy policy)
-    (message "Org Museum revoked this exact authorisation; rerun full sync")))
+    (message "Org Museum 已撤销这项允许；请重新完整同步")))
 
 (defun org-museum--publish-policy-exclude-button (button)
   "Add BUTTON's exact published path to the local policy exclusions."
@@ -3185,7 +4629,7 @@ paths outside the effective sharing scope."
       (setf (plist-get policy :exclude)
             (append (plist-get policy :exclude) (list relative)))
       (org-museum--publish-write-policy policy))
-    (message "Org Museum excluded %s; rerun full sync" relative)))
+    (message "Org Museum 已排除 %s；请重新完整同步" relative)))
 
 (defun org-museum--publish-policy-edit-button (_button)
   "Create the default policy when necessary, then visit it."
@@ -3487,7 +4931,7 @@ paths outside the effective sharing scope."
                          "\\`[[:xdigit:]]\\{64\\}\\'" candidate-digest))
                  (and (null policy-digest) (null candidate-digest))))
     (signal 'org-museum-publish-error
-            '("Invalid publish privacy status")))
+            '("发布隐私检查状态无效")))
   (let ((status-file (expand-file-name org-museum--publish-status-name root))
         (coding-system-for-write 'utf-8-unix))
     (with-temp-file status-file
@@ -3565,7 +5009,8 @@ paths outside the effective sharing scope."
   "Revalidate READY content in ROOT named by MANAGED-FILES before deployment."
   (let* ((root-files
           (cl-loop for relative in
-                (list "index.html" "timeline.html" "graph.html" "related.html" ".nojekyll"
+                (list "index.html" "timeline.html" "graph.html" "related.html"
+                      "ai-center.html" "ai-public.json" ".nojekyll"
                          org-museum--publish-status-name)
                    for file = (expand-file-name relative root)
                    when (or (file-exists-p file) (file-symlink-p file))
@@ -3625,7 +5070,8 @@ paths outside the effective sharing scope."
 (defun org-museum--publish-managed-namespace-files (root)
   "Return every existing file in ROOT's managed publishing namespaces."
   (let (relative-files)
-    (dolist (relative (list "index.html" "timeline.html" "graph.html" "related.html" ".nojekyll"
+    (dolist (relative (list "index.html" "timeline.html" "graph.html" "related.html"
+                            "ai-center.html" "ai-public.json" ".nojekyll"
                             org-museum--publish-status-name))
       (let ((file (expand-file-name relative root)))
         (when (or (file-exists-p file) (file-symlink-p file))
@@ -3714,10 +5160,10 @@ paths outside the effective sharing scope."
        "<html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
        "<meta name=\"robots\" content=\"noindex,nofollow\">"
        "<meta name=\"org-museum-privacy-placeholder\" content=\"blocked\">"
-       "<title>Org Museum privacy review</title></head>"
-       "<body><main><h1>Org Museum privacy review</h1>"
+       "<title>Org Museum 公开检查</title></head>"
+       "<body><main><h1>Org Museum 公开检查</h1>"
        "<p>本页包含仅适用于本机的引用，已在发布候选中安全隐藏。</p>"
-       "<p>请返回 Emacs 查看 Org Museum Privacy Report 并修正源笔记。</p>"
+       "<p>请返回 Emacs 查看 Org Museum 隐私报告，并修正源笔记。</p>"
        "</main></body></html>\n"))))
 
 (defun org-museum--publish-sanitise-staging
@@ -3886,8 +5332,15 @@ paths outside the effective sharing scope."
 
 ;;;###autoload
 (defun org-museum-publish-sync ()
-  "Export the site and safely mirror a ready or privacy-blocked preview."
+  "Export and safely mirror a ready or privacy-blocked preview.
+Interactive calls run in an isolated background Emacs process."
   (interactive)
+  (if (called-interactively-p 'interactive)
+      (org-museum--start-background-job 'publish-sync nil)
+    (org-museum--publish-sync-current)))
+
+(defun org-museum--publish-sync-current ()
+  "Synchronously build the privacy-checked publish mirror."
   (org-museum-export-all)
   (pcase-let* ((`(,export-root ,publish-root)
                 (org-museum--publish-validate-directories))
@@ -3932,23 +5385,40 @@ paths outside the effective sharing scope."
                   (progn
                     (when (called-interactively-p 'interactive)
                       (pop-to-buffer report))
+                    (when org-museum--background-worker-active
+                      (with-current-buffer report
+                        (princ (concat "\n" (buffer-string) "\n"))))
                     (message
-                     "Org Museum safe preview updated; deploy blocked by %d privacy findings"
+                     "Org Museum 安全预览已更新；有 %d 项隐私检查结果阻止部署"
                      (length findings))
                     nil)
-                (message "Org Museum publish sync complete: %s" publish-root)
+                (message "Org Museum 发布同步完成：%s" publish-root)
                 publish-root))))
       (when (file-directory-p staging-root)
         (delete-directory staging-root t)))))
 
 ;;;###autoload
 (defun org-museum-publish-sync-full (&optional interactive-invocation)
-  "Interactively install a configurable byte-for-byte local publish mirror.
+  "Queue a configurable byte-for-byte local publish mirror.
 Unlike `org-museum-publish-sync', this command does not replace or remove
 selected files merely because privacy findings remain.  It always previews the
 effective sharing scope and requires the exact high-risk confirmation phrase.
-Unresolved findings produce a `review-required' state that cannot be deployed."
+Unresolved findings produce a `review-required' state that cannot be deployed.
+Interactive calls run in an isolated background Emacs process."
   (interactive (list t))
+  (if (called-interactively-p 'interactive)
+      (progn
+        (unless (equal (read-string
+                        (format "Type %s to queue full sync: "
+                                org-museum--publish-full-confirmation))
+                       org-museum--publish-full-confirmation)
+          (signal 'org-museum-publish-error
+                  '("完整同步确认口令不匹配，任务未启动")))
+        (org-museum--start-background-job 'publish-sync-full nil))
+    (org-museum--publish-sync-full-current interactive-invocation)))
+
+(defun org-museum--publish-sync-full-current (&optional interactive-invocation)
+  "Synchronously install the configurable full publish mirror."
   (unless interactive-invocation
     (signal 'org-museum-publish-error
             '("Full publish sync must be invoked interactively")))
@@ -4017,10 +5487,13 @@ Unresolved findings produce a `review-required' state that cannot be deployed."
                 (org-museum--publish-full-change-plan
                  staging-root publish-root relative-files old-manifest))
           (let ((preview
-                  (org-museum--publish-render-full-preview
-                   policy records (mapcar #'car selected) excluded state
-                   change-plan)))
-            (pop-to-buffer preview))
+                 (org-museum--publish-render-full-preview
+                  policy records (mapcar #'car selected) excluded state
+                  change-plan)))
+            (if org-museum--background-worker-active
+                (with-current-buffer preview
+                  (princ (concat "\n" (buffer-string) "\n")))
+              (pop-to-buffer preview)))
           (when (plist-get change-plan :conflicts)
             (signal
              'org-museum-publish-error
@@ -4029,16 +5502,21 @@ Unresolved findings produce a `review-required' state that cannot be deployed."
                "Full sync stopped before confirmation: managed files were edited after the last sync: %s"
                (mapconcat #'identity
                           (plist-get change-plan :conflicts) ", ")))))
-          (unless (equal (read-string
-                          (format "Type %s to continue: "
-                                  org-museum--publish-full-confirmation))
-                         org-museum--publish-full-confirmation)
+          (unless (or org-museum--background-full-sync-preapproved
+                      (equal (read-string
+                              (format "请输入 %s 以继续："
+                                      org-museum--publish-full-confirmation))
+                             org-museum--publish-full-confirmation))
             (signal 'org-museum-publish-error
-                    '("Full publish sync confirmation did not match; no files changed")))
+                    '("完整同步确认口令不匹配，文件未变更")))
           (org-museum--publish-apply-staging
            staging-root publish-root relative-files old-files)
-          (message "Org Museum full mirror updated: %s (%s)"
-                   publish-root state)
+          (message "Org Museum 完整镜像已更新：%s（%s）"
+                   publish-root
+                   (pcase state
+                     ('ready "可发布")
+                     ('review-required "需复核")
+                     (_ "待处理")))
           publish-root)
       (when (file-directory-p staging-root)
         (delete-directory staging-root t)))))
@@ -4064,8 +5542,8 @@ which defaults to (0)."
             (list (format "Required executable was not found: %s" program))))
   (let* ((default-directory
           (file-name-as-directory (expand-file-name org-museum-publish-directory)))
-         (buffer (get-buffer-create "*Org Museum Publish*"))
-         (process-buffer (generate-new-buffer " *Org Museum Publish Process*"))
+         (buffer (get-buffer-create "*Org Museum 发布*"))
+         (process-buffer (generate-new-buffer " *Org Museum 发布进程*"))
          (accepted (or accepted-statuses '(0)))
          status raw-output log-output)
     (unwind-protect
@@ -4073,10 +5551,14 @@ which defaults to (0)."
           ;; Git and GitHub CLI emit UTF-8 paths.  On Windows, leaving process
           ;; decoding implicit can preserve those bytes as a unibyte string,
           ;; so managed Chinese paths no longer compare equal to JSON paths.
-          ;; Command-line arguments, however, must use the Windows locale so
-          ;; the same paths can be passed back to Git for staging.
+          ;; On Windows, child arguments need the ANSI code page.  The
+          ;; console locale can be UTF-8 while Git still decodes argv as ANSI.
           (let ((coding-system-for-read 'utf-8)
-                (coding-system-for-write locale-coding-system))
+                (coding-system-for-write
+                 (if (and (eq system-type 'windows-nt)
+                          (boundp 'w32-ansi-code-page))
+                     (intern (format "cp%d" w32-ansi-code-page))
+                   locale-coding-system)))
             (setq status
                   (apply #'process-file program nil process-buffer t arguments)))
           (with-current-buffer process-buffer
@@ -4095,6 +5577,29 @@ which defaults to (0)."
               (list (format "%s failed (%s): %s"
                             program status (string-trim log-output)))))
     (cons status raw-output)))
+
+(defun org-museum--publish-push (branch)
+  "Push BRANCH, retrying one known transient GitHub ref failure.
+Other Git failures remain fatal on the first attempt."
+  (let* ((arguments (list "push" "-u" org-museum-publish-remote branch))
+         (result (org-museum--publish-run "git" arguments '(0 1)))
+         (status (car result))
+         (output (cdr result)))
+    (cond
+     ((zerop status) result)
+     ((string-match-p "remote: fatal error in commit_refs" output)
+      (message "GitHub 未能提交远端引用，正在重试推送一次…")
+      ;; Deploy normally runs in an isolated background Emacs process, so this
+      ;; brief backoff never stalls the user's editing session.
+      (sleep-for 2)
+      (org-museum--publish-run "git" arguments))
+     (t
+      (signal 'org-museum-publish-error
+              (list (format "git failed (%s): %s"
+                            status
+                            (string-trim
+                             (org-museum--publish-redact-command-output
+                              output)))))))))
 
 (defun org-museum--publish-manifest-files-from-string (contents context)
   "Return validated managed paths from JSON CONTENTS, labelled by CONTEXT."
@@ -4171,8 +5676,10 @@ which defaults to (0)."
 
 (defun org-museum--publish-confirm-bootstrap (repository directory)
   "Confirm creation of public REPOSITORY backed by DIRECTORY."
-  (y-or-n-p
-   (format "Create PUBLIC GitHub repository %s from %s? " repository directory)))
+  (or org-museum--background-bootstrap-preapproved
+      (y-or-n-p
+       (format "Create PUBLIC GitHub repository %s from %s? "
+               repository directory))))
 
 (defun org-museum--publish-bootstrap-repository (directory repository branch)
   "Initialise DIRECTORY and create public GitHub REPOSITORY on BRANCH."
@@ -4246,6 +5753,61 @@ which defaults to (0)."
           (signal 'org-museum-publish-error
                   '("Remote branch is ahead or diverged; resolve it manually")))))))
 
+(defun org-museum--publish-local-git-config (key)
+  "Return repository-local Git configuration KEY, or nil when unset."
+  (pcase-let ((`(,status . ,output)
+               (org-museum--publish-run
+                "git" (list "config" "--local" "--get" key) '(0 1))))
+    (when (= status 0)
+      (let ((value (string-trim output)))
+        (unless (string-empty-p value) value)))))
+
+(defun org-museum--publish-github-identity ()
+  "Return authenticated GitHub (ID LOGIN), or nil when unavailable."
+  (pcase-let ((`(,status . ,output)
+               (org-museum--publish-run
+                "gh" '("api" "user" "--jq" "[.id, .login] | @tsv") '(0 1))))
+    (when (= status 0)
+      (let ((parts (split-string (string-trim output) "[\t\r\n]+" t)))
+        (when (and (= (length parts) 2)
+                   (string-match-p "\\`[0-9]+\\'" (car parts))
+                   (string-match-p "\\`[[:alnum:]_.-]+\\'" (cadr parts)))
+          parts)))))
+
+(defun org-museum--publish-ensure-git-identity (repository)
+  "Ensure REPOSITORY can commit using repository-local Git identity.
+Existing local values are preserved.  Missing values are derived from the
+configured fallbacks, authenticated GitHub account, or repository owner."
+  (let* ((owner (car (split-string repository "/" t)))
+         (local-name (org-museum--publish-local-git-config "user.name"))
+         (local-email (org-museum--publish-local-git-config "user.email"))
+         (configured-name
+          (and (stringp org-museum-publish-git-user-name)
+               (not (string-empty-p org-museum-publish-git-user-name))
+               org-museum-publish-git-user-name))
+         (configured-email
+          (and (stringp org-museum-publish-git-user-email)
+               (not (string-empty-p org-museum-publish-git-user-email))
+               org-museum-publish-git-user-email))
+         (github (unless (and (or local-name configured-name)
+                              (or local-email configured-email))
+                   (org-museum--publish-github-identity)))
+         (github-id (car github))
+         (github-login (cadr github))
+         (name (or local-name configured-name github-login owner))
+         (email (or local-email configured-email
+                    (and github-id github-login
+                         (format "%s+%s@users.noreply.github.com"
+                                 github-id github-login))
+                    (format "%s@users.noreply.github.com" owner))))
+    (unless local-name
+      (org-museum--publish-run
+       "git" (list "config" "--local" "user.name" name)))
+    (unless local-email
+      (org-museum--publish-run
+       "git" (list "config" "--local" "user.email" email)))
+    (cons name email)))
+
 (defun org-museum--publish-stage-and-commit (paths)
   "Stage validated PATHS and commit them; return non-nil when committed."
   (when paths
@@ -4280,8 +5842,26 @@ which defaults to (0)."
 
 ;;;###autoload
 (defun org-museum-publish-deploy ()
-  "Commit the managed publish mirror, push it, and configure GitHub Pages."
+  "Commit, push, and configure the managed GitHub Pages mirror.
+Interactive calls run in an isolated background Emacs process."
   (interactive)
+  (if (called-interactively-p 'interactive)
+      (pcase-let* ((`(,directory ,repository ,_branch)
+                    (org-museum--publish-repository-config))
+                   (needs-bootstrap
+                    (not (file-directory-p (expand-file-name ".git" directory))))
+                   (approved
+                    (and needs-bootstrap
+                         (org-museum--publish-confirm-bootstrap
+                          repository directory))))
+        (when (and needs-bootstrap (not approved))
+          (signal 'org-museum-publish-error
+                  '("已取消创建 GitHub 仓库")))
+        (org-museum--start-background-job 'publish-deploy (list approved)))
+    (org-museum--publish-deploy-current)))
+
+(defun org-museum--publish-deploy-current ()
+  "Synchronously deploy the validated publish mirror."
   (pcase-let* ((`(,directory ,repository ,branch)
                 (org-museum--publish-repository-config))
                (manifest (org-museum--publish-read-manifest directory))
@@ -4299,10 +5879,10 @@ which defaults to (0)."
        (list
         (if (eq (plist-get status :state) 'review-required)
             (format
-             "Full-sync sharing review is incomplete for: %s. Resolve, exclude, or explicitly authorise every finding, then rerun full sync"
+             "完整同步的公开检查尚未完成：%s。请处理、排除或明确允许每项检查结果，然后重新同步"
              (mapconcat #'identity (plist-get status :blocked-pages) ", "))
           (format
-           "Publish privacy review is blocked for: %s. Rerun org-museum-publish-sync after fixing the source notes"
+           "发布隐私检查未通过：%s。修正源笔记后，请重新运行 org-museum-publish-sync"
            (mapconcat #'identity (plist-get status :blocked-pages) ", "))))))
     (org-museum--publish-validate-manifest-integrity directory manifest)
     (if (eq (plist-get status :mode) 'full)
@@ -4319,11 +5899,11 @@ which defaults to (0)."
       (org-museum--publish-ensure-remote repository)
       (org-museum--publish-ensure-current-branch branch)
       (org-museum--publish-check-remote-history branch)
+      (org-museum--publish-ensure-git-identity repository)
       (let ((committed (org-museum--publish-stage-and-commit dirty)))
         ;; Always push: this also safely retries a commit left ahead after a
         ;; previous network failure.  Git is a no-op when both sides match.
-        (org-museum--publish-run
-         "git" (list "push" "-u" org-museum-publish-remote branch))
+        (org-museum--publish-push branch)
         (org-museum--publish-configure-pages repository branch)
         (let* ((sha (string-trim
                      (cdr (org-museum--publish-run
@@ -4332,14 +5912,14 @@ which defaults to (0)."
                (owner-and-repo (split-string repository "/" t))
                (url (format "https://%s.github.io/%s/"
                             (car owner-and-repo) (cadr owner-and-repo))))
-          (with-current-buffer (get-buffer-create "*Org Museum Publish*")
+          (with-current-buffer (get-buffer-create "*Org Museum 发布*")
             (goto-char (point-max))
             (insert (format
                      "\nDeploy complete%s\nCommit: %s\nRepository: %s\nSite: %s\n"
                      (if committed "" " (no content changes)")
                      sha repository-url url)))
-          (message "Org Museum deploy complete%s: %s (%s)"
-                   (if committed "" " (no content changes)") url sha)
+          (message "Org Museum 部署完成%s：%s（%s）"
+                   (if committed "" "（内容未变化）") url sha)
           url)))))
 
 (defun org-museum--export-all-current ()
@@ -4352,7 +5932,13 @@ which defaults to (0)."
                  (org-museum--hljs-js-resource-path)
                  (org-museum--hljs-lisp-js-resource-path)
                  (org-museum--theme-resource-path)
+                 (expand-file-name "resources/vendor/markdown-it.umd.min.js" (org-museum--shared-root))
+                 (expand-file-name "resources/vendor/markdown-it.LICENSE" (org-museum--shared-root))
+                 (expand-file-name "resources/org-museum-markdown.js" (org-museum--shared-root))
+                 (expand-file-name "resources/org-museum-ai.js" (org-museum--shared-root))
                  (expand-file-name "index.html" (org-museum--shared-root))
+                 (expand-file-name "ai-center.html" (org-museum--shared-root))
+                 (expand-file-name "ai-public.json" (org-museum--shared-root))
                  (org-museum--timeline-output-path)
                  (expand-file-name "graph.html" (org-museum--shared-root))
                  (org-museum--related-output-path)
@@ -4368,14 +5954,21 @@ which defaults to (0)."
                    org-museum--icon-resources)))
          (page-targets
           (mapcar #'org-museum--export-filename (org-museum--scan-files)))
+         (asset-targets
+          (cons (org-museum--assets-manifest-path)
+                (when (file-directory-p (org-museum--assets-root))
+                  (directory-files-recursively
+                   (org-museum--assets-root) "." nil))))
          (cleanup-targets
           (when org-museum-clean-stale-html-on-full-export
             (org-museum--existing-safe-page-html-files)))
          (targets (delete-dups
-                   (append static-targets page-targets cleanup-targets)))
+                   (append static-targets page-targets asset-targets
+                           cleanup-targets)))
          (snapshots (org-museum--snapshot-files targets))
          (preexisting (make-hash-table :test #'equal))
-         (original-index org-museum--index))
+         (original-index org-museum--index)
+         (org-museum--asset-created-files nil))
     (dolist (file targets)
       (puthash file (file-exists-p file) preexisting))
     (condition-case err
@@ -4387,6 +5980,8 @@ which defaults to (0)."
          (when (and (not (gethash file preexisting))
                     (file-regular-p file))
            (delete-file file)))
+       (dolist (file org-museum--asset-created-files)
+         (when (file-regular-p file) (delete-file file)))
        (if (eq (car err) 'org-museum-export-failed)
            (signal (car err) (cdr err))
          (signal 'org-museum-export-failed
@@ -4396,17 +5991,38 @@ which defaults to (0)."
   "Export the complete site using the currently loaded runtime."
   (let ((org-museum--resource-deployment-cache (make-hash-table :test 'eq))
         (org-museum--full-export-in-progress t)
+        (org-museum--asset-registry (make-hash-table :test #'equal))
+        (org-museum--page-assets (make-hash-table :test #'equal))
+        (org-museum--asset-warnings nil)
+        (org-museum--asset-remote-results (make-hash-table :test #'equal))
+        (org-museum--build-time (org-museum--deterministic-build-time))
         (total   0)
         (success 0)
         (failed  '())
         timings (stage-start (float-time)))
+    (org-museum-index-build t)
+    (push (cons 'index (- (float-time) stage-start)) timings)
+    (setq stage-start (float-time))
+    (let (asset-errors)
+      (dolist (file (sort (copy-sequence (org-museum--scan-files)) #'string<))
+        (condition-case err
+            (org-museum--preflight-page-assets file)
+          (org-museum-asset-error
+           (push (error-message-string err) asset-errors))))
+      (when asset-errors
+        (signal
+         'org-museum-asset-error
+         (list
+          (format "Asset checks failed (%d):\n%s"
+                  (length asset-errors)
+                  (mapconcat (lambda (message) (concat "- " message))
+                             (nreverse asset-errors) "\n"))))))
+    (push (cons 'asset-check (- (float-time) stage-start)) timings)
+    (setq stage-start (float-time))
     (org-museum--ensure-css-deployed)
     (org-museum--hljs-assets)
     (org-museum--ensure-d3-deployed)
     (push (cons 'resources (- (float-time) stage-start)) timings)
-    (setq stage-start (float-time))
-    (org-museum-index-build t)
-    (push (cons 'index (- (float-time) stage-start)) timings)
     (setq total (hash-table-count (org-museum-index-pages org-museum--index)))
     (setq stage-start (float-time))
     (maphash
@@ -4427,6 +6043,7 @@ which defaults to (0)."
             (progn
               (setq stage-start (float-time))
               (org-museum--generate-index-page)
+              (org-museum-ai-web--export-center)
               (push (cons 'homepage (- (float-time) stage-start)) timings)
               (setq stage-start (float-time))
               (setq graph-file (org-museum-export-graph :silent t))
@@ -4437,6 +6054,11 @@ which defaults to (0)."
               (setq stage-start (float-time))
               (org-museum--export-timeline-current)
               (push (cons 'timeline (- (float-time) stage-start)) timings)
+              (setq stage-start (float-time))
+              (org-museum--publish-assets t)
+              (org-museum--write-assets-manifest)
+              (org-museum--report-asset-warnings)
+              (push (cons 'assets (- (float-time) stage-start)) timings)
               (when (> total 0)
                 (org-museum--write-export-manifest)
                 (when org-museum-clean-stale-html-on-full-export
@@ -4445,14 +6067,14 @@ which defaults to (0)."
           (error
            (push (list "site-finalization" (error-message-string err) nil)
                  failed))))
-      (message "Export complete: %d/%d pages, %d failed"
+      (message "导出完成：%d/%d 篇笔记，%d 篇失败"
                success total (length failed))
-      (message "Org Museum timings: %s"
+      (message "Org Museum 耗时：%s"
                (mapconcat (lambda (entry)
                             (format "%s=%.3fs" (car entry) (cdr entry)))
                           (nreverse timings) ", "))
       (when (> cleaned 0)
-        (message "Org Museum removed %d stale page HTML files" cleaned))
+        (message "Org Museum 已清理 %d 个过期页面文件" cleaned))
       (when failed
         (org-museum--report-failures failed))
       (when (and org-museum-open-browser-after-export
@@ -4476,7 +6098,7 @@ which defaults to (0)."
 
 (defun org-museum--report-failures (failed)
   "Show FAILED export items in a buffer."
-  (with-current-buffer (get-buffer-create "*Org Museum Failures*")
+  (with-current-buffer (get-buffer-create "*Org Museum 导出失败*")
     (let ((inhibit-read-only t))
     (erase-buffer)
     (insert "* Export Failures\n\n")
@@ -4490,7 +6112,10 @@ which defaults to (0)."
           (insert "  ")
           (insert-text-button
            "重试此页" 'follow-link t
-           'action (lambda (_button) (org-museum-export-page path t))))
+           'action
+           (lambda (_button)
+             (org-museum--start-background-job
+              'export-page (list path t)))))
         (insert "\n")))
     (special-mode))
     (display-buffer (current-buffer))))
@@ -4541,6 +6166,8 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
                          (org-museum--timeline-output-path) out-file))
          (related-href (org-museum--relative-path
                         (org-museum--related-output-path) out-file))
+         (ai-href (org-museum--relative-path
+                   (expand-file-name "ai-center.html" shared-root) out-file))
          (placeholder (pcase kind
                         ('article "搜索此 Wiki…")
                         ('timeline "搜索时间轴…")
@@ -4553,41 +6180,111 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
          (drawer-control
           (concat
            "    <button type=\"button\" class=\"museum-drawer-toggle\" "
-            "data-drawer-toggle aria-expanded=\"false\" aria-controls=\"org-museum-sidebar\" "
-            "aria-label=\"打开全部笔记\">书架</button>\n")))
+           "data-drawer-toggle aria-expanded=\"false\" aria-controls=\"org-museum-sidebar\" "
+           "aria-label=\"打开全部笔记\">书架</button>\n"))
+          (settings-ai-section
+           (if (eq kind 'ai)
+               (concat
+                "        <div class=\"museum-settings-section museum-settings-ai-section\">\n"
+                "          <div class=\"museum-settings-section-title\">模型设置</div>\n"
+                "          <form data-browser-config class=\"museum-settings-config-form\">\n"
+                "            <div class=\"museum-settings-field\">\n"
+                "              <label>接入方式<select name=\"provider\">\n"
+                "                <option value=\"compatible\">兼容 OpenAI 的 API / LM Studio</option>\n"
+                "                <option value=\"ollama\">Ollama</option>\n"
+                "              </select></label>\n"
+                "            </div>\n"
+                "            <div class=\"museum-settings-field\">\n"
+                "              <label>服务地址<input name=\"endpoint\" type=\"url\" required placeholder=\"http://127.0.0.1:1234/v1\"></label>\n"
+                "            </div>\n"
+                "            <div class=\"museum-settings-field\">\n"
+                "              <label>API 密钥（本机服务可留空）<input name=\"key\" type=\"password\" autocomplete=\"off\" spellcheck=\"false\" placeholder=\"留空或输入密钥\"></label>\n"
+                "              <small class=\"museum-settings-note\">密钥仅在当前页面有效，不写入笔记。</small>\n"
+                "            </div>\n"
+                "            <div class=\"museum-ai-action-row\"><button type=\"submit\" data-browser-models>读取模型列表</button></div>\n"
+                "            <div class=\"museum-settings-field\">\n"
+                "              <label>模型<input name=\"model\" list=\"museum-browser-model-list\" placeholder=\"选择已加载模型或输入模型 ID\" required></label>\n"
+                "              <datalist id=\"museum-browser-model-list\"></datalist>\n"
+                "            </div>\n"
+                "            <div class=\"museum-ai-action-row\">\n"
+                "              <button type=\"button\" data-browser-load>加载并测试模型</button>\n"
+                "              <button type=\"button\" data-browser-cancel-load hidden>取消加载</button>\n"
+                "            </div>\n"
+                "            <div class=\"museum-settings-status-box\">\n"
+                "              <span class=\"museum-settings-status-indicator\" aria-hidden=\"true\"></span>\n"
+                "              <p data-browser-connection role=\"status\" aria-live=\"polite\">尚未连接模型</p>\n"
+                "            </div>\n"
+                "            <details class=\"museum-settings-details\">\n"
+                "              <summary>回答偏好设置</summary>\n"
+                "              <div class=\"museum-settings-field\">\n"
+                "                <label>系统提示词<textarea name=\"system\" rows=\"3\">依据提供的资料回答，引用笔记标题，区分原文事实与推断；资料不足时明确说明。使用中文。</textarea></label>\n"
+                "              </div>\n"
+                "            </details>\n"
+                "          </form>\n"
+                "          <details class=\"museum-settings-details museum-ai-local-tools\">\n"
+                "            <summary>本地保存与同步</summary>\n"
+                "            <p class=\"museum-settings-note\">会话与结论保存在此浏览器；确认后可同步到 Emacs。</p>\n"
+                "            <div class=\"museum-ai-action-row\">\n"
+                "              <button type=\"button\" data-browser-backup>导出知识库</button>\n"
+                "              <button type=\"button\" data-browser-org-export>导出 Org</button>\n"
+                "              <button type=\"button\" data-browser-sync-preview>预览同步</button>\n"
+                "            </div>\n"
+                "            <label class=\"museum-settings-file-label\">导入知识库备份<input type=\"file\" data-browser-import accept=\"application/json,.json\"></label>\n"
+                "            <div data-browser-sync-result></div>\n"
+                "          </details>\n"
+                "        </div>\n")
+             ""))
+          (settings-control
+           (concat
+            "    <details class=\"museum-theme-menu museum-settings-menu\"><summary aria-label=\"设置与外观\" title=\"设置与外观\">"
+            "<span class=\"museum-settings-icon\" aria-hidden=\"true\"></span>"
+            "<span class=\"museum-settings-label\">设置</span>"
+            "</summary>"
+            (format "<div class=\"museum-settings-panel%s\">\n" (if (eq kind 'ai) " has-ai" ""))
+            "        <div class=\"museum-settings-section\">\n"
+            "          <div class=\"museum-settings-section-title\">外观主题</div>\n"
+            "          <div class=\"museum-theme-segmented\" role=\"group\">\n"
+            "            <button type=\"button\" class=\"museum-theme-segment-btn\" data-theme-system aria-pressed=\"true\">跟随系统</button>\n"
+            "            <button type=\"button\" class=\"museum-theme-segment-btn museum-theme-toggle\" "
+            "data-theme-toggle aria-label=\"切换为深色主题\">\n"
+            "              <span aria-hidden=\"true\" data-theme-icon data-theme-icon-state=\"moon\"></span>\n"
+            "              <span data-theme-label>深色</span></button>\n"
+            "          </div>\n"
+            "        </div>\n"
+            settings-ai-section
+            "    </div></details>\n")))
     (format
      (concat
       "<header class=\"museum-topbar\" data-home-href=\"%s\">\n"
       "  <a class=\"museum-skip-link\" href=\"#main-content\">跳到正文</a>\n"
       "  <a class=\"museum-wordmark museum-topbar-link\" href=\"%s\">ORG MUSEUM<span>.el</span></a>\n"
       "  <time class=\"museum-today\" datetime=\"%s\" title=\"导出于 %s\">%s</time>\n"
-      "  <label class=\"museum-search-line\">\n"
-      "    <span class=\"sr-only\">%s</span>\n"
-      "    <input id=\"org-museum-global-search\" type=\"search\" "
-      "placeholder=\"%s\" autocomplete=\"off\" spellcheck=\"false\" "
-      "aria-label=\"%s\" aria-keyshortcuts=\"/\">\n"
-      "    <kbd aria-hidden=\"true\">/</kbd>\n"
-      "  </label>\n"
+      "%s"
       "  <nav class=\"museum-top-links\" aria-label=\"Wiki 导航\">\n"
       "    <a class=\"museum-topbar-link museum-nav-timeline%s\" href=\"%s\"%s>时间</a>\n"
       "    <a class=\"museum-topbar-link museum-nav-graph%s\" href=\"%s\"%s>图谱</a>\n"
       "    <a class=\"museum-topbar-link museum-nav-related%s\" href=\"%s\"%s>关联阅读</a>\n"
+      "    <a class=\"museum-topbar-link museum-nav-ai%s\" href=\"%s\"%s>AI 中心</a>\n"
       "    <a class=\"museum-topbar-link museum-nav-all%s\" href=\"%s\"%s>索引</a>\n"
       "%s"
-      "    <button type=\"button\" class=\"museum-theme-toggle\" "
-      "data-theme-toggle aria-label=\"切换为深色主题\">"
-      "<span aria-hidden=\"true\" data-theme-icon data-theme-icon-state=\"moon\"></span>"
-      "<span data-theme-label>深色</span></button>\n"
+      "%s"
       "  </nav>\n"
       "</header>\n")
      (org-museum--html-escape home-href t)
      (org-museum--html-escape home-href t)
-     (format-time-string "%Y-%m-%d")
-     (format-time-string "%Y.%m.%d")
-     (format-time-string "%Y.%m.%d")
-     search-label
-     placeholder
-     search-label
+     (org-museum--build-time-string "%Y-%m-%d")
+     (org-museum--build-time-string "%Y.%m.%d")
+     (org-museum--build-time-string "%Y.%m.%d")
+     (if (eq kind 'home) ""
+       (format
+        (concat "  <label class=\"museum-search-line\">\n"
+                "    <span class=\"sr-only\">%s</span>\n"
+                "    <input id=\"org-museum-global-search\" type=\"search\" "
+                "placeholder=\"%s\" autocomplete=\"off\" spellcheck=\"false\" "
+                "aria-label=\"%s\" aria-keyshortcuts=\"/\">\n"
+                "    <kbd aria-hidden=\"true\">/</kbd>\n"
+                "  </label>\n")
+        search-label placeholder search-label))
      (if (eq kind 'timeline) " is-active" "")
      (org-museum--html-escape timeline-href t)
      (if (eq kind 'timeline) " aria-current=\"page\"" "")
@@ -4597,11 +6294,15 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
      (if (eq kind 'related) " is-active" "")
      (org-museum--html-escape related-href t)
      (if (eq kind 'related) " aria-current=\"page\"" "")
+     (if (eq kind 'ai) " is-active" "")
+     (org-museum--html-escape ai-href t)
+     (if (eq kind 'ai) " aria-current=\"page\"" "")
      (if (eq kind 'home) " is-active" "")
      (if (eq kind 'home) "#recent-updates"
        (concat (org-museum--html-escape home-href t) "#recent-updates"))
      (if (eq kind 'home) " data-index-reset aria-current=\"page\"" "")
-     drawer-control)))
+     drawer-control
+     settings-control)))
 
 (defun org-museum--build-topic-index-html (cats)
   "Return topic index controls for CATS."
@@ -4619,344 +6320,62 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
 
 (defun org-museum--build-index-entry-html (page out-file index)
   "Return one recent index entry for PAGE relative to OUT-FILE at INDEX."
-  (format
-   (concat
-    "<article class=\"museum-index-entry\" data-page-id=\"%s\" "
-    "data-category=\"%s\" data-status=\"%s\">\n"
-    "  <div class=\"museum-entry-meta\"><span>%02d</span><time datetime=\"%s\">%s</time></div>\n"
-    "  <h3><a href=\"%s\">%s</a>%s</h3>\n"
-    "  <button type=\"button\" class=\"museum-entry-category\" "
-    "data-category-link=\"%s\" aria-pressed=\"false\">%s</button>\n"
-   "</article>\n")
-   (org-museum--html-escape (org-museum-page-id page) t)
-   (org-museum--html-escape (org-museum-page-category page) t)
-   (org-museum--html-escape
-    (downcase (or (org-museum-page-status page) "published")) t)
-   index
-   (org-museum--format-page-date page)
-   (org-museum--format-page-date page)
-   (org-museum--html-escape
-    (org-museum--page-href (org-museum-page-id page) out-file) t)
-   (org-museum--html-escape (org-museum-page-title page))
-   (if (org-museum--published-page-p page)
-       ""
-     "<span class=\"museum-status-badge\">草稿</span>")
-   (org-museum--html-escape (org-museum-page-category page) t)
-   (org-museum--html-escape
-    (org-museum--category-label (org-museum-page-category page)))))
+  (let ((tags (org-museum-page-tags page)))
+    (format
+     (concat
+      "<article class=\"museum-index-entry\" data-page-id=\"%s\" "
+      "data-category=\"%s\" data-status=\"%s\">\n"
+      "  <div class=\"museum-entry-meta\"><span>%02d</span><time datetime=\"%s\">%s</time>%s</div>\n"
+      "  <h3><a href=\"%s\">%s</a>%s</h3>\n"
+      "  <button type=\"button\" class=\"museum-entry-category\" "
+      "data-category-link=\"%s\" aria-pressed=\"false\">%s</button>\n"
+      "</article>\n")
+     (org-museum--html-escape (org-museum-page-id page) t)
+     (org-museum--html-escape (org-museum-page-category page) t)
+     (org-museum--html-escape
+      (downcase (or (org-museum-page-status page) "published")) t)
+     index
+     (org-museum--format-page-date page)
+     (org-museum--format-page-date page)
+     (if tags
+         (concat
+          "<div class=\"museum-entry-tags\">"
+          (mapconcat
+           (lambda (tag)
+             (format
+              "<span class=\"museum-tag-chip\"><span class=\"museum-tag-hash\">#</span><span class=\"museum-tag-name\">%s</span></span>"
+              (org-museum--html-escape tag)))
+           tags "")
+          "</div>")
+       "")
+     (org-museum--html-escape
+      (org-museum--page-href (org-museum-page-id page) out-file) t)
+     (org-museum--html-escape (org-museum-page-title page))
+     (if (org-museum--published-page-p page)
+         ""
+       "<span class=\"museum-status-badge\">草稿</span>")
+     (org-museum--html-escape (org-museum-page-category page) t)
+     (org-museum--html-escape
+      (org-museum--category-label (org-museum-page-category page))))))
 
 
 (defun org-museum--script-index ()
-  "Return schema-v2 homepage behavior with one URL-backed filter state."
-  "<script>
-(function(){
-'use strict';
-var dataEl=document.getElementById('org-museum-index-data');
-var data={schemaVersion:2,pages:[]};
-try{data=JSON.parse(dataEl?dataEl.textContent:'{\"pages\":[]}');}catch(_error){}
-var pages=Array.isArray(data.pages)?data.pages:[];
-var search=document.getElementById('org-museum-global-search');
-var matrix=document.querySelector('.museum-index-matrix');
-var entries=Array.from(document.querySelectorAll('.museum-index-entry'));
-var resultList=document.getElementById('index-search-list');
-var empty=document.getElementById('index-search-empty');
-var heading=document.getElementById('index-results-heading');
-var visibleCount=document.getElementById('index-visible-count');
-var summary=document.getElementById('index-filter-summary');
-var summaryText=document.getElementById('index-filter-summary-text');
-var clearButton=document.querySelector('[data-clear-index-filters]');
-var live=document.getElementById('index-results-live');
-var resetLink=document.querySelector('[data-index-reset]');
-var resume=document.getElementById('continue-reading');
-var resumeList=document.getElementById('continue-reading-list');
-var resumeCount=document.getElementById('continue-reading-count');
-var state={query:'',category:'',status:'all'};
-var collator=new Intl.Collator('zh-CN',{sensitivity:'base'});
-pages.forEach(function(page){
-  page._searchText=[page.title,page.description,page.category,page.categoryLabel]
-    .concat(page.tags||[])
-    .concat((page.headings||[]).map(function(item){return item.title;}))
-    .join(' ').toLowerCase();
-});
-function count(value){return String(value).padStart(2,'0');}
-function categoryLabel(value){
-  var page=pages.find(function(item){return item.category===value;});
-  return page?(page.categoryLabel||page.category):value;
-}
-function bestMatch(page,q){
-  if(!q)return {page:page,score:40,href:page.href,context:''};
-  if((page.title||'').toLowerCase().indexOf(q)>=0)
-    return {page:page,score:100,href:page.href,context:''};
-  var headingMatch=(page.headings||[]).find(function(item){
-    return (item.title||'').toLowerCase().indexOf(q)>=0;
-  });
-  if(headingMatch)return {page:page,score:80,
-    href:page.href.split('#')[0]+'#'+encodeURIComponent(headingMatch.id),
-    context:'章节 · '+headingMatch.title};
-  if((page.description||'').toLowerCase().indexOf(q)>=0)
-    return {page:page,score:60,href:page.href,context:'摘要 · '+page.description};
-  return {page:page,score:40,href:page.href,context:''};
-}
-function matches(page){
-  var statusOk=state.status==='all'||page.status===state.status;
-  var categoryOk=!state.category||page.category===state.category;
-  var query=state.query.trim().toLowerCase();
-  return statusOk&&categoryOk&&(!query||page._searchText.indexOf(query)>=0);
-}
-function makeResult(item){
-  var page=item.page;
-  var row=document.createElement('a');row.className='museum-search-result';row.href=item.href;
-  var title=document.createElement('span');title.textContent=page.title;
-  var meta=document.createElement('small');
-  meta.textContent=(item.context?item.context+' · ':'')+(page.modifiedDate||'')+' · '+
-    (page.categoryLabel||page.category||'未分类')+(page.status==='draft'?' · 草稿':'');
-  row.appendChild(title);row.appendChild(meta);return row;
-}
-function readUrl(){
-  var params=new URLSearchParams(location.search);
-  state.query=params.get('q')||'';
-  state.category=params.get('category')||'';
-  var status=params.get('status')||'all';
-  state.status=['published','draft'].indexOf(status)>=0?status:'all';
-}
-function writeUrl(mode){
-  var url=new URL(location.href);
-  ['q','category','status'].forEach(function(key){url.searchParams.delete(key);});
-  if(state.query)url.searchParams.set('q',state.query);
-  if(state.category)url.searchParams.set('category',state.category);
-  if(state.status!=='all')url.searchParams.set('status',state.status);
-  if(mode==='push')history.pushState({},'',url.pathname+url.search+url.hash);
-  else history.replaceState({},'',url.pathname+url.search+url.hash);
-}
-function syncControls(){
-  if(search&&search.value!==state.query)search.value=state.query;
-  document.querySelectorAll('[data-status-filter]').forEach(function(button){
-    var active=button.dataset.statusFilter===state.status;
-    button.classList.toggle('is-active',active);
-    button.setAttribute('aria-pressed',active?'true':'false');
-  });
-  document.querySelectorAll('.topic-filter[data-category],[data-category-link]').forEach(function(control){
-    var value=control.getAttribute('data-category')||control.getAttribute('data-category-link');
-    var active=Boolean(state.category)&&value===state.category;
-    control.classList.toggle('is-active',active);
-    control.setAttribute('aria-pressed',active?'true':'false');
-  });
-}
-function updateSummary(){
-  var tokens=[];
-  if(state.query)tokens.push('搜索 “'+state.query+'”');
-  if(state.category)tokens.push('主题 '+categoryLabel(state.category));
-  if(state.status==='published')tokens.push('已发布');
-  if(state.status==='draft')tokens.push('草稿');
-  if(summaryText)summaryText.textContent=tokens.join(' · ');
-  if(summary)summary.hidden=tokens.length===0;
-}
-function applyState(options){
-  options=options||{};syncControls();updateSummary();
-  var query=state.query.trim().toLowerCase();
-  var matched=pages.filter(matches).map(function(page){return bestMatch(page,query);})
-    .sort(function(a,b){return b.score-a.score||
-      (b.page.modified||0)-(a.page.modified||0)||
-      collator.compare(a.page.title,b.page.title);});
-  var listMode=Boolean(query||state.category||state.status!=='all');
-  document.body.classList.toggle('museum-index-filtering',listMode);
-  if(matrix){
-    matrix.hidden=listMode;
-    if(!listMode)entries.forEach(function(entry){
-      entry.hidden=state.status!=='all'&&entry.dataset.status!==state.status;
-    });
-  }
-  if(resultList){
-    resultList.textContent='';resultList.hidden=!listMode;
-    if(listMode)matched.forEach(function(item){resultList.appendChild(makeResult(item));});
-  }
-  if(empty)empty.hidden=matched.length>0;
-  var label='全部笔记 · 按更新时间';
-  if(state.category)label=categoryLabel(state.category)+' · 主题笔记';
-  else if(query)label='搜索结果';
-  else if(state.status==='published')label='已发布 · 按更新时间';
-  else if(state.status==='draft')label='草稿 · 按更新时间';
-  if(heading)heading.textContent=label;
-  if(visibleCount)visibleCount.textContent='/ '+count(matched.length);
-  if(live)live.textContent='显示 '+matched.length+' 篇笔记';
-  if(options.focus&&heading)requestAnimationFrame(function(){heading.focus();});
-}
-function update(patch,historyMode,focus){
-  Object.keys(patch).forEach(function(key){state[key]=patch[key];});
-  writeUrl(historyMode||'push');applyState({focus:Boolean(focus)});
-}
-if(search){
-  search.addEventListener('input',function(){
-    update({query:search.value},'replace',false);
-  });
-  search.addEventListener('keydown',function(event){
-    if(event.key==='Escape'){
-      event.preventDefault();update({query:''},'replace',false);search.blur();
-    }
-  });
-}
-document.addEventListener('keydown',function(event){
-  if(event.key==='/'&&!event.metaKey&&!event.ctrlKey&&!event.altKey&&
-     !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)){
-    event.preventDefault();if(search)search.focus();
-  }
-});
-document.querySelectorAll('.topic-filter[data-category],[data-category-link]').forEach(function(control){
-  control.addEventListener('click',function(event){
-    event.preventDefault();var value=control.getAttribute('data-category')||
-      control.getAttribute('data-category-link');
-    update({category:state.category===value?'':value},'push',true);
-  });
-});
-document.querySelectorAll('[data-status-filter]').forEach(function(control){
-  control.addEventListener('click',function(){
-    update({status:control.dataset.statusFilter||'all'},'push',true);
-  });
-});
-if(clearButton)clearButton.addEventListener('click',function(){
-  update({query:'',category:'',status:'all'},'push',true);
-});
-if(resetLink)resetLink.addEventListener('click',function(event){
-  event.preventDefault();update({query:'',category:'',status:'all'},'push',false);
-  var target=document.getElementById('recent-updates');if(target)target.scrollIntoView({block:'start'});
-});
-window.addEventListener('popstate',function(){readUrl();applyState();});
-function openReadingDb(){
-  return new Promise(function(resolve,reject){
-    if(!window.indexedDB){reject(new Error('IndexedDB unavailable'));return;}
-    var request=indexedDB.open('org-museum',1);
-    request.onupgradeneeded=function(){
-      var db=request.result;
-      var store=db.objectStoreNames.contains('readingState')
-        ?request.transaction.objectStore('readingState')
-        :db.createObjectStore('readingState',{keyPath:'pageId'});
-      if(!store.indexNames.contains('lastVisitedAt'))
-        store.createIndex('lastVisitedAt','lastVisitedAt',{unique:false});
-    };
-    request.onsuccess=function(){resolve(request.result);};
-    request.onerror=function(){reject(request.error||new Error('IndexedDB failed'));};
-    request.onblocked=function(){reject(new Error('IndexedDB blocked'));};
-  });
-}
-function normalizeHeadingTitle(value){
-  return String(value||'').replace(/\s+/g,' ').trim();
-}
-function recoverHeading(page,record){
-  var wanted=normalizeHeadingTitle(record.lastHeadingTitle);
-  if(!wanted)return null;
-  var matches=(page.headings||[]).filter(function(item){
-    return normalizeHeadingTitle(item.title)===wanted;
-  });
-  return matches.length===1?matches[0]:null;
-}
-function loadRecentRecords(db){
-  return new Promise(function(resolve,reject){
-    var records=[];var tx=db.transaction('readingState','readwrite');
-    var store=tx.objectStore('readingState');
-    var request=store.indexNames.contains('lastVisitedAt')
-      ?store.index('lastVisitedAt').openCursor(null,'prev')
-      :store.openCursor();
-    request.onsuccess=function(){
-      var cursor=request.result;
-      if(!cursor){
-        records.sort(function(a,b){return (b.lastVisitedAt||0)-(a.lastVisitedAt||0);});
-        resolve(records.slice(0,6));return;
-      }
-      var record=cursor.value;
-      var page=pages.find(function(item){return item.pageId===record.pageId;});
-      var parsed=Number(record.progress||record.scrollRatio||0);
-      var progress=Number.isFinite(parsed)?Math.min(1,Math.max(0,parsed)):0;
-      record.progress=progress;record.scrollRatio=progress;
-      var qualified=Boolean(record.qualifiedAt)||Number(record.engagedMs||0)>=30000||progress>=0.03;
-      if(!page||!qualified)cursor.delete();
-      else {
-        record.href=page.href;record.title=page.title;
-        record.category=page.categoryLabel||page.category;
-        var headingValid=Boolean(record.lastHeadingId)&&(page.headings||[]).some(function(item){
-          return item.id===record.lastHeadingId;
-        });
-        if(!headingValid){
-          var recovered=recoverHeading(page,record);
-          record.lastHeadingId=recovered?recovered.id:'';
-          if(recovered)record.lastHeadingTitle=recovered.title;
-        }
-        cursor.update(record);
-        records.push(record);
-      }
-      cursor.continue();
-    };
-    request.onerror=function(){reject(request.error);};
-  });
-}
-function resumeHref(record){
-  var href=record.href||record.url||'#';
-  if(record.lastHeadingId)href=href.split('#')[0]+'#'+encodeURIComponent(record.lastHeadingId);
-  return href;
-}
-function renderResume(records){
-  if(!resume||!resumeList)return;resumeList.textContent='';
-  resume.setAttribute('aria-busy','false');
-  if(resumeCount)resumeCount.textContent='/ '+count(records.length);
-  if(!records.length){
-    var box=document.createElement('div');box.className='resume-empty-state';
-    var title=document.createElement('strong');title.textContent='还没有有效阅读轨迹';
-    var copy=document.createElement('small');
-    copy.textContent='停留 30 秒或阅读超过 3% 后，才会保存最近位置。';
-    box.appendChild(title);box.appendChild(copy);
-    if(pages.length){var start=document.createElement('a');
-      start.href=pages.slice().sort(function(a,b){return (b.modified||0)-(a.modified||0);})[0].href;
-      start.textContent='从全部笔记开始 →';box.appendChild(start);}
-    resumeList.appendChild(box);resume.hidden=false;return;
-  }
-  records.forEach(function(record,index){
-    var row=document.createElement('div');row.className='resume-record-row';
-    var link=document.createElement('a');
-    link.className='resume-record'+(index===0?' resume-record-primary':'');
-    link.href=resumeHref(record);
-    var number=document.createElement('span');number.className='resume-number';number.textContent=count(index+1);
-    var body=document.createElement('span');body.className='resume-copy';
-    var title=document.createElement('strong');title.textContent=record.title||record.pageId;
-    var detail=document.createElement('small');detail.textContent=(record.lastHeadingTitle||'上次阅读位置')+
-      ' · '+Math.round((record.progress||record.scrollRatio||0)*100)+'%';
-    body.appendChild(title);body.appendChild(detail);
-    var meter=document.createElement('span');meter.className='resume-meter';
-    var fill=document.createElement('i');fill.style.width=
-      Math.round((record.progress||record.scrollRatio||0)*100)+'%';
-    meter.appendChild(fill);link.appendChild(number);link.appendChild(body);link.appendChild(meter);
-    var remove=document.createElement('button');remove.type='button';
-    remove.className='resume-remove';remove.textContent='移除';
-    remove.setAttribute('aria-label','移除 '+(record.title||record.pageId)+' 的阅读记录');
-    remove.addEventListener('click',function(){
-      openReadingDb().then(function(db){
-        return new Promise(function(resolve,reject){
-          var request=db.transaction('readingState','readwrite')
-            .objectStore('readingState').delete(record.pageId);
-          request.onsuccess=resolve;request.onerror=function(){reject(request.error);};
-        }).finally(function(){db.close();});
-       }).then(function(){row.remove();
-         var remaining=resumeList.querySelectorAll('.resume-record-row').length;
-         if(!remaining)renderResume([]);
-         else if(resumeCount)resumeCount.textContent='/ '+count(remaining);
-       });
-    });
-    row.appendChild(link);row.appendChild(remove);resumeList.appendChild(row);
-  });
-  resume.hidden=false;
-}
-readUrl();applyState();
-openReadingDb().then(function(db){
-  return loadRecentRecords(db).finally(function(){db.close();});
-}).then(renderResume).catch(function(){if(resume)resume.hidden=true;});
-})();
-</script>\n")
+  "Return the index dashboard runtime from the bundled local script."
+  (let ((path (expand-file-name
+               "resources/org-museum-index-dashboard.js" org-museum--plugin-dir)))
+    (unless (file-readable-p path)
+      (error "找不到 Org Museum 索引运行文件：%s" path))
+    (concat "<script>\n"
+            (with-temp-buffer
+              (insert-file-contents path)
+              (buffer-string))
+            "</script>\n")))
 
 (defun org-museum--build-index-html (cats graph-href out-file)
   "Return the complete index.html for CATS and GRAPH-HREF."
   (ignore graph-href)
   (let* ((pages (org-museum--sort-pages-by-modified
                  (org-museum--pages-from-categories cats)))
-         (published-count (cl-count-if #'org-museum--published-page-p pages))
-         (draft-count (- (length pages) published-count))
          (recent pages)
          (index-data (org-museum--index-data-alist pages out-file))
          (recent-html
@@ -4981,53 +6400,88 @@ openReadingDb().then(function(db){
      (org-museum--build-topbar out-file 'home)
      (org-museum--generate-sidebar-html out-file)
      "<main id=\"main-content\" class=\"museum-index-shell\" tabindex=\"-1\">\n"
-     "  <h1 class=\"sr-only\">Org Museum</h1>\n"
-     "  <section class=\"museum-home-upper\">\n"
-     "    <section id=\"continue-reading\" class=\"museum-resume\" hidden aria-busy=\"true\">\n"
-     "      <div class=\"museum-section-heading\"><h2>继续阅读</h2><span id=\"continue-reading-count\">/ 00</span></div>\n"
-     "      <div id=\"continue-reading-list\"></div>\n"
+     "  <div class=\"museum-index-intro\">\n"
+     "    <div><p class=\"museum-index-kicker\">ORG MUSEUM / 索引</p>"
+     "<h1>内容索引</h1><p>搜索、筛选与图表联动，逐步缩小笔记范围。</p></div>\n"
+     "  </div>\n"
+     "  <label class=\"museum-index-search\">"
+     "<span class=\"sr-only\">搜索索引</span>"
+     "<input id=\"org-museum-global-search\" type=\"search\" "
+     "placeholder=\"搜索标题、章节、标签或主题…\" autocomplete=\"off\" "
+     "spellcheck=\"false\" aria-label=\"搜索索引\" aria-keyshortcuts=\"/\">"
+     "<kbd aria-hidden=\"true\">/</kbd></label>\n"
+     "  <section class=\"dashboard-metrics\" aria-label=\"当前结果概览\">"
+     "<div><span>当前笔记</span><strong data-dashboard-metric=\"total\">—</strong></div>"
+     "<div><span data-dashboard-metric-label=\"recent-created\">近 30 天新增</span><strong data-dashboard-metric=\"recent-created\">—</strong></div>"
+     "<div><span data-dashboard-metric-label=\"recent-updated\">近 30 天更新</span><strong data-dashboard-metric=\"recent-updated\">—</strong></div>"
+     "</section>\n"
+     "  <div class=\"museum-index-dashboard\">\n"
+     "  <details class=\"dashboard-filter-panel\" aria-label=\"筛选笔记\" open>\n"
+     "    <summary class=\"dashboard-filter-head\"><h2>筛选笔记</h2>"
+     "<span>选择条件后，图表与结果同步更新</span></summary>\n"
+     "    <div id=\"index-dynamic-filters\" class=\"dashboard-filter-groups\"></div>\n"
+     "    <section class=\"dashboard-date-filter\" aria-label=\"按新增或更新时间筛选\">\n"
+     "      <h3>新增 / 更新时间</h3>\n"
+     "      <div class=\"dashboard-date-shortcuts\" role=\"group\" aria-label=\"快捷时间范围\">\n"
+     "        <button type=\"button\" class=\"dashboard-date-shortcut\" id=\"index-recent-7\" data-range-days=\"7\" aria-pressed=\"false\">近 7 天</button>\n"
+     "        <button type=\"button\" class=\"dashboard-date-shortcut\" id=\"index-recent-30\" data-range-days=\"30\" aria-pressed=\"false\">近 30 天</button>\n"
+     "        <button type=\"button\" class=\"dashboard-date-shortcut\" id=\"index-recent-90\" data-range-days=\"90\" aria-pressed=\"false\">近 90 天</button>\n"
+     "        <button type=\"button\" class=\"dashboard-date-shortcut\" id=\"index-recent-180\" data-range-days=\"180\" aria-pressed=\"false\">近半年</button>\n"
+     "        <button type=\"button\" class=\"dashboard-date-shortcut\" id=\"index-recent-365\" data-range-days=\"365\" aria-pressed=\"false\">近 1 年</button>\n"
+     "      </div>\n"
+     "      <div class=\"dashboard-date-fields\"><label>从<input type=\"date\" id=\"index-date-start\"></label>\n"
+     "      <label>到<input type=\"date\" id=\"index-date-end\" aria-describedby=\"index-date-feedback\"></label></div>\n"
+     "      <p id=\"index-date-feedback\" class=\"dashboard-date-feedback\" role=\"alert\" hidden></p>\n"
+     "      <button type=\"button\" id=\"index-date-clear\" hidden>清除时间范围</button>\n"
      "    </section>\n"
-     "    <section class=\"museum-topic-index\">\n"
-     "      <div class=\"museum-section-heading\"><h2>主题索引</h2><span>/ "
-     (format "%02d" (length cats))
-     "</span></div>\n"
-     "      <div class=\"museum-topic-grid\">\n"
-     (org-museum--build-topic-index-html cats)
-     "\n      </div>\n"
-     "    </section>\n"
-     "  </section>\n"
+     "  </details>\n"
      "  <section id=\"recent-updates\" class=\"museum-recent\">\n"
+     "    <div class=\"dashboard-chart-grid\">"
+     "<section class=\"dashboard-chart-panel\" aria-labelledby=\"index-type-title\">"
+     "<div class=\"dashboard-chart-head\"><h2 id=\"index-type-title\">主题分布</h2>"
+     "<span id=\"index-type-caption\">点击主题筛选</span></div><div id=\"index-type-chart\" class=\"dashboard-type-chart\"></div>"
+     "<button type=\"button\" id=\"index-type-expand\" hidden>查看全部主题</button>"
+     "</section>"
+     "<section class=\"dashboard-chart-panel\" aria-labelledby=\"index-trend-title\">"
+     "<div class=\"dashboard-chart-head\"><h2 id=\"index-trend-title\">新增 / 更新趋势</h2>"
+     "<span id=\"index-trend-caption\">点击时间筛选</span></div>"
+     "<div class=\"dashboard-trend-legend\"><span><i class=\"dashboard-legend-created\"></i>新增</span>"
+     "<span><i class=\"dashboard-legend-updated\"></i>更新</span></div>"
+     "<div class=\"dashboard-trend-body\"><div id=\"index-trend-axis\" class=\"dashboard-trend-axis\" "
+     "aria-hidden=\"true\"></div><div id=\"index-trend-chart\" class=\"dashboard-trend-chart\"></div></div>"
+     "</section></div>\n"
+     "    <div id=\"index-filter-summary\" class=\"museum-filter-summary\">\n"
+     "      <span>当前筛选</span><div id=\"index-filter-chips\"></div>\n"
+     "      <button type=\"button\" data-clear-index-filters hidden>清除全部</button>\n"
+     "    </div>\n"
      "    <div class=\"museum-index-toolbar\">\n"
      "      <div class=\"museum-section-heading museum-section-rule\">"
      "<h2 id=\"index-results-heading\" tabindex=\"-1\">全部笔记 · 按更新时间</h2>"
-     "<span id=\"index-visible-count\" role=\"status\" aria-live=\"polite\">/ "
-     (format "%02d" (length recent))
+     "<span id=\"index-visible-count\" role=\"status\" aria-live=\"polite\">"
+     (format "%d" (length recent))
      "</span></div>\n"
-     "      <div class=\"museum-status-filters\" role=\"group\" aria-label=\"按发布状态筛选\">\n"
-     (format
-      (concat
-       "        <button type=\"button\" class=\"is-active\" data-status-filter=\"all\" "
-       "aria-pressed=\"true\">全部 <b>%02d</b></button>\n"
-       "        <button type=\"button\" data-status-filter=\"published\" "
-       "aria-pressed=\"false\">已发布 <b>%02d</b></button>\n"
-       "        <button type=\"button\" data-status-filter=\"draft\" "
-       "aria-pressed=\"false\">草稿 <b>%02d</b></button>\n")
-      (length pages) published-count draft-count)
-     "      </div>\n"
-     "    </div>\n"
-     "    <div id=\"index-filter-summary\" class=\"museum-filter-summary\" hidden>\n"
-     "      <span id=\"index-filter-summary-text\"></span>\n"
-     "      <button type=\"button\" data-clear-index-filters>清除筛选</button>\n"
+     "      <label class=\"dashboard-sort\">排序 <select id=\"index-sort\">"
+     "<option value=\"modified-desc\">最近更新</option>"
+     "<option value=\"created-desc\">最近新增</option>"
+     "<option value=\"title-asc\">标题</option>"
+     "</select></label>\n"
      "    </div>\n"
      "    <div class=\"museum-index-matrix\">\n"
      recent-html
      "    </div>\n"
      "    <div id=\"index-search-list\" hidden></div>\n"
      "    <p id=\"index-search-empty\" class=\"museum-search-empty\" hidden>"
-     "没有匹配的笔记。可以清除筛选，或换一个标题、章节、标签或分类词。</p>\n"
+     "当前条件没有匹配笔记。可以逐项移除条件，或清除全部筛选。</p>\n"
      "    <p id=\"index-results-live\" class=\"sr-only\" role=\"status\" "
      "aria-live=\"polite\"></p>\n"
      "  </section>\n"
+     "    <section id=\"continue-reading\" class=\"museum-resume\" aria-busy=\"true\">\n"
+     "      <div class=\"museum-section-heading\"><h2>继续阅读</h2><span id=\"continue-reading-count\">/ 00</span></div>\n"
+     "      <div id=\"continue-reading-list\"><div class=\"resume-empty-state\">"
+     "<strong>继续探索</strong><small>阅读位置会保存在当前浏览器。</small>"
+     "<a href=\"#recent-updates\">从全部笔记开始 →</a></div></div>\n"
+     "    </section>\n"
+     "  </div>\n"
      "  <footer class=\"museum-index-footer\">"
      (format "%d 篇索引 · 本地静态 Wiki" (length pages))
      "</footer>\n"
@@ -5062,11 +6516,14 @@ Applicable scope: graph.html generation."
 
 ;;;###autoload
 (cl-defun org-museum-export-graph (&key silent)
-  "Generate graph.html in the shared export root."
+  "Generate graph.html in the shared export root.
+Interactive calls run in an isolated background Emacs process."
   (interactive)
-  (org-museum--run-with-current-runtime
-   'org-museum-export-graph (when silent (list :silent t))
-   (lambda () (org-museum--export-graph-current :silent silent))))
+  (if (called-interactively-p 'interactive)
+      (org-museum--start-background-job 'export-graph nil)
+    (org-museum--run-with-current-runtime
+     'org-museum-export-graph (when silent (list :silent t))
+     (lambda () (org-museum--export-graph-current :silent silent)))))
 
 (cl-defun org-museum--export-graph-current (&key silent)
   "Generate graph.html using the currently loaded runtime."
@@ -5086,11 +6543,39 @@ Applicable scope: graph.html generation."
                graph-html 'graph)))
     (unless silent
       (browse-url (concat "file:///" (replace-regexp-in-string "\\\\" "/" graph-html)))
-      (message "Graph generated: %s" graph-html))
+    (message "知识图谱已生成：%s" graph-html))
     graph-html))
 
+(defun org-museum--graph-edge-records (file)
+  "Read validated MUSEUM_GRAPH_EDGE records directly from Org FILE."
+  (let (records)
+    (when (and (stringp file) (file-regular-p file))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (goto-char (point-min))
+        (let ((case-fold-search t))
+          (while (re-search-forward "^#\\+MUSEUM_GRAPH_EDGE:[[:space:]]*\\(.*\\)$" nil t)
+            (let ((record (condition-case nil
+                              (let ((json-object-type 'alist)
+                                    (json-key-type 'string))
+                                (json-read-from-string (match-string-no-properties 1)))
+                            (error nil))))
+              (when (and (listp record)
+                         (stringp (cdr (assoc "targetId" record)))
+                         (member (cdr (assoc "state" record)) '("active" "deleted"))
+                         (or (equal (cdr (assoc "state" record)) "deleted")
+                             (and (stringp (cdr (assoc "type" record)))
+                                  (stringp (cdr (assoc "label" record)))
+                                  (member (cdr (assoc "direction" record))
+                                          '("forward" "reverse" "both"))
+                                  (numberp (cdr (assoc "weight" record)))
+                                  (member (cdr (assoc "style" record))
+                                          '("solid" "dashed" "dotted")))))
+                (push record records)))))))
+    (nreverse records)))
+
 (defun org-museum--generate-graph-json ()
-  "Return directed graph JSON with factual relation labels and tier metadata."
+  "Return the current Org-backed graph as one node and edge snapshot."
   (let* ((pages    (org-museum-index-pages org-museum--index))
          (nodes    '())
          (links    '())
@@ -5121,30 +6606,55 @@ Applicable scope: graph.html generation."
                  (cl-incf (gethash left degree 0))
                  (cl-incf (gethash right degree 0))))))))
      pages)
-    ;; Same-type reciprocal links share one bidirectional curve.  Differently
-    ;; labelled reciprocal links remain separate directed facts.
-    (let ((processed (make-hash-table :test 'equal))
-          (keys (sort (hash-table-keys directed) #'string<)))
-      (dolist (key keys)
-        (unless (gethash key processed)
-          (let* ((parts (split-string key "\0"))
-                 (source (car parts))
-                 (target (cadr parts))
-                 (label (gethash key directed))
-                 (reverse-key (concat target "\0" source))
-                 (reverse-label (gethash reverse-key directed)))
-            (if (and reverse-label (equal label reverse-label))
-                (let ((left (if (string< source target) source target))
-                      (right (if (string< source target) target source)))
-                  (push `((source . ,left) (target . ,right)
-                          (type . ,label) (bidirectional . t) (value . 1))
-                        links)
-                  (puthash reverse-key t processed))
-              (push `((source . ,source) (target . ,target)
-                      (type . ,label) (bidirectional . :json-false)
-                      (value . 1))
-                    links))
-            (puthash key t processed)))))
+    ;; Org files also own user-edited graph relations.  An override replaces
+    ;; the visual meaning of an existing link, or creates a graph-only edge.
+    ;; A tombstone removes an edge from the graph without editing prose links.
+    (maphash
+     (lambda (id page)
+       (unless (gethash id excluded)
+         (dolist (record (org-museum--graph-edge-records (org-museum-page-path page)))
+           (let* ((target (cdr (assoc "targetId" record)))
+                  (key (and (stringp target) (concat id "\0" target))))
+             (when (and key (not (equal id target))
+                        (gethash target pages) (not (gethash target excluded)))
+               (if (equal (cdr (assoc "state" record)) "deleted")
+                   (remhash key directed)
+                 (puthash key record directed)))))))
+     pages)
+    (setq degree (make-hash-table :test 'equal)
+          seen-neighbours (make-hash-table :test 'equal))
+    (dolist (key (sort (hash-table-keys directed) #'string<))
+      (let* ((parts (split-string key "\0"))
+             (owner (car parts)) (target-id (cadr parts))
+             (record (gethash key directed))
+             (_key-check (unless (and (stringp owner) (stringp target-id))
+                           (error "Malformed graph key %S (%S)" key parts)))
+             (type (if (stringp record) record
+                     (or (cdr (assoc "type" record)) "显式链接")))
+             (label (if (stringp record) type
+                      (or (cdr (assoc "label" record)) type)))
+             (direction (if (stringp record) "forward"
+                          (or (cdr (assoc "direction" record)) "forward")))
+             (weight (if (stringp record) 1
+                       (or (cdr (assoc "weight" record)) 1)))
+             (style (if (stringp record) "solid"
+                      (or (cdr (assoc "style" record)) "solid")))
+             (source (if (equal direction "reverse") target-id owner))
+             (target (if (equal direction "reverse") owner target-id))
+             (neighbour-key (if (string< owner target-id)
+                                (concat owner "\0" target-id)
+                              (concat target-id "\0" owner))))
+        (unless (gethash neighbour-key seen-neighbours)
+          (puthash neighbour-key t seen-neighbours)
+          (cl-incf (gethash owner degree 0))
+          (cl-incf (gethash target-id degree 0)))
+        (push `((id . ,key) (ownerId . ,owner) (targetId . ,target-id)
+                (source . ,source) (target . ,target)
+                (type . ,type) (label . ,label)
+                (direction . ,direction) (weight . ,weight) (value . ,weight)
+                (style . ,style)
+                (bidirectional . ,(if (equal direction "both") t :json-false)))
+              links)))
     ;; Phase 3: optionally exclude orphans after filtering links, but never
     ;; collapse the whole graph to an empty canvas.
     (when org-museum-graph-exclude-orphans
@@ -5168,8 +6678,7 @@ Applicable scope: graph.html generation."
        (unless (gethash id excluded)
          (push `((id     . ,id)
                  (name   . ,(org-museum-page-title page))
-                 (group  . ,(org-museum--category-label
-                             (org-museum-page-category page)))
+                 (group  . ,(org-museum--graph-semantic-category page))
                  (tags   . ,(vconcat (org-museum-page-tags page)))
                  (status . ,(downcase
                              (or (org-museum-page-status page) "published")))
@@ -5177,8 +6686,18 @@ Applicable scope: graph.html generation."
                  (description . ,(or (org-museum-page-description page) ""))
                  (created . ,(org-museum-page-created page))
                  (modified . ,(org-museum-page-modified page))
-                 (linksTo . ,(vconcat (org-museum-page-links-to page)))
-                 (linkedFrom . ,(vconcat (org-museum-page-linked-from page)))
+                 (linksTo . ,(vconcat
+                              (delete-dups
+                               (mapcar (lambda (edge) (cdr (assq 'target edge)))
+                                       (seq-filter (lambda (edge)
+                                                     (equal id (cdr (assq 'source edge))))
+                                                   links)))))
+                 (linkedFrom . ,(vconcat
+                                 (delete-dups
+                                  (mapcar (lambda (edge) (cdr (assq 'source edge)))
+                                          (seq-filter (lambda (edge)
+                                                        (equal id (cdr (assq 'target edge))))
+                                                      links)))))
                  (url    . ,(org-museum--page-href id nil)))
                nodes)))
      pages)
@@ -5236,7 +6755,7 @@ Applicable scope: graph.html generation."
   "Completion for wiki: / museum: links."
   (org-museum--guard-quick)
   (concat "wiki:"
-          (completing-read "Org Museum Page: "
+          (completing-read "选择 Org Museum 笔记："
                            (hash-table-keys (org-museum-index-pages org-museum--index))
                            nil t)))
 
@@ -5282,9 +6801,9 @@ Guards:
   (interactive
    (list
     ;; ── Arg 1: title ─────────────────────────────────────────────
-    (let ((raw (string-trim (read-string "Page Title: "))))
+    (let ((raw (string-trim (read-string "笔记标题："))))
       (when (string-empty-p raw)
-        (error "Org Museum [Create]: title must not be empty"))
+        (error "新笔记标题不能为空"))
       raw)
     ;; ── Arg 2: category (existing or new, with completion) ───────
     (let* ((existing (when org-museum--index
@@ -5312,24 +6831,23 @@ Guards:
     ;; A punctuation-only title normalises to "-", which is not a meaningful
     ;; page identity and is almost impossible to recognise in links or search.
     (unless (string-match-p "[a-z0-9一-鿿]" id)
-      (error "Org Museum [Create]: title must contain a letter, digit, or CJK character"))
+      (error "标题须包含字母、数字或汉字"))
     (unless (org-museum--path-component-safe-p id)
-      (error "Org Museum [Create]: title produces a reserved page path"))
+      (error "该标题会生成保留的页面路径"))
     (when (string-empty-p cat-dir)
-      (error "Org Museum [Create]: category must contain a letter, digit, or CJK character"))
+      (error "分类须包含字母、数字或汉字"))
     (unless (org-museum--path-component-safe-p cat-dir)
-      (error "Org Museum [Create]: category produces a reserved directory path"))
+      (error "该分类会生成保留的目录路径"))
 
     ;; ── Guard 1: file path collision ─────────────────────────────
     (when (file-exists-p filepath)
-      (error "Org Museum [Create]: file already exists: %s"
+      (error "新笔记文件已存在：%s"
              (file-relative-name filepath org-museum-root-dir)))
 
     ;; ── Guard 2: ID collision across all categories ───────────────
     (when (and org-museum--index
                (gethash id (org-museum-index-pages org-museum--index)))
-      (error "Org Museum [Create]: ID '%s' already registered in index \
-(possibly a duplicate title in another category)" id))
+      (error "新笔记 ID '%s' 已在索引中，可能与其他分类的标题重复" id))
 
     ;; ── Create subdirectory + file ────────────────────────────────
     (let ((original-index org-museum--index)
@@ -5367,7 +6885,7 @@ Guards:
 
             ;; ── Rebuild index + confirm ───────────────────────────
             (org-museum-index-build t)
-            (message "Org Museum [Create]: '%s' → %s"
+            (message "Org Museum 已创建笔记：'%s' → %s"
                      title
                      (file-relative-name filepath org-museum-root-dir)))
         (error
@@ -5546,33 +7064,33 @@ Guards:
 Known limitation: does not handle custom_id property links."
   (interactive
    (let* ((ids (hash-table-keys (org-museum-index-pages org-museum--index)))
-          (old (completing-read "Page ID to rename: " ids nil t)))
+          (old (completing-read "要更名的笔记 ID：" ids nil t)))
      (list old (read-string (format "New ID (was: %s): " old) old))))
   (unless (org-museum--path-component-safe-p new-id)
-    (error "Org Museum [Rename]: new ID must be one non-empty path-safe name"))
+    (error "新 ID 不能为空，且须能安全用作文件路径"))
   (let* ((page     (or (gethash old-id (org-museum-index-pages org-museum--index))
-                       (error "Page not found: %s" old-id)))
+                       (error "找不到笔记：%s" old-id)))
          (old-path (expand-file-name (org-museum-page-path page)))
          (new-path (expand-file-name
                     (concat new-id ".org") (file-name-directory old-path)))
          (page-buffer (get-file-buffer old-path))
          (original-index org-museum--index))
     (when (gethash new-id (org-museum-index-pages org-museum--index))
-      (error "ID already exists: %s" new-id))
+      (error "ID 已存在：%s" new-id))
     (when (file-exists-p new-path)
-      (error "Org Museum [Rename]: target file already exists: %s" new-path))
+      (error "更名目标文件已存在：%s" new-path))
     (when (get-file-buffer new-path)
-      (error "Org Museum [Rename]: target path is already visited: %s" new-path))
+      (error "更名目标文件已在 Emacs 中打开：%s" new-path))
     (when (and (buffer-live-p page-buffer)
                (buffer-modified-p page-buffer))
-      (error "Org Museum [Rename]: save the page before renaming"))
+      (error "请先保存当前笔记，再更名"))
     (when-let* ((modified-referrer
                 (org-museum--modified-link-buffer old-id)))
-      (error "Org Museum [Rename]: save referring page before renaming: %s"
+      (error "请先保存引用这篇笔记的页面，再更名：%s"
              (buffer-file-name modified-referrer)))
     (when-let* ((modified-referrer
                 (org-museum--modified-file-link-buffer old-path)))
-      (error "Org Museum [Rename]: save referring page before renaming: %s"
+      (error "请先保存引用这篇笔记的页面，再更名：%s"
              (buffer-file-name modified-referrer)))
     (let* ((file-link-files (org-museum--files-linking-to-path old-path))
            (link-files (delete-dups
@@ -5612,7 +7130,7 @@ Known limitation: does not handle custom_id property links."
                 (when (buffer-live-p buffer)
                   (with-current-buffer buffer
                     (revert-buffer t t))))
-              (message "Renamed %s → %s; %d files updated."
+              (message "已将 %s 更名为 %s，并更新 %d 个文件。"
                        old-id new-id count)))
         (error
          (setq org-museum--index original-index)
@@ -5712,7 +7230,7 @@ Known limitation: only scans wiki:/museum:/id:/file: link types."
                    (push (list :from (org-museum-page-id page)
                                :path path) absolute-links))))))))
      pages)
-    (with-current-buffer (get-buffer-create "*Org Museum Link Check*")
+    (with-current-buffer (get-buffer-create "*Org Museum 链接检查*")
       (erase-buffer) (org-mode)
       (insert "#+TITLE: Org Museum Link Check Report\n")
       (insert (format "#+DATE: %s\n\n" (format-time-string "%Y-%m-%d %H:%M")))
@@ -5739,7 +7257,7 @@ Known limitation: only scans wiki:/museum:/id:/file: link types."
                           (plist-get item :from)
                           (plist-get item :path)))))
       (display-buffer (current-buffer)))
-    (message "Org Museum [Links]: %d valid, %d missing, %d absolute"
+    (message "Org Museum 链接检查：%d 条有效、%d 条缺失、%d 条绝对路径"
              (length valid-links) (length missing-links) (length absolute-links))))
 (defun org-museum--suggest-similar-ids (target pages)
   "Return up to 3 existing page IDs most similar to TARGET string."
@@ -5775,33 +7293,31 @@ Known limitation: only scans wiki:/museum:/id:/file: link types."
 (defun org-museum--guard-init ()
   "Ensure the plugin is fully ready before export or graph operations."
   (unless org-museum-root-dir
-    (error "Org Museum [Config]: org-museum-root-dir is not set.  \
-Run M-x org-museum-init to configure"))
+    (error "尚未设置 org-museum-root-dir，请运行 M-x org-museum-init"))
   (unless (file-directory-p org-museum-root-dir)
-    (error "Org Museum [Config]: root-dir does not exist: %s"
+    (error "Org Museum 根目录不存在：%s"
            org-museum-root-dir))
   (dolist (dir (list (org-museum--shared-root) (org-museum--scan-root)))
     (condition-case nil
         (make-directory dir t)
       (error
-       (error "Org Museum [Export]: cannot create export directory: %s" dir)))
+       (error "无法创建导出目录：%s" dir)))
     (unless (file-writable-p dir)
-      (error "Org Museum [Export]: export directory not writable: %s" dir)))
+      (error "导出目录不可写：%s" dir)))
   (let ((css-src (org-museum--css-source-path)))
     (unless (file-exists-p css-src)
-      (error "Org Museum [CSS]: source CSS not found at %s.  \
-Check org-museum-css-file or reinstall the plugin" css-src)))
+      (error "找不到源样式文件 %s；请检查 org-museum-css-file 配置" css-src)))
   (unless org-museum--index
     (condition-case err
         (org-museum-index-build)
       (error
-       (error "Org Museum [Index]: failed to build index: %s"
+      (error "Org Museum 索引建立失败：%s"
               (error-message-string err))))))
 
 (defun org-museum--guard-quick ()
   "Lightweight guard: verify root-dir and index only."
   (unless org-museum-root-dir
-    (error "Org Museum [Config]: org-museum-root-dir is not set"))
+    (error "尚未设置 org-museum-root-dir"))
   (unless org-museum--index
     (org-museum-index-build)))
 
@@ -5844,57 +7360,71 @@ that Org exports as file URLs for local opening and copy-path fallback."
     (while (re-search-forward
             "\\[\\[file:\\([^]\n]+\\)\\]\\(?:\\[\\([^]]*\\)\\]\\)?\\]"
             nil t)
-      (let* ((raw (match-string 1))
-             (desc (match-string 2))
-             (parts (org-museum--file-link-parts raw))
-             (link-path (url-unhex-string (car parts)))
-             (search (cdr parts))
-             (source (or source-file (buffer-file-name buf)))
-             (source-dir (if source (file-name-directory source)
-                           default-directory))
-             (full-path (expand-file-name link-path source-dir))
-             (page (and org-museum--index
-                        (org-museum--find-page-by-expanded-path
-                         full-path (org-museum-index-pages org-museum--index))))
-             (fragment (org-museum--file-link-fragment page search))
-             (destination
-              (cond
-               (page
-                (concat (org-museum--page-href
-                         (org-museum-page-id page) out-file)
-                        (if fragment (concat "#" fragment) "")))
-               ((org-museum--asset-file-p full-path)
-                (org-museum--relative-path full-path out-file))
-               (t
-                (replace-regexp-in-string "\\\\" "/" full-path t t))))
-             (description (if desc (format "[%s]" desc) "")))
-        (replace-match (format "[[file:%s]%s]" destination description) t t)))
+      (let ((replacement
+             (save-match-data
+               (let* ((raw (match-string 1))
+                      (desc (match-string 2))
+                      (parts (org-museum--file-link-parts raw))
+                      (link-path (url-unhex-string (car parts)))
+                      (search (cdr parts))
+                      (source (or source-file (buffer-file-name buf)))
+                      (source-dir (if source (file-name-directory source)
+                                    default-directory))
+                      (full-path (expand-file-name link-path source-dir))
+                      (page (and org-museum--index
+                                 (org-museum--find-page-by-expanded-path
+                                  full-path (org-museum-index-pages org-museum--index))))
+                      (fragment (org-museum--file-link-fragment page search))
+                      (destination
+                       (cond
+                        (page
+                         (concat (org-museum--page-href
+                                  (org-museum-page-id page) out-file)
+                                 (if fragment (concat "#" fragment) "")))
+                        ((org-museum--asset-file-p full-path)
+                         (org-museum--relative-path full-path out-file))
+                        (t
+                         (replace-regexp-in-string "\\\\" "/" full-path t t))))
+                      (description (if desc (format "[%s]" desc) "")))
+                 (format "[[file:%s]%s]" destination description)))))
+        (replace-match replacement t t)))
     ;; wiki:/museum: wiki page links
     (goto-char (point-min))
     (while (re-search-forward
             "\\[\\[\\(?:wiki\\|museum\\):\\([^]]+\\)\\]\\(\\[\\([^]]+\\)\\]\\)?\\]" nil t)
-      (let* ((id   (match-string 1))
-             (desc (match-string 3))
-             (page (org-museum--find-page id))
-             (href (org-museum--page-href id out-file)))
-        (replace-match
-         (if page
-             (format "[[file:%s]%s]" href (if desc (format "[%s]" desc) ""))
-           (match-string 0))
-         t t)))
+      (let ((replacement
+             (save-match-data
+               (let* ((raw-id (match-string 1))
+                      (original (match-string 0))
+                      (desc (match-string 3))
+                      (direct-page (org-museum--find-page raw-id))
+                      (id (if (or direct-page
+                                  (not (string-suffix-p ".org" raw-id t)))
+                              raw-id
+                            (substring raw-id 0 -4)))
+                      (page (or direct-page (org-museum--find-page id)))
+                      (href (org-museum--page-href id out-file)))
+                 (if page
+                     (format "[[file:%s]%s]" href
+                             (if desc (format "[%s]" desc) ""))
+                   original)))))
+        (replace-match replacement t t)))
     ;; id: org-id links
     (goto-char (point-min))
     (while (re-search-forward
             "\\[\\[id:\\([^]]+\\)\\]\\(\\[\\([^]]+\\)\\]\\)?\\]" nil t)
-      (let* ((id   (match-string 1))
-             (desc (match-string 3))
-             (page (org-museum--find-page id))
-             (href (org-museum--page-href id out-file)))
-        (replace-match
-         (if page
-             (format "[[file:%s]%s]" href (if desc (format "[%s]" desc) ""))
-           (match-string 0))
-         t t)))))
+      (let ((replacement
+             (save-match-data
+               (let* ((id (match-string 1))
+                      (original (match-string 0))
+                      (desc (match-string 3))
+                      (page (org-museum--find-page id))
+                      (href (org-museum--page-href id out-file)))
+                 (if page
+                     (format "[[file:%s]%s]" href
+                             (if desc (format "[%s]" desc) ""))
+                   original)))))
+        (replace-match replacement t t)))))
 
 (defun org-museum--pp-annotate-local-file-links ()
   "Mark exported absolute local-file anchors and add copy-path fallback UI."
@@ -5923,12 +7453,15 @@ that Org exports as file URLs for local opening and copy-path fallback."
                (escaped-path (org-museum--html-escape path t))
                (escaped-href (org-museum--html-escape
                               (org-museum--path-to-file-url path) t))
+               (display-label (if (string= label href)
+                                  escaped-href
+                                label))
                (anchor
                 (if exists
                     (format "<a%s href=\"%s\"%s>%s</a>"
-                            before escaped-href after label)
+                            before escaped-href after display-label)
                   (format "<span class=\"museum-local-file-label\" aria-disabled=\"true\">%s</span>"
-                          label))))
+                          display-label))))
           (let ((replacement
                  (format
                   (concat "<span class=\"museum-local-file museum-local-file-%s\" "
@@ -6179,7 +7712,7 @@ Applicable scope: org-museum-create-page (Fix-16)."
 var drawer=document.getElementById('org-museum-sidebar');
 var toc=document.getElementById('org-museum-right-sidebar');
 var backdrop=document.getElementById('museum-drawer-backdrop');
-var tocDrawerMedia=matchMedia('(max-width:1360px)');
+var tocDrawerMedia=matchMedia('(max-width:1439px)');
 var metaMedia=matchMedia('(max-width:820px)');
 var metaDisclosure=document.querySelector('.museum-article-meta-disclosure');
 var tocAnchor=null;
@@ -6289,12 +7822,24 @@ document.querySelectorAll('[data-drawer-toggle]').forEach(function(button){
 });
 document.querySelectorAll('[data-toc-toggle]').forEach(function(button){
   button.addEventListener('click',function(){
+    if(!tocDrawerMedia.matches){
+      var open=!document.body.classList.contains('museum-toc-hover');
+      document.body.classList.toggle('museum-toc-hover',open);
+      controls('[data-toc-toggle]',open);
+      if(open)focusFirst(toc);
+      return;
+    }
     if(document.body.classList.contains('museum-toc-open'))closeAll(true);
     else openPanel('toc',button);
   });
 });
 document.querySelectorAll('[data-drawer-close],[data-toc-close]').forEach(function(button){
-  button.addEventListener('click',function(){closeAll(true);});
+  button.addEventListener('click',function(){
+    if(!tocDrawerMedia.matches&&button.hasAttribute('data-toc-close')){
+      document.body.classList.remove('museum-toc-hover');
+      controls('[data-toc-toggle]',false);
+    }else closeAll(true);
+  });
 });
 if(backdrop)backdrop.addEventListener('click',function(){closeAll(true);});
 document.addEventListener('keydown',function(event){
@@ -6307,7 +7852,7 @@ document.addEventListener('keydown',function(event){
       (document.body.classList.contains('museum-toc-open')?toc:null);
     if(!panel)return;
     var items=Array.from(panel.querySelectorAll(
-      'button:not([disabled]),a[href],input:not([disabled]),[tabindex=\"0\"]'));
+      'button:not([disabled]),a[href],input:not([disabled]),[tabindex=\"0\"]')).filter(function(item){return item.getClientRects().length>0;});
     if(!items.length)return;
     var first=items[0],last=items[items.length-1];
     if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus({preventScroll:true});}
@@ -6315,9 +7860,9 @@ document.addEventListener('keydown',function(event){
   }
 },true);
 var search=document.getElementById('org-museum-global-search');
-if(search&&document.body.dataset.pageKind==='article'){
+if(search&&['article','ai','timeline','related'].includes(document.body.dataset.pageKind)){
   search.addEventListener('keydown',function(event){
-    if(event.key==='Enter'&&search.value.trim()){
+    if(event.key==='Enter'&&!event.isComposing&&search.value.trim()){
       var top=document.querySelector('.museum-topbar');
       var home=top?top.getAttribute('data-home-href'):'index.html';
       var destination=home+'?q='+encodeURIComponent(search.value.trim());
@@ -6327,6 +7872,8 @@ if(search&&document.body.dataset.pageKind==='article'){
   });
 }
 document.addEventListener('keydown',function(event){
+  if(event.defaultPrevented||event.isComposing||document.activeElement.isContentEditable||
+     document.querySelector('dialog[open],#image-lightbox-overlay.visible'))return;
   if(event.key==='/'&&!event.metaKey&&!event.ctrlKey&&!event.altKey&&
      !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)){
     event.preventDefault();
@@ -6591,11 +8138,34 @@ window.addEventListener('pageshow',startReadingSession);
    (org-museum--script-effects)
    (org-museum--script-toc-relocate)
    (org-museum--script-shell)
-   (org-museum--script-reading-state)))
+   (org-museum--script-reading-state)
+   (org-museum--script-ai-markdown out-file)
+   (format "<script defer src=\"%s\"></script>\n"
+           (org-museum--html-escape
+            (org-museum--versioned-resource-href
+             (expand-file-name "resources/org-museum-org-view.js"
+                               (org-museum--shared-root)) out-file) t))
+   (format "<script defer src=\"%s\"></script>\n"
+           (org-museum--html-escape
+            (org-museum--versioned-resource-href
+             (expand-file-name "resources/org-museum-ai.js"
+                               (org-museum--shared-root)) out-file) t))))
 
 ;; ============================================================
 ;; §20  LEFT SIDEBAR HTML
 ;; ============================================================
+
+(defun org-museum--script-ai-markdown (out-file)
+  "Load the local Markdown parser and safe AI renderer for OUT-FILE."
+  (mapconcat
+   (lambda (name)
+     (format "<script defer src=\"%s\"></script>\n"
+             (org-museum--html-escape
+              (org-museum--versioned-resource-href
+               (expand-file-name name (org-museum--shared-root)) out-file)
+              t)))
+   '("resources/vendor/markdown-it.umd.min.js"
+     "resources/org-museum-markdown.js") ""))
 
 (defun org-museum--generate-sidebar-html (out-file)
   "Generate left sidebar HTML for OUT-FILE."
@@ -6636,7 +8206,9 @@ window.addEventListener('pageshow',startReadingSession);
           (princ "  <div class=\"sidebar-category\">\n")
           (princ (format "    <div class=\"sidebar-cat-label\">%s <span>%02d</span></div>\n"
                          (org-museum--html-escape
-                          (org-museum--category-label (car cat-entry)))
+                         (if (equal (downcase (car cat-entry)) "uncategorized")
+                             "其他笔记"
+                           (org-museum--category-label (car cat-entry))))
                          (length (cdr cat-entry))))
           (princ "    <ul>\n")
           (dolist (p (cdr cat-entry))
@@ -6812,32 +8384,53 @@ window.addEventListener('pageshow',startReadingSession);
       (string-prefix-p "/" url)
       (string-match-p "\\`[[:alpha:]][[:alnum:]+.-]*:" url)))
 
+(defun org-museum--related-localize-generated-toc (language)
+  "Localize Org's generated table-of-contents heading for LANGUAGE."
+  (when (string-prefix-p "zh" (downcase (or language "")))
+    (goto-char (point-min))
+    (when (re-search-forward
+           "<div\\b[^>]*\\bid=\"table-of-contents\"[^>]*>" nil t)
+      (let ((limit (min (point-max) (+ (point) 512))))
+        (when (re-search-forward
+               "\\(<h2\\b[^>]*>\\)Table of Contents\\(</h2>\\)" limit t)
+          (replace-match "\\1本文目录\\2" t nil))))))
+
 (defun org-museum--related-rebase-fragment (html page out-file)
   "Rebase links in HTML from PAGE output to OUT-FILE and prefix fragment IDs."
   (let* ((page-file (org-museum--export-filename (org-museum-page-path page)))
          (prefix (concat "related-" (org-museum-page-id page) "-")))
     (with-temp-buffer
       (insert (or html ""))
+      (org-museum--related-localize-generated-toc
+       (let ((source (org-museum-page-path page)))
+         (if (and source (file-readable-p source))
+             (org-museum--source-language source)
+           org-museum-default-language)))
       (goto-char (point-min))
       (while (re-search-forward "\\(href\\|src\\)=\"\\([^\"]+\\)\"" nil t)
-        (let* ((attribute (match-string-no-properties 1))
-               (url (match-string-no-properties 2))
-               (replacement
-                (cond
-                 ((string-prefix-p "#" url) (concat "#" prefix (substring url 1)))
-                 ((org-museum--related-url-absolute-p url) url)
-                 (t
-                  (let* ((split (or (string-match "[?#]" url) (length url)))
-                         (path (substring url 0 split))
-                         (suffix (substring url split)))
-                    (concat
-                     (org-museum--relative-path
-                      (expand-file-name path (file-name-directory page-file))
-                      out-file)
-                     suffix))))))
-          (replace-match
-           (format "%s=\"%s\"" attribute
-                   (org-museum--html-escape replacement t)) t t)))
+        (let ((replacement
+               (save-match-data
+                 (let* ((attribute (match-string-no-properties 1))
+                        (url (match-string-no-properties 2))
+                        (rebased
+                         (cond
+                          ((string-prefix-p "#" url)
+                           (concat "#" prefix (substring url 1)))
+                          ((org-museum--related-url-absolute-p url) url)
+                          (t
+                           (let* ((split (or (string-match "[?#]" url)
+                                             (length url)))
+                                  (path (substring url 0 split))
+                                  (suffix (substring url split)))
+                             (concat
+                              (org-museum--relative-path
+                               (expand-file-name
+                                path (file-name-directory page-file))
+                               out-file)
+                              suffix))))))
+                   (format "%s=\"%s\"" attribute
+                           (org-museum--html-escape rebased t))))))
+          (replace-match replacement t t)))
       (goto-char (point-min))
       (while (re-search-forward "\\bid=\"\\([^\"]+\\)\"" nil t)
         (replace-match
@@ -6913,7 +8506,7 @@ window.addEventListener('pageshow',startReadingSession);
                                              t :json-false)))
                     edges))))))
     `((schemaVersion . 1)
-      (generatedAt . ,(format-time-string "%Y-%m-%dT%H:%M:%S%z"))
+      (generatedAt . ,(org-museum--build-time-string "%Y-%m-%dT%H:%M:%S+0000"))
       (pages . ,(vconcat (mapcar (lambda (page)
                                    (org-museum--related-page-alist page out-file))
                                  pages)))
@@ -7033,7 +8626,12 @@ function updateMode(nextMode,push){
   renderPanel('source',source);renderPanel('target',target);
   document.querySelectorAll('.related-paper').forEach(function(panel,index){panel.scrollTop=positions[mode][index]||0;});
   setActivePane(activePane);
-  if(window.hljs)document.querySelectorAll('.related-full pre code').forEach(function(code){window.hljs.highlightElement(code);});
+  if(window.hljs)document.querySelectorAll('.related-full pre code').forEach(function(code){
+    var languageClass=Array.from(code.classList).find(function(className){return className.indexOf('language-')===0;});
+    var lang=languageClass?languageClass.slice(9):'';
+    if(!code.dataset.highlighted&&(!lang||hljs.getLanguage(lang)))hljs.highlightElement(code);
+    else if(lang&&!hljs.getLanguage(lang))code.classList.add('no-highlight');
+  });
   if(push)setUrl(mode);
 }
 function renderDetail(){
@@ -7041,6 +8639,30 @@ function renderDetail(){
   index.hidden=true;empty.hidden=true;detail.hidden=false;
   document.getElementById('related-open-source').href=themed(source.href);
   document.getElementById('related-open-target').href=themed(target.href);
+  var backShelf=document.getElementById('related-back-shelf');
+  if(backShelf){
+    backShelf.href=themed('related.html');
+    backShelf.onclick=function(e){
+      e.preventDefault();
+      var url=new URL(location.href);
+      url.searchParams.delete('source');url.searchParams.delete('target');url.searchParams.delete('mode');
+      history.pushState({},'',url.pathname+url.search+url.hash);
+      source=null;target=null;
+      renderIndex();
+    };
+  }
+  var bridgeBack=document.getElementById('related-bridge-back');
+  if(bridgeBack){
+    bridgeBack.href=themed('related.html');
+    bridgeBack.onclick=function(e){
+      e.preventDefault();
+      var url=new URL(location.href);
+      url.searchParams.delete('source');url.searchParams.delete('target');url.searchParams.delete('mode');
+      history.pushState({},'',url.pathname+url.search+url.hash);
+      source=null;target=null;
+      renderIndex();
+    };
+  }
   var both=links(source,target)&&links(target,source);
   document.getElementById('related-kind').textContent=both?'显式 Org 双向链接':'显式 Org 链接';
   document.getElementById('related-direction').textContent=both?'源 ↔ 目标':'源 → 目标';
@@ -7079,6 +8701,12 @@ function renderIndex(){
     link.appendChild(element('span','related-index-arrow',edge.bidirectional?'↔':'→'));
     link.appendChild(element('strong','',to.title));
     link.appendChild(element('small','',edge.bidirectional?'双向显式链接':'显式链接'));
+    link.addEventListener('click',function(e){
+      e.preventDefault();
+      source=from;target=to;mode='summary';
+      setUrl(mode);
+      renderDetail();
+    });
     list.appendChild(link);
   });
   if(search)search.addEventListener('input',function(){
@@ -7091,7 +8719,13 @@ document.addEventListener('click',function(event){
   var raw=link.getAttribute('href')||'';if(raw.startsWith('#'))return;
   link.href=themed(raw);
 });
-window.addEventListener('popstate',function(){location.reload();});
+window.addEventListener('popstate',function(){
+  var p=new URLSearchParams(location.search);
+  source=pages.get(p.get('source')||'');
+  target=pages.get(p.get('target')||'');
+  mode=p.get('mode')==='full'?'full':'summary';
+  if(relationValid())renderDetail();else renderIndex();
+});
 if(relationValid())renderDetail();else renderIndex();
 })();
 </script>")
@@ -7128,6 +8762,7 @@ if(relationValid())renderDetail();else renderIndex();
      "<button type=\"button\" data-related-mode=\"full\" aria-pressed=\"false\">完整正文</button>"
      "<button type=\"button\" data-related-sync aria-pressed=\"false\">同步滚动：关</button>"
      "<a id=\"related-open-source\" href=\"#\">打开源笔记</a>"
+     "<a id=\"related-back-shelf\" href=\"related.html\">← 关系书架</a>"
      "<a href=\"graph.html\">返回知识图谱</a>"
      "<a id=\"related-open-target\" href=\"#\">打开目标笔记</a>"
      "<span class=\"related-mobile-segments\" role=\"group\" aria-label=\"移动端对读区域\">"
@@ -7140,6 +8775,7 @@ if(relationValid())renderDetail();else renderIndex();
      "<strong id=\"related-kind\">显式 Org 链接</strong><span aria-hidden=\"true\">→</span>"
      "<p id=\"related-direction\">源 → 目标</p>"
      "<button type=\"button\" id=\"related-swap\" hidden>交换方向</button>"
+     "<a id=\"related-bridge-back\" href=\"related.html\">← 关系书架</a>"
      "<a href=\"graph.html\">返回知识图谱</a></aside>\n"
      "      <article class=\"related-paper\" data-related-panel=\"target\" aria-label=\"目标笔记\"></article>\n"
      "    </div>\n"
@@ -7166,11 +8802,14 @@ if(relationValid())renderDetail();else renderIndex();
 
 ;;;###autoload
 (defun org-museum-export-related-reading ()
-  "Generate the offline relationship-reading center."
+  "Generate the offline relationship-reading center.
+Interactive calls run in an isolated background Emacs process."
   (interactive)
-  (org-museum--run-with-current-runtime
-   'org-museum-export-related-reading nil
-   #'org-museum--export-related-reading-current))
+  (if (called-interactively-p 'interactive)
+      (org-museum--start-background-job 'export-related-reading nil)
+    (org-museum--run-with-current-runtime
+     'org-museum-export-related-reading nil
+     #'org-museum--export-related-reading-current)))
 
 ;; ============================================================
 ;; §21b  CHRONOLOGICAL READING
@@ -7226,8 +8865,8 @@ if(relationValid())renderDetail();else renderIndex();
   (let* ((pages (org-museum--timeline-pages))
          (related (org-museum--related-data-alist out-file)))
     `((schemaVersion . 1)
-      (generatedAt . ,(format-time-string "%Y-%m-%dT%H:%M:%S%z"))
-      (today . ,(format-time-string "%Y-%m-%d"))
+      (generatedAt . ,(org-museum--build-time-string "%Y-%m-%dT%H:%M:%S+0000"))
+      (today . ,(org-museum--build-time-string "%Y-%m-%d"))
       (pages . ,(vconcat
                  (mapcar (lambda (page)
                            (org-museum--timeline-page-alist page out-file))
@@ -7272,7 +8911,9 @@ var coordinator={frame:0,geometryFrame:0,scrollFocus:false,focusControl:false,in
 var focusCardBody=element('div','timeline-focus-card-body');
 focusCard.appendChild(focusCardBody);mobileDetail.hidden=true;
 if(!categories.includes(state.category))state.category='*';
-if(!['all','published','draft'].includes(state.status))state.status='all';
+// The timeline payload is intentionally limited to published notes. Keep
+// legacy URLs harmless, but do not expose a draft filter that can never match.
+state.status='all';
 if(!pageMap.has(state.focus))state.focus='';
 if(search)search.value=state.query;
 
@@ -7295,12 +8936,13 @@ function revealWithinViewport(node,mobile){if(!node)return;var rect=node.getBoun
 function relationshipList(page){var root=element('div','timeline-focus-relations');var ids=new Set([].concat(page.linksTo||[],page.linkedFrom||[]));if(!ids.size){root.appendChild(element('p','timeline-focus-empty','暂无显式 Org 链接'));return root;}ids.forEach(function(id){var other=pageMap.get(id);if(!other)return;var out=(page.linksTo||[]).includes(id),back=(page.linkedFrom||[]).includes(id);var row=element('div','timeline-focus-relation');row.appendChild(element('span','',out&&back?'双向':out?'出链':'入链'));row.appendChild(element('b','',other.title));root.appendChild(row);});return root;}
 function detailContent(page,compact){var list=visiblePages(),at=visibleIndex(page,list),root=element('div',compact?'timeline-mobile-detail-content':'timeline-focus-content');root.appendChild(element('p','timeline-preview-kicker',intervalText(page)));root.appendChild(element('h2','',page.title));var meta=element('dl','timeline-preview-meta');[['主题',page.categoryLabel||page.category||'未分类'],['状态',page.status==='draft'?'草稿':'已发布'],['创建',page.createdDate],['更新',page.modifiedDate]].forEach(function(row){var wrap=element('div','');wrap.appendChild(element('dt','',row[0]));wrap.appendChild(element('dd','',row[1]));meta.appendChild(wrap);});root.appendChild(meta);root.appendChild(element('p','timeline-preview-summary',page.description||'暂无可用简介。'));var tags=element('div','timeline-preview-tags');(page.tags||[]).forEach(function(tag){tags.appendChild(element('span','','#'+tag));});root.appendChild(tags);root.appendChild(relationshipList(page));var nav=element('div','timeline-focus-nav');var previous=element('button','timeline-previous','上一篇');previous.type='button';previous.disabled=at<=0;previous.addEventListener('click',function(){navigateRelative(-1);});var next=element('button','timeline-next','下一篇');next.type='button';next.disabled=at<0||at>=list.length-1;next.addEventListener('click',function(){navigateRelative(1);});var close=element('button','timeline-return',compact?'收起详情':'返回时间线');close.type='button';close.addEventListener('click',clearFocus);nav.appendChild(previous);nav.appendChild(next);nav.appendChild(close);root.appendChild(nav);var actions=element('div','timeline-preview-actions');var open=element('a','timeline-open-note','打开笔记');open.href=themed(page.href);actions.appendChild(open);var href=relatedHref(page);if(href){var related=element('a','','关联阅读');related.href=href;actions.appendChild(related);}root.appendChild(actions);return root;}
 function focusButton(id){if(innerWidth<=820||timelineListMode){var entry=mobileItems.get(id);return entry&&entry.button;}return desktop&&desktop.groups.filter(function(page){return page.id===id;}).node();}
+function activeTimelineFocusId(){var active=document.activeElement;if(!active||!active.closest)return '';var node=active.closest('.timeline-node,.timeline-mobile-node');if(!node)return '';var page=node.__data__||pageMap.get(node.dataset.pageId);return page?page.id:'';}
 function scheduleTimelineUpdate(options){options=options||{};coordinator.scrollFocus=coordinator.scrollFocus||!!options.scrollFocus;coordinator.focusControl=coordinator.focusControl||!!options.focusControl;if(coordinator.frame)return;coordinator.frame=requestAnimationFrame(function(){coordinator.frame=0;var page=pageMap.get(state.focus);applyFocus();applyMobileFocus(page);var node=page&&focusButton(page.id);if(coordinator.focusControl&&node&&typeof node.focus==='function')node.focus({preventScroll:true});if(coordinator.scrollFocus&&page){if(innerWidth<=820||timelineListMode)revealWithinViewport(node,true);else if(!focusCard.hidden)revealWithinViewport(focusCard,false);}coordinator.scrollFocus=false;coordinator.focusControl=false;});}
 function clearFocus(){var old=state.focus;if(!old)return;state.focus='';writeUrl('push');tooltip.hidden=true;if(coordinator.inputMode!=='keyboard'&&document.activeElement&&typeof document.activeElement.blur==='function')document.activeElement.blur();scheduleTimelineUpdate();var node=focusButton(old);if(coordinator.inputMode==='keyboard'&&node&&typeof node.focus==='function')node.focus({preventScroll:true});if(restoreScroll!==null&&innerWidth<=820){var target=restoreScroll;restoreScroll=null;requestAnimationFrame(function(){scrollToPosition(target);});}}
 function setFocus(page,push,fromNavigation){if(!page)return clearFocus();if(state.focus===page.id){if(fromNavigation){var current=focusButton(page.id);if(current)current.focus({preventScroll:true});}return;}if(!state.focus&&innerWidth<=820)restoreScroll=scrollY;state.focus=page.id;writeUrl(push?'push':'replace');scheduleTimelineUpdate({scrollFocus:true,focusControl:fromNavigation});}
 function navigateRelative(offset){var list=visiblePages(),page=pageMap.get(state.focus),at=visibleIndex(page,list),next=list[at+offset];if(next)setFocus(next,true,true);}
 function restoreFilterFocus(root,value){requestAnimationFrame(function(){var active=root.querySelector('[data-value=\"'+CSS.escape(value)+'\"]');if(active)active.focus({preventScroll:true});});}
-function renderFilters(){categoryRoot.textContent='';[['*','全部']].concat(categories.map(function(value){return [value,value];})).forEach(function(item){var matching=pages.filter(function(page){return item[0]==='*'||(page.categoryLabel||page.category)===item[0];});var button=element('button',state.category===item[0]?'is-active':'',item[1]+' '+String(matching.length).padStart(2,'0'));button.type='button';button.dataset.value=item[0];button.style.setProperty('--timeline-color',item[0]==='*'?'var(--museum-accent)':color(matching[0]));button.setAttribute('aria-pressed',state.category===item[0]?'true':'false');button.addEventListener('click',function(){state.category=item[0];writeUrl('push');render();restoreFilterFocus(categoryRoot,item[0]);});categoryRoot.appendChild(button);});statusRoot.textContent='';[['all','全部'],['published','已发布'],['draft','草稿']].forEach(function(item){var count=pages.filter(function(page){return item[0]==='all'||page.status===item[0];}).length;var button=element('button',state.status===item[0]?'is-active':'',item[1]+' '+String(count).padStart(2,'0'));button.type='button';button.dataset.value=item[0];button.setAttribute('aria-pressed',state.status===item[0]?'true':'false');button.addEventListener('click',function(){state.status=item[0];writeUrl('push');render();restoreFilterFocus(statusRoot,item[0]);});statusRoot.appendChild(button);});}
+function renderFilters(){categoryRoot.textContent='';[['*','全部']].concat(categories.map(function(value){return [value,value];})).forEach(function(item){var matching=pages.filter(function(page){return item[0]==='*'||(page.categoryLabel||page.category)===item[0];});var button=element('button',state.category===item[0]?'is-active':'',item[1]+' '+String(matching.length).padStart(2,'0'));button.type='button';button.dataset.value=item[0];button.style.setProperty('--timeline-color',item[0]==='*'?'var(--museum-accent)':color(matching[0]));button.setAttribute('aria-pressed',state.category===item[0]?'true':'false');button.addEventListener('click',function(){state.category=item[0];writeUrl('push');render();restoreFilterFocus(categoryRoot,item[0]);});categoryRoot.appendChild(button);});if(statusRoot)statusRoot.textContent='当前时间轴仅展示已发布笔记。';}
 function renderIsolated(){isolatedList.textContent='';var isolated=visiblePages().filter(function(page){return relationCount(page)===0;});isolated.forEach(function(page){var button=element('button','',page.title);button.type='button';button.style.setProperty('--timeline-color',color(page));button.addEventListener('click',function(){setFocus(page,true);});isolatedList.appendChild(button);});document.getElementById('timeline-isolated-count').textContent=String(isolated.length).padStart(2,'0');}
 function buildMobileList(list){var signature=list.map(function(page){return page.id;}).join('|');if(signature===mobileListSignature){applyMobileFocus(pageMap.get(state.focus));return;}mobileListSignature=signature;mobileItems.clear();mobileList.textContent='';var month='',date='';list.forEach(function(page){var currentMonth=page.createdDate.slice(0,7);if(currentMonth!==month){month=currentMonth;var monthHeading=element('li','timeline-mobile-month',currentMonth.replace('-',' / '));monthHeading.setAttribute('aria-hidden','true');mobileList.appendChild(monthHeading);date='';}if(page.createdDate!==date){date=page.createdDate;var dateHeading=element('li','timeline-mobile-date',page.createdDate.slice(5).replace('-',' / '));dateHeading.setAttribute('aria-hidden','true');mobileList.appendChild(dateHeading);}var item=element('li','timeline-mobile-item');item.style.setProperty('--timeline-color',color(page));var button=element('button','timeline-mobile-node');button.type='button';button.dataset.pageId=page.id;button.setAttribute('aria-label',page.createdDate+' '+page.title+' '+(page.categoryLabel||page.category||'未分类'));button.appendChild(element('strong','',page.title));button.appendChild(element('span','',page.categoryLabel||page.category||'未分类'));button.addEventListener('click',function(){setFocus(page,true);});button.addEventListener('dblclick',function(){location.href=themed(page.href);});button.addEventListener('keydown',function(event){var listNow=visiblePages(),next;if(event.key==='Enter'){event.preventDefault();location.href=themed(page.href);}else if(event.key===' '){event.preventDefault();setFocus(page,true);}else if(event.key==='ArrowLeft'||event.key==='ArrowRight'){var at=visibleIndex(page,listNow);next=listNow[at+(event.key==='ArrowRight'?1:-1)];}else if(event.key==='ArrowUp'||event.key==='ArrowDown'){var peers=sameDateGroup(page,listNow),peerAt=visibleIndex(page,peers);next=peers[peerAt+(event.key==='ArrowDown'?1:-1)];}if(next){event.preventDefault();setFocus(next,true,true);}});item.appendChild(button);mobileItems.set(page.id,{item:item,button:button});mobileList.appendChild(item);});applyMobileFocus(pageMap.get(state.focus));}
 function applyMobileFocus(page){mobileItems.forEach(function(entry,id){entry.button.setAttribute('aria-pressed',page&&id===page.id?'true':'false');entry.item.classList.toggle('is-selected',!!page&&id===page.id);});if(!page||(innerWidth>820&&!timelineListMode)){mobileDetail.hidden=true;return;}var entry=mobileItems.get(page.id);if(!entry){mobileDetail.hidden=true;return;}if(mobileDetail.dataset.pageId!==page.id||mobileDetail.dataset.list!==mobileListSignature){mobileDetail.dataset.pageId=page.id;mobileDetail.dataset.list=mobileListSignature;mobileDetail.replaceChildren(detailContent(page,true));}entry.item.appendChild(mobileDetail);mobileDetail.hidden=false;}
@@ -7310,12 +8952,12 @@ function renderDesktop(){svgHost.textContent='';desktop=null;timelineListMode=fa
 var seenMonths=new Set();layer.selectAll('.timeline-month-axis .tick').filter(function(tick){var key=tick.getFullYear()+'-'+tick.getMonth();if(seenMonths.has(key))return true;seenMonths.add(key);return false;}).remove();
 var today=new Date((raw.today||'')+'T00:00:00');if(Number.isFinite(today.getTime())&&today>=new Date(min)&&today<=new Date(max)){var tx=scale(today);layer.append('line').attr('class','timeline-today-line').attr('x1',tx).attr('x2',tx).attr('y1',axisY-170).attr('y2',axisY+170);layer.append('text').attr('class','timeline-today-label').attr('x',tx).attr('y',axisY+28).attr('text-anchor','middle').text(d3.timeFormat('%m / %d')(today));}
 var relationLayer=layer.append('g').attr('class','timeline-relation-layer');var updateLayer=layer.append('g').attr('class','timeline-update-layer');var laneLast=[],nodeLayout=new Map(),lastDateX=-Infinity;pages.forEach(function(page){var x=scale(new Date(page.created*1000)),lane=0;while(lane<laneLast.length&&x-laneLast[lane]<140)lane+=1;if(lane===laneLast.length)laneLast.push(x);else laneLast[lane]=x;nodeLayout.set(page.id,{x:x,lane:lane,above:lane%2===0,y:axisY+(lane%2===0?-1:1)*(54+Math.floor(lane/2)*34),showDate:x-lastDateX>=44});if(x-lastDateX>=44)lastDateX=x;});if(laneLast.length>12){timelineListMode=true;document.body.classList.add('timeline-dense-list');svgHost.textContent='';applyMobileFocus(pageMap.get(state.focus));return;}var groups=layer.append('g').attr('class','timeline-nodes').selectAll('g').data(pages).enter().append('g').attr('class','timeline-node').attr('tabindex',0).attr('role','button').attr('aria-label',function(page){return page.title+'，创建于 '+page.createdDate+'，Space 选择，Enter 打开';});groups.each(function(page){var item=nodeLayout.get(page.id),group=d3.select(this).attr('transform','translate('+item.x+',0)').style('--timeline-color',color(page));group.append('line').attr('class','timeline-node-stem').attr('y1',axisY).attr('y2',item.y);group.append('circle').attr('class','timeline-node-dot').attr('cy',axisY).attr('r',5);group.append('circle').attr('class','timeline-node-category').attr('cy',item.y).attr('r',4);var text=group.append('text').attr('class','timeline-node-title').attr('text-anchor','middle').attr('y',item.above?item.y-12:item.y+20);var title=page.title||'未命名';group.append('title').text(page.createdDate+' '+title);text.text(title.length>10?title.slice(0,10)+'…':title);if(item.showDate)group.append('text').attr('class','timeline-node-date').attr('text-anchor','middle').attr('y',axisY+24).text(page.createdDate.slice(5).replace('-',' / '));});groups.on('click',function(event,page){event.stopPropagation();setFocus(page,true);}).on('dblclick',function(event,page){event.stopPropagation();location.href=themed(page.href);}).on('mouseenter',function(event,page){tooltip.textContent=page.createdDate+' · '+page.title;tooltip.hidden=false;var rect=canvas.getBoundingClientRect();tooltip.style.left=Math.min(rect.width-220,Math.max(12,event.clientX-rect.left+12))+'px';tooltip.style.top=Math.max(10,event.clientY-rect.top-42)+'px';}).on('mouseleave',function(){tooltip.hidden=true;}).on('blur',function(){tooltip.hidden=true;}).on('keydown',function(event,page){var list=visiblePages(),active=pageMap.get(state.focus),current=active&&matches(active)?active:page,at=visibleIndex(current,list),next;if(event.key==='Enter'){event.preventDefault();location.href=themed(current.href);}else if(event.key===' '){event.preventDefault();setFocus(current,true);}else if(event.key==='ArrowLeft'||event.key==='ArrowRight'){next=list[at+(event.key==='ArrowRight'?1:-1)];}else if(event.key==='ArrowUp'||event.key==='ArrowDown'){var peers=sameDateGroup(current,list),peerAt=visibleIndex(current,peers);next=peers[peerAt+(event.key==='ArrowDown'?1:-1)];}if(next){event.preventDefault();setFocus(next,true,true);}});svg.on('click',function(event){if(event.target===svg.node())clearFocus();});desktop={width:width,height:height,axisY:axisY,scale:scale,groups:groups,nodeLayout:nodeLayout,relationLayer:relationLayer,updateLayer:updateLayer};applyVisibility();applyFocus();}
-function scheduleDesktopGeometry(){if(innerWidth<=820||timelineListMode||!desktop)return;cancelAnimationFrame(coordinator.geometryFrame);coordinator.geometryFrame=requestAnimationFrame(function(){coordinator.geometryFrame=0;var nextWidth=Math.max(canvas.clientWidth||760,640),nextHeight=Math.max(canvas.clientHeight||500,500);if(Math.abs(nextWidth-desktop.width)<1&&Math.abs(nextHeight-desktop.height)<1)return;renderDesktop();bindDesktopKeyboard();});}
+function scheduleDesktopGeometry(){if(innerWidth<=820||timelineListMode||!desktop)return;cancelAnimationFrame(coordinator.geometryFrame);coordinator.geometryFrame=requestAnimationFrame(function(){coordinator.geometryFrame=0;var nextWidth=Math.max(canvas.clientWidth||760,640),nextHeight=Math.max(canvas.clientHeight||500,500);if(Math.abs(nextWidth-desktop.width)<1&&Math.abs(nextHeight-desktop.height)<1)return;var activeId=activeTimelineFocusId();renderDesktop();bindDesktopKeyboard();var activeNode=activeId&&focusButton(activeId);if(activeNode)activeNode.focus({preventScroll:true});});}
 function bindDesktopKeyboard(){if(!desktop)return;desktop.groups.on('keydown',function(event,page){var list=visiblePages(),at=visibleIndex(page,list),next;if(event.key==='Enter'){event.preventDefault();location.href=themed(page.href);}else if(event.key===' '){event.preventDefault();setFocus(page,true);}else if(event.key==='ArrowLeft'||event.key==='ArrowRight'){next=list[at+(event.key==='ArrowRight'?1:-1)];}else if(event.key==='ArrowUp'||event.key==='ArrowDown'){var peers=sameDateGroup(page,list),peerAt=visibleIndex(page,peers);next=peers[peerAt+(event.key==='ArrowDown'?1:-1)];}if(next){event.preventDefault();setFocus(next,true,true);}});var svg=desktop.groups.node()&&desktop.groups.node().ownerSVGElement;if(svg)d3.select(svg).on('click',function(event){if(!event.target.closest||!event.target.closest('.timeline-node'))clearFocus();});}
 function drawRelations(page){if(!desktop)return;desktop.relationLayer.selectAll('*').remove();if(!page)return;var visibleIds=new Set(visiblePages().map(function(item){return item.id;}));edges.filter(function(edge){return visibleIds.has(edge.source)&&visibleIds.has(edge.target)&&(edge.source===page.id||edge.target===page.id);}).forEach(function(edge,index){var source=pageMap.get(edge.source),target=pageMap.get(edge.target),x1=desktop.scale(new Date(source.created*1000)),x2=desktop.scale(new Date(target.created*1000)),span=Math.abs(x2-x1),lift=58+Math.min(110,span*.22)+index*10;var path=span<12?'M'+(x1-5)+','+desktop.axisY+' C'+(x1-64)+','+(desktop.axisY-122)+' '+(x1+64)+','+(desktop.axisY-122)+' '+(x2+5)+','+desktop.axisY:'M'+x1+','+desktop.axisY+' Q'+((x1+x2)/2)+','+(desktop.axisY-lift)+' '+x2+','+desktop.axisY;desktop.relationLayer.append('path').attr('class','timeline-relation-arc').attr('d',path).attr('marker-end','url(#timeline-arrow)').attr('marker-start',edge.bidirectional?'url(#timeline-arrow)':null);});}
 function drawUpdate(page){if(!desktop)return;desktop.updateLayer.selectAll('*').remove();if(!page)return;var cx=desktop.scale(new Date(page.created*1000)),mx=desktop.scale(new Date(page.modified*1000));desktop.updateLayer.append('line').attr('class','timeline-update-span').attr('x1',cx).attr('x2',mx).attr('y1',desktop.axisY).attr('y2',desktop.axisY);desktop.updateLayer.append('circle').attr('class','timeline-update-dot').attr('cx',mx).attr('cy',desktop.axisY).attr('r',6);desktop.updateLayer.append('text').attr('class','timeline-update-label').attr('x',mx).attr('y',desktop.axisY+44).attr('text-anchor','middle').text(page.createdDate===page.modifiedDate?'同日更新':'更新 '+page.modifiedDate.slice(5).replace('-',' / '));}
 function applyFocus(){var page=pageMap.get(state.focus),visible=visiblePages(),at=page?visibleIndex(page,visible):-1,nearIds=new Set(at<0?[]:visible.slice(Math.max(0,at-1),at+2).map(function(item){return item.id;})),relatedIds=new Set(page?[].concat(page.linksTo||[],page.linkedFrom||[]):[]);if(desktop){desktop.groups.classed('is-selected',function(item){return !!page&&item.id===page.id;}).classed('is-related',function(item){return relatedIds.has(item.id);}).classed('is-near',function(item){return !!page&&item.id!==page.id&&nearIds.has(item.id);}).classed('is-muted',function(item){return !!page&&item.id!==page.id&&!relatedIds.has(item.id)&&!nearIds.has(item.id);}).attr('aria-pressed',function(item){return page&&item.id===page.id?'true':'false';});drawRelations(page);drawUpdate(page);}focusCard.removeAttribute('data-page-id');var showInspector=!!page&&innerWidth>820&&!timelineListMode;if(timelineLayout)timelineLayout.classList.toggle('has-focus',showInspector);scheduleDesktopGeometry();if(!showInspector){focusCard.hidden=true;return;}var changed=focusCardBody.dataset.pageId!==page.id;focusCard.dataset.pageId=page.id;focusCard.setAttribute('aria-label','当前笔记：'+page.title);if(changed){focusCard.classList.add('is-changing');focusCardBody.dataset.pageId=page.id;focusCardBody.replaceChildren(detailContent(page,false));focusCard.scrollTop=0;requestAnimationFrame(function(){focusCard.classList.remove('is-changing');});}focusCard.hidden=false;}
-function applyVisibility(){var list=visiblePages(),ids=new Set(list.map(function(page){return page.id;}));if(desktop)desktop.groups.classed('is-filtered',function(page){return !ids.has(page.id);}).attr('aria-hidden',function(page){return ids.has(page.id)?null:'true';}).attr('tabindex',function(page){return ids.has(page.id)?0:-1;});var labels=[];if(state.category!=='*')labels.push(state.category);if(state.status!=='all')labels.push(state.status==='published'?'已发布':'草稿');if(state.query)labels.push('“'+state.query+'”');scopeSummary.textContent=labels.length?labels.join(' · '):'全部笔记';}
+function applyVisibility(){var list=visiblePages(),ids=new Set(list.map(function(page){return page.id;}));if(desktop)desktop.groups.classed('is-filtered',function(page){return !ids.has(page.id);}).attr('aria-hidden',function(page){return ids.has(page.id)?null:'true';}).attr('tabindex',function(page){return ids.has(page.id)?0:-1;});var labels=[];if(state.category!=='*')labels.push(state.category);if(state.query)labels.push('“'+state.query+'”');scopeSummary.textContent=labels.length?labels.join(' · '):'已发布笔记';}
 function announce(message,notice){var list=visiblePages(),text=message||list.length+' 个时间节点';matchStatus.textContent=text;if(filterResult)filterResult.textContent=text;scopeBar.classList.toggle('has-notice',!!notice);clearTimeout(window.__museumTimelineNotice);if(notice)window.__museumTimelineNotice=setTimeout(function(){scopeBar.classList.remove('has-notice');matchStatus.textContent=list.length+' 个时间节点';},2200);}
 function render(message){var selected=pageMap.get(state.focus),notice=message||'';if(selected&&!matches(selected)){state.focus='';writeUrl('replace');notice='筛选后已清除原选择';selected=null;}var list=visiblePages();focusCardBody.dataset.pageId='';mobileDetail.dataset.pageId='';renderFilters();applyVisibility();buildMobileList(list);bindDesktopKeyboard();applyFocus();applyMobileFocus(selected);renderIsolated();document.getElementById('timeline-total').textContent=String(pages.length).padStart(2,'0');announce(notice,!!notice);}
 function setFilterOpen(open,returnFocus){var mobile=innerWidth<=820,nextOpen=mobile&&open;if(nextOpen&&!filterOpen){filterScroll=scrollY;filterTrigger=document.activeElement;document.body.style.position='fixed';document.body.style.top=-filterScroll+'px';document.body.style.width='100%';}filterOpen=nextOpen;filterSheet.dataset.open=filterOpen?'true':'false';filterSheet.setAttribute('role',mobile?'dialog':'region');filterSheet.setAttribute('aria-hidden',mobile&&!filterOpen?'true':'false');filterSheet.setAttribute('aria-modal',filterOpen?'true':'false');filterSheet.inert=mobile&&!filterOpen;filterToggle.setAttribute('aria-expanded',filterOpen?'true':'false');filterBackdrop.hidden=!filterOpen;document.documentElement.classList.toggle('timeline-filter-open',filterOpen);if(filterOpen){var active=filterSheet.querySelector('.is-active');requestAnimationFrame(function(){(active||filterSheet).focus({preventScroll:true});});}else if(filterScroll!==null){var target=filterScroll;filterScroll=null;document.body.style.position='';document.body.style.top='';document.body.style.width='';window.scrollTo(0,target);requestAnimationFrame(function(){if(returnFocus!==false&&(filterTrigger||filterToggle))(filterTrigger||filterToggle).focus({preventScroll:true});filterTrigger=null;});}}
@@ -7325,8 +8967,8 @@ if(search)search.addEventListener('input',function(){state.query=search.value.tr
 document.addEventListener('pointerdown',function(){coordinator.inputMode='pointer';},true);
 document.addEventListener('keydown',function(event){coordinator.inputMode='keyboard';filterTabTrap(event);if(event.defaultPrevented)return;if(event.key==='Escape'){if(filterOpen){setFilterOpen(false,true);return;}if(state.focus){clearFocus();return;}}if(event.key==='/'&&!event.metaKey&&!event.ctrlKey&&!event.altKey&&!/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)){event.preventDefault();if(search)search.focus();}});
 document.addEventListener('keydown',function(event){if(event.defaultPrevented||filterOpen||!state.focus||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)||/^(INPUT|TEXTAREA|SELECT|BUTTON|A)$/.test(document.activeElement.tagName))return;var list=visiblePages(),current=pageMap.get(state.focus),next;if(event.key==='ArrowLeft'||event.key==='ArrowRight'){var at=visibleIndex(current,list);next=list[at+(event.key==='ArrowRight'?1:-1)];}else{var peers=sameDateGroup(current,list),peerAt=visibleIndex(current,peers);next=peers[peerAt+(event.key==='ArrowDown'?1:-1)];}if(next){event.preventDefault();setFocus(next,true,true);}});
-window.addEventListener('resize',function(){clearTimeout(window.__museumTimelineResize);window.__museumTimelineResize=setTimeout(function(){var nextMobile=innerWidth<=820;if(innerWidth===lastViewportWidth&&nextMobile===lastMobile)return;lastViewportWidth=innerWidth;lastMobile=nextMobile;var hadFocus=!!state.focus;if(filterOpen)setFilterOpen(false,false);renderDesktop();buildMobileList(visiblePages());bindDesktopKeyboard();applyFocus();applyMobileFocus(pageMap.get(state.focus));if(hadFocus)scheduleTimelineUpdate({scrollFocus:true});},140);});
-window.addEventListener('popstate',function(event){var next=new URLSearchParams(location.search);state.query=(next.get('q')||'').trim().toLowerCase();state.category=next.get('category')||'*';state.status=next.get('status')||'all';state.focus=next.get('focus')||'';if(!categories.includes(state.category))state.category='*';if(!['all','published','draft'].includes(state.status))state.status='all';if(!pageMap.has(state.focus))state.focus='';if(search)search.value=state.query;render();if(state.focus)scheduleTimelineUpdate({scrollFocus:true,focusControl:true});else if(event.state&&Number.isFinite(event.state.scrollY))requestAnimationFrame(function(){scrollToPosition(event.state.scrollY);});});
+window.addEventListener('resize',function(){clearTimeout(window.__museumTimelineResize);window.__museumTimelineResize=setTimeout(function(){var nextMobile=innerWidth<=820;if(innerWidth===lastViewportWidth&&nextMobile===lastMobile)return;lastViewportWidth=innerWidth;lastMobile=nextMobile;var hadFocus=!!state.focus,focusedId=activeTimelineFocusId();if(filterOpen)setFilterOpen(false,false);renderDesktop();buildMobileList(visiblePages());bindDesktopKeyboard();applyFocus();applyMobileFocus(pageMap.get(state.focus));if(hadFocus)scheduleTimelineUpdate({scrollFocus:true,focusControl:focusedId===state.focus});},140);});
+window.addEventListener('popstate',function(event){var next=new URLSearchParams(location.search);state.query=(next.get('q')||'').trim().toLowerCase();state.category=next.get('category')||'*';state.status='all';state.focus=next.get('focus')||'';if(!categories.includes(state.category))state.category='*';if(!pageMap.has(state.focus))state.focus='';if(search)search.value=state.query;render();if(state.focus)scheduleTimelineUpdate({scrollFocus:true,focusControl:true});else if(event.state&&Number.isFinite(event.state.scrollY))requestAnimationFrame(function(){scrollToPosition(event.state.scrollY);});});
 renderFilters();renderDesktop();render();setFilterOpen(false,false);if(state.focus){scheduleTimelineUpdate({scrollFocus:true});window.addEventListener('load',function(){setTimeout(function(){scheduleTimelineUpdate({scrollFocus:true});},80);},{once:true});}
 })();
 </script>")
@@ -7346,10 +8988,10 @@ renderFilters();renderDesktop();render();setFilterOpen(false,false);if(state.foc
    (org-museum--build-topbar out-file 'timeline)
    (org-museum--generate-sidebar-html out-file)
    "<main id=\"main-content\" class=\"museum-timeline-shell\" tabindex=\"-1\">\n"
-   "  <header class=\"timeline-hero\"><p>TIME READING</p><h1>知识的长河</h1><span>按创建时间浏览，在选择中展开知识的更新轨迹</span></header>\n"
-   "  <section class=\"timeline-scope-bar\" aria-label=\"当前时间范围\"><button id=\"timeline-filter-toggle\" class=\"timeline-filter-toggle\" type=\"button\" aria-expanded=\"false\" aria-controls=\"timeline-filter-sheet\">筛选</button><strong class=\"timeline-scope-label\">时间范围</strong><span id=\"timeline-scope-summary\">全部笔记</span><span>/ <b id=\"timeline-total\">00</b></span><p id=\"timeline-match-status\" role=\"status\" aria-live=\"polite\">0 个时间节点</p></section>\n"
+   "  <header class=\"timeline-hero\"><p>时间阅读</p><h1>知识的长河</h1><span>按创建时间浏览已发布笔记，在选择中展开知识的更新轨迹</span></header>\n"
+   "  <section class=\"timeline-scope-bar\" aria-label=\"当前时间范围\"><button id=\"timeline-filter-toggle\" class=\"timeline-filter-toggle\" type=\"button\" aria-expanded=\"false\" aria-controls=\"timeline-filter-sheet\">筛选</button><strong class=\"timeline-scope-label\">时间范围</strong><span id=\"timeline-scope-summary\">已发布笔记</span><span>/ <b id=\"timeline-total\">00</b></span><p id=\"timeline-match-status\" role=\"status\" aria-live=\"polite\">0 个时间节点</p></section>\n"
    "  <div id=\"timeline-filter-backdrop\" class=\"timeline-filter-backdrop\" hidden></div>\n"
-   "  <aside id=\"timeline-filter-sheet\" class=\"timeline-filter-sheet\" aria-label=\"时间轴筛选\" aria-modal=\"false\" data-open=\"false\" role=\"dialog\" tabindex=\"-1\"><div class=\"timeline-filter-sheet-head\"><div><strong>筛选时间轨迹</strong><span id=\"timeline-filter-result\" role=\"status\" aria-live=\"polite\">0 个时间节点</span></div><button id=\"timeline-filter-close\" class=\"timeline-filter-close\" type=\"button\">完成</button></div><section><h3>主题</h3><div id=\"timeline-category-filters\" class=\"timeline-filter-list\"></div></section><section><h3>状态</h3><div id=\"timeline-status-filters\" class=\"timeline-filter-list\"></div></section></aside>\n"
+   "  <aside id=\"timeline-filter-sheet\" class=\"timeline-filter-sheet\" aria-label=\"时间轴筛选\" aria-modal=\"false\" data-open=\"false\" role=\"dialog\" tabindex=\"-1\"><div class=\"timeline-filter-sheet-head\"><div><strong>筛选时间轨迹</strong><span id=\"timeline-filter-result\" role=\"status\" aria-live=\"polite\">0 个时间节点</span></div><button id=\"timeline-filter-close\" class=\"timeline-filter-close\" type=\"button\">完成</button></div><section><h3>主题</h3><div id=\"timeline-category-filters\" class=\"timeline-filter-list\"></div></section><section><h3>数据边界</h3><p id=\"timeline-status-filters\" class=\"timeline-filter-note\">当前时间轴仅展示已发布笔记。</p></section></aside>\n"
    "  <div class=\"timeline-layout\">\n"
    "    <section class=\"timeline-workspace\" aria-label=\"知识时间轴\">\n"
    "      <div class=\"timeline-legend\"><span>● 创建</span><span>○ 选择后显示更新</span><span>↗ 显式 Org 链接</span></div>\n"
@@ -7386,10 +9028,13 @@ renderFilters();renderDesktop();render();setFilterOpen(false,false);if(state.foc
 
 ;;;###autoload
 (defun org-museum-export-timeline ()
-  "Generate the offline chronological-reading page."
+  "Generate the offline chronological-reading page.
+Interactive calls run in an isolated background Emacs process."
   (interactive)
-  (org-museum--run-with-current-runtime
-   'org-museum-export-timeline nil #'org-museum--export-timeline-current))
+  (if (called-interactively-p 'interactive)
+      (org-museum--start-background-job 'export-timeline nil)
+    (org-museum--run-with-current-runtime
+     'org-museum-export-timeline nil #'org-museum--export-timeline-current)))
 
 ;; ============================================================
 ;; §22  LOCAL KNOWLEDGE GRAPH  [Fix-07 + Fix-08]
@@ -7614,7 +9259,7 @@ Applicable scope: org-museum--generate-local-graph-html."
   <header class=\"graph-commandbar\">
     <div class=\"graph-commandbar-title\">
       <div class=\"museum-section-heading\"><h1>知识图谱</h1><span id=\"graph-heading-count\">/ 00</span></div>
-      <p>沿真实链接阅读，或整理尚未连接的笔记。</p>
+      <p>从笔记出发，沿真实关系继续阅读。</p>
     </div>
     <nav class=\"graph-mode-tabs\" aria-label=\"图谱工作模式\">
       <button type=\"button\" data-graph-view=\"relations\" aria-pressed=\"true\">关系阅读 <b id=\"graph-relation-count\">00</b></button>
@@ -7623,6 +9268,18 @@ Applicable scope: org-museum--generate-local-graph-html."
     <details class=\"graph-filter-summary\">
       <summary>范围 <span id=\"graph-filter-label\">全部主题</span></summary>
       <div id=\"graph-category-filters\"></div>
+    </details>
+    <label class=\"graph-relation-filter\">关系
+      <select id=\"graph-relation-filter\" aria-label=\"筛选关系类型\"><option value=\"*\">全部关系</option></select>
+    </label>
+    <details class=\"graph-layout-menu\">
+      <summary><i data-graph-icon=\"rows\"></i><span id=\"graph-layout-label\">拓扑语义层级流</span></summary>
+      <div class=\"graph-layout-panel\" aria-label=\"选择拓扑布局\">
+        <div class=\"graph-layout-panel-head\"><strong>拓扑布局</strong><small>选择一种结构，重新整理画布</small></div>
+        <label class=\"graph-layout-search-label\">搜索布局<input id=\"graph-layout-search\" type=\"search\" placeholder=\"搜索布局名称、用途…\" autocomplete=\"off\"></label>
+        <div id=\"graph-layout-categories\" class=\"graph-layout-categories\" aria-label=\"布局类别\"></div>
+        <div id=\"graph-layout-options\" class=\"graph-layout-options\"></div>
+      </div>
     </details>
     <dl class=\"graph-counts\" aria-label=\"图谱统计\">
       <div><dt>笔记</dt><dd id=\"stat-nodes\">00</dd></div>
@@ -7634,9 +9291,8 @@ Applicable scope: org-museum--generate-local-graph-html."
         <button type=\"button\" id=\"btn-zoom-in\" aria-label=\"放大图谱\"><i data-graph-icon=\"plus\"></i><span>放大</span></button>
         <button type=\"button\" id=\"btn-zoom-out\" aria-label=\"缩小图谱\"><i data-graph-icon=\"minus\"></i><span>缩小</span></button>
         <button type=\"button\" id=\"btn-reset\" aria-label=\"适配全部关系\"><i data-graph-icon=\"corners-out\"></i><span>适配</span></button>
-        <button type=\"button\" id=\"btn-center\" aria-label=\"居中当前节点\"><i data-graph-icon=\"crosshair\"></i><span>居中</span></button>
       </div>
-      <button type=\"button\" id=\"btn-layout\" aria-label=\"切换图谱布局方向，当前从左到右\" aria-pressed=\"false\"><i data-graph-icon=\"rows\"></i><span>从左到右</span></button>
+      <button type=\"button\" id=\"btn-layout\" aria-label=\"随机切换布局\"><i data-graph-icon=\"rows\"></i><span>随机切换布局</span></button>
     </div>
     <p id=\"graph-match-status\" role=\"status\" aria-live=\"polite\">匹配 00 个节点</p>
   </header>
@@ -7646,12 +9302,11 @@ Applicable scope: org-museum--generate-local-graph-html."
       <aside class=\"graph-relation-legend\" aria-label=\"关系类型图例\">
         <strong>关系类型</strong><ul id=\"graph-relation-legend\"></ul>
       </aside>
-      <svg id=\"graph-minimap\" aria-label=\"图谱缩略导航\" role=\"button\" tabindex=\"0\"></svg>
     </div>
     <div id=\"graph-zero-notice\" hidden>
       <strong>尚未形成知识连线</strong>
-      <span>在笔记中加入 <code>[[wiki:笔记ID][标题]]</code> 即可创建关系。</span>
-      <button type=\"button\" id=\"graph-zero-copy\">复制第一条 Wiki 链接</button>
+      <span>选择一篇笔记，可在详情中新增关系；正文里的 Wiki 链接也会自动进入图谱。</span>
+      <button type=\"button\" id=\"graph-zero-copy\">选择笔记</button>
     </div>
     <section id=\"graph-triage-panel\" class=\"graph-triage-panel\" data-legacy-hook=\"graph-isolated-fallback\" hidden aria-label=\"待连接笔记\">
       <header><div><strong>待连接笔记</strong><span>按主题审核并补充真实链接，不生成推测关系。</span></div><b id=\"graph-isolated-count\">00</b></header>
@@ -7673,14 +9328,11 @@ Applicable scope: org-museum--generate-local-graph-html."
         </header>
         <div class=\"graph-inspector-grid\">
           <section><h3>内容摘要</h3><p id=\"graph-selected-description\"></p><dl id=\"graph-selected-facts\"></dl></section>
-          <section><h3>关系脉络</h3><div id=\"graph-neighbours\"></div></section>
+          <section><h3>阅读路径与依据</h3><div id=\"graph-neighbours\"></div></section>
         </div>
         <nav class=\"graph-inspector-actions\" aria-label=\"连续阅读操作\">
-          <button type=\"button\" id=\"graph-previous\">上一篇</button>
-          <button type=\"button\" id=\"graph-next\">下一篇</button>
           <a id=\"graph-open-link\" href=\"index.html\">打开笔记</a>
           <a id=\"graph-related-link\" href=\"related.html\" hidden>关联阅读</a>
-          <a id=\"graph-timeline-link\" href=\"timeline.html\">时间线</a>
         </nav>
       </article>
       <ul id=\"graph-legend\" aria-label=\"主题图例\"></ul>
@@ -7688,9 +9340,13 @@ Applicable scope: org-museum--generate-local-graph-html."
   </section>
 </main>
 <script type=\"application/json\" id=\"graph-data\">%s</script>
+<script src=\"%s\"></script>
+<script src=\"%s\"></script>
+<script src=\"%s\"></script>
 <script>
 (function(){
 'use strict';
+if(window.orgMuseumGraphNetwork)return;
 var raw=JSON.parse(document.getElementById('graph-data').textContent);
 var nodes=(raw.nodes||[]).map(function(node){return Object.assign({},node);});
 var links=(raw.links||[]).map(function(link){return Object.assign({},link);});
@@ -7708,9 +9364,6 @@ var clearSelectionButton=document.getElementById('btn-clear-selection');
 var graphRelatedLink=document.getElementById('graph-related-link');
 var graphNeighbours=document.getElementById('graph-neighbours');
 var graphOpenLink=document.getElementById('graph-open-link');
-var graphTimelineLink=document.getElementById('graph-timeline-link');
-var graphPrevious=document.getElementById('graph-previous');
-var graphNext=document.getElementById('graph-next');
 var graphSelectedMeta=document.getElementById('graph-selected-meta');
 var graphSelectedTitle=document.getElementById('graph-selected-title');
 var graphSelectedTags=document.getElementById('graph-selected-tags');
@@ -7720,23 +9373,46 @@ var workspaceFooter=document.querySelector('.graph-workspace-footer');
 var footerAnchor=document.createComment('graph-inspector-anchor');
 if(workspaceFooter&&workspaceFooter.parentNode)workspaceFooter.parentNode.insertBefore(footerAnchor,workspaceFooter);
 var relationLegend=document.getElementById('graph-relation-legend');
-var minimap=document.getElementById('graph-minimap');
-var cats=Array.from(new Set(nodes.map(function(node){return node.group||'未分类';}))).sort();
+var relationFilter=document.getElementById('graph-relation-filter');
+var layoutMenu=document.getElementById('graph-layout-options');
+var layoutLabel=document.getElementById('graph-layout-label');
+var layoutSearch=document.getElementById('graph-layout-search');
+var layoutCategories=document.getElementById('graph-layout-categories');
+var cats=Array.from(new Set(nodes.map(function(node){return node.group||'';}).filter(Boolean))).sort();
 var relationTypes=Array.from(new Set(links.map(function(edge){return edge.type||'显式链接';}))).sort();
 var graphParams=new URLSearchParams(location.search);
 var focusId=graphParams.get('focus')||'';
 var requestedCategory=graphParams.get('category')||'*';
+var requestedRelation=graphParams.get('relation')||'*';
+var layoutModes={
+  semantic:{label:'拓扑语义层级流',category:'hierarchical',hint:'按有向关系分层，适合依赖与知识演进'},
+  dagre:{label:'Dagre 严格分层',category:'hierarchical',hint:'按前置关系分层并调整行序，减少交叉'},
+  treeVertical:{label:'纵向层级树',category:'hierarchical',hint:'从上到下展开主干和分支'},
+  treeHorizontal:{label:'横向层级树',category:'hierarchical',hint:'从左到右阅读长链路'},
+  organic:{label:'有机力导向',category:'network',hint:'引力与斥力呈现自然关系网络'},
+  clusteredForce:{label:'社区重心极坐标',category:'network',hint:'按关联社群聚拢，社群沿环分布'},
+  groupedCircular:{label:'分组环形',category:'network',hint:'按笔记主题形成多个关系环'},
+  concentric:{label:'同心圆同轴径向',category:'radial',hint:'核心节点居中，关系距离向外展开'},
+  starburst:{label:'星系辐射',category:'radial',hint:'从关系枢纽向周围发散'},
+  dandelion:{label:'蒲公英扇形径向',category:'radial',hint:'按主题分扇区，从核心向外展开'},
+  spoke:{label:'轮辐辐射骨架',category:'radial',hint:'均匀分布直接分支和外围节点'},
+  grid:{label:'同质正交网格',category:'grid',hint:'规则排列，适合均匀扫描笔记'}
+};
+var layoutCategoryNames={hierarchical:'层级结构',network:'网状结构',radial:'辐射结构',grid:'网格结构'};
+var storedLayout='semantic';
+try{storedLayout=localStorage.getItem('org-museum-graph-layout')||'semantic';}catch(_layoutModeError){}
+if(!layoutModes[storedLayout])storedLayout='semantic';
 var requestedView=graphParams.get('view')||'relations';
 var focusIsValid=!focusId||nodes.some(function(node){return node.id===focusId;});
 var categoryIsValid=requestedCategory==='*'||cats.indexOf(requestedCategory)>=0;
+var relationIsValid=requestedRelation==='*'||relationTypes.indexOf(requestedRelation)>=0;
 var viewIsValid=requestedView==='relations'||requestedView==='triage';
-var graphUrlNeedsCleanup=!focusIsValid||!categoryIsValid||!viewIsValid;
-var state={query:'',category:'*',view:viewIsValid?requestedView:'relations',selectedId:
+var graphUrlNeedsCleanup=!focusIsValid||!categoryIsValid||!relationIsValid||!viewIsValid;
+var state={query:'',category:'*',relation:relationIsValid?requestedRelation:'*',layout:storedLayout,
+  view:viewIsValid?requestedView:'relations',selectedId:
   focusIsValid?focusId:''};
 state.query=(graphParams.get('q')||'').trim().toLowerCase();
 state.category=categoryIsValid?requestedCategory:'*';
-var simulation=null;
-var frozen=false;
 var graphReady=false;
 var isZeroLinkGraph=links.length===0;
 var isolatedNodes=nodes.filter(function(node){return (node.degree||0)===0;});
@@ -7744,28 +9420,20 @@ var canvasNodes=isZeroLinkGraph?[]:nodes.filter(function(node){return (node.degr
 var compactRelationMode=canvasNodes.length>0&&canvasNodes.length<=4;
 var hasIsolatedNodes=isolatedNodes.length>0;
 if(focusId&&state.view==='relations'&&isolatedNodes.some(function(node){return node.id===focusId;}))state.view='triage';
-var charge=Number(meta.charge);
-var alphaDecay=Number(meta['alpha-decay']);
-var tickLimit=meta['tick-limit']===false?0:Number(meta['tick-limit']);
-var preTicks=meta['pre-ticks']===false?0:Number(meta['pre-ticks']);
-var tickCount=0;
 var motionQuery=window.matchMedia('(prefers-reduced-motion: reduce)');
 var mobileGraphMedia=window.matchMedia('(max-width:820px)');
 var reduceMotion=motionQuery.matches;
 if(selectedDetail)selectedDetail.hidden=true;
-if(!Number.isFinite(charge))charge=-240;
-if(!Number.isFinite(alphaDecay)||alphaDecay<=0)alphaDecay=0.0228;
-if(!Number.isFinite(tickLimit)||tickLimit<0)tickLimit=0;
-if(!Number.isFinite(preTicks)||preTicks<0)preTicks=0;
 
 function count(value){return String(value).padStart(2,'0');}
-function categoryLabel(value){return value==='AIL'?'AI':value==='Sql'?'SQL':value;}
+function categoryLabel(value){return value==='AIL'?'AI':value==='Sql'?'SQL':(value||'');}
 if(search)search.value=state.query;
 function writeGraphUrl(mode){
   var url=new URL(location.href);
-  ['q','category','focus','view'].forEach(function(key){url.searchParams.delete(key);});
+  ['q','category','relation','focus','view'].forEach(function(key){url.searchParams.delete(key);});
   if(state.query)url.searchParams.set('q',state.query);
   if(state.category!=='*')url.searchParams.set('category',state.category);
+  if(state.relation!=='*')url.searchParams.set('relation',state.relation);
   if(state.selectedId)url.searchParams.set('focus',state.selectedId);
   if(state.view==='triage')url.searchParams.set('view','triage');
   history[mode==='push'?'pushState':'replaceState'](
@@ -7798,6 +9466,7 @@ else if(mobileGraphMedia.addListener)
   mobileGraphMedia.addListener(syncFilterSummary);
 
 function color(group){
+  if(!group)return 'var(--museum-ink-muted)';
   var index=Math.max(0,cats.indexOf(group));
   return window.orgMuseumCategoryColor?window.orgMuseumCategoryColor(group):
     palette[index%%palette.length]||'var(--museum-ink-muted)';
@@ -7857,9 +9526,20 @@ function formatDate(seconds){
   return new Date(Number(seconds)*1000).toLocaleDateString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit'});
 }
 function matches(node){
+  if(!node)return false;
   var catOk=state.category==='*'||node.group===state.category;
   var hay=[node.name,node.group].concat(node.tags||[]).join(' ').toLowerCase();
-  return catOk&&(!state.query||hay.indexOf(state.query)>=0);
+  var relationOk=state.relation==='*'||links.some(function(edge){
+    return edge.type===state.relation&&
+      ((edge.source.id||edge.source)===node.id||(edge.target.id||edge.target)===node.id);
+  });
+  return catOk&&relationOk&&(!state.query||hay.indexOf(state.query)>=0);
+}
+function visibleEdge(edge){
+  if(state.relation!=='*'&&edge.type!==state.relation)return false;
+  var source=nodes.find(function(node){return node.id===(edge.source.id||edge.source);});
+  var target=nodes.find(function(node){return node.id===(edge.target.id||edge.target);});
+  return matches(source)&&matches(target);
 }
 function visibleModeNodes(){
   var source=state.view==='triage'?(isZeroLinkGraph?nodes:isolatedNodes):canvasNodes;
@@ -7900,17 +9580,20 @@ function renderFallbackList(){
   var visible=candidates.filter(matches);
   if(listRoot){
     listRoot.textContent='';
-    cats.forEach(function(cat){
-      var groupNodes=visible.filter(function(node){return (node.group||'未分类')===cat;});
+    cats.concat(visible.some(function(node){return !node.group;})?['']:[]).forEach(function(cat){
+      var groupNodes=visible.filter(function(node){return (node.group||'')===cat;});
       if(!groupNodes.length)return;
       var section=document.createElement('section');section.className='graph-isolated-group';
-      var heading=document.createElement('h3');heading.textContent=categoryLabel(cat)+' · '+count(groupNodes.length);
+      var heading=document.createElement('h3');
+      heading.textContent=cat?categoryLabel(cat)+' · '+count(groupNodes.length):'';
+      if(!cat)heading.hidden=true;
       var grid=document.createElement('div');grid.className='graph-isolated-grid';
       groupNodes.forEach(function(node){
         var row=document.createElement('article');row.dataset.status=node.status||'published';row.dataset.nodeId=node.id;
         var link=document.createElement('a');link.href=themed(node.url||'index.html');link.textContent=node.name;
         var meta=document.createElement('small');
-        meta.textContent=categoryLabel(node.group||'未分类')+' · '+(node.status==='draft'?'草稿':'已发布')+' · 更新 '+formatDate(node.modified);
+        meta.textContent=(node.group?categoryLabel(node.group)+' · ':'')+
+          (node.status==='draft'?'草稿':'已发布')+' · 更新 '+formatDate(node.modified);
         var actions=document.createElement('div');actions.className='graph-isolated-actions';
         var summary=document.createElement('p');summary.className='graph-isolated-summary';summary.hidden=true;
         summary.textContent=(node.description||'').trim()||'这篇笔记尚未提供摘要。';
@@ -7930,7 +9613,7 @@ function renderFallbackList(){
           connect.className='graph-curation-action';connect.addEventListener('click',function(){
             window.orgMuseumCuration.openRelation({sourceId:node.id,sourceTitle:node.name,
               targets:nodes.map(function(candidate){return {id:candidate.id,title:candidate.name,
-                category:categoryLabel(candidate.group||'未分类')};})});
+                category:categoryLabel(candidate.group)};})});
           });actions.appendChild(connect);
         }
         row.appendChild(link);row.appendChild(meta);row.appendChild(summary);row.appendChild(actions);grid.appendChild(row);
@@ -7959,6 +9642,58 @@ function setCategory(value){
   if(graphReady)applyFilter();
   if(hasIsolatedNodes||!graphReady)renderFallbackList();
 }
+if(relationFilter){
+  relationTypes.forEach(function(type){
+    var option=document.createElement('option');option.value=type;option.textContent=type;
+    relationFilter.appendChild(option);
+  });
+  relationFilter.value=state.relation;
+  relationFilter.addEventListener('change',function(){
+    state.relation=relationFilter.value;
+    if(state.selectedId&&!matches(nodes.find(function(node){return node.id===state.selectedId;})))
+      clearSelection(false,true);
+    writeGraphUrl('push');
+    if(graphReady)applyFilter();
+    if(hasIsolatedNodes)renderFallbackList();
+  });
+}
+var layoutCategory='*';
+function renderLayoutOptions(){
+  if(!layoutMenu)return;
+  var query=layoutSearch?layoutSearch.value.trim().toLowerCase():'';
+  layoutMenu.textContent='';
+  if(layoutCategories){
+    layoutCategories.textContent='';
+    ['*','hierarchical','network','radial','grid'].forEach(function(category){
+      var button=document.createElement('button');
+      var count=category==='*'?Object.keys(layoutModes).length:Object.keys(layoutModes).filter(function(key){return layoutModes[key].category===category;}).length;
+      button.type='button';button.textContent=(layoutCategoryNames[category]||'全部')+' '+count;
+      button.setAttribute('aria-pressed',category===layoutCategory?'true':'false');
+      button.addEventListener('click',function(){layoutCategory=category;renderLayoutOptions();});
+      layoutCategories.appendChild(button);
+    });
+  }
+  var matchesLayout=Object.keys(layoutModes).filter(function(key){
+    var mode=layoutModes[key];
+    return (layoutCategory==='*'||mode.category===layoutCategory)&&
+      (!query||(mode.label+' '+mode.hint+' '+layoutCategoryNames[mode.category]).toLowerCase().includes(query));
+  });
+  matchesLayout.forEach(function(key){
+    var mode=layoutModes[key],button=document.createElement('button');
+    button.type='button';button.dataset.layout=key;
+    button.setAttribute('aria-pressed',key===state.layout?'true':'false');
+    var caption=document.createElement('span');caption.className='graph-layout-caption';
+    var title=document.createElement('strong');title.textContent=mode.label;
+    var group=document.createElement('em');group.textContent=layoutCategoryNames[mode.category];
+    var hint=document.createElement('small');hint.textContent=mode.hint;
+    caption.appendChild(title);caption.appendChild(group);button.appendChild(caption);button.appendChild(hint);
+    button.addEventListener('click',function(){setLayoutMode(key);});
+    layoutMenu.appendChild(button);
+  });
+  if(!matchesLayout.length){var empty=document.createElement('p');empty.textContent='没有匹配的布局';layoutMenu.appendChild(empty);}
+  if(layoutLabel)layoutLabel.textContent=layoutModes[state.layout].label;
+}
+if(layoutSearch)layoutSearch.addEventListener('input',renderLayoutOptions);
 function renderFilters(){
   var root=document.getElementById('graph-category-filters');
   var items=[{name:'*',label:'全部',count:nodes.length}].concat(
@@ -8006,34 +9741,42 @@ function openNode(node){
 function renderNeighbourList(node){
   if(!graphNeighbours)return;
   graphNeighbours.textContent='';graphNeighbours.hidden=false;
-  [['出链 · 当前 → 目标',node.linksTo||[],true],
-   ['入链 · 来源 → 当前',node.linkedFrom||[],false]]
-    .forEach(function(group){
-      var section=document.createElement('section');
-      var heading=document.createElement('strong');heading.textContent=group[0];
-      var list=document.createElement('ul');
-      if(!group[1].length){
-        var empty=document.createElement('li');empty.textContent='无';list.appendChild(empty);
-      }
-      group[1].forEach(function(id){
-        var neighbour=nodes.find(function(item){return item.id===id;});
-        if(!neighbour)return;
-        var item=document.createElement('li');var choose=document.createElement('button');
-        var edge=links.find(function(candidate){
-          var source=candidate.source.id||candidate.source,target=candidate.target.id||candidate.target;
-          if(candidate.bidirectional)
-            return (source===node.id&&target===id)||(source===id&&target===node.id);
-          return group[2]?(source===node.id&&target===id):
-            (source===id&&target===node.id);
-        });
-        choose.type='button';choose.textContent=neighbour.name;
-        choose.addEventListener('click',function(){selectNode(neighbour,true);});
-        var badge=document.createElement('span');badge.className='graph-relation-badge';
-        badge.textContent=edge&&edge.type?edge.type:'显式链接';
-        item.appendChild(choose);item.appendChild(badge);list.appendChild(item);
-      });
-      section.appendChild(heading);section.appendChild(list);graphNeighbours.appendChild(section);
+  var groups=[['前置 / 基础',[]],['延伸阅读',[]],['反向链接',[]],['相互关联',[]]];
+  links.forEach(function(edge){
+    var source=edge.source.id||edge.source,target=edge.target.id||edge.target;
+    if(source!==node.id&&target!==node.id)return;
+    var outgoing=source===node.id,otherId=outgoing?target:source;
+    var other=nodes.find(function(entry){return entry.id===otherId;});
+    if(!other)return;
+    var label=edge.type||'显式链接';
+    var prerequisite=/(前置|先修|基础|依赖|prereq|requires)/i.test(label);
+    var group=edge.bidirectional?groups[3]:prerequisite?groups[0]:outgoing?groups[1]:groups[2];
+    group[1].push({other:other,label:label,outgoing:outgoing});
+  });
+  groups.forEach(function(group){
+    var section=document.createElement('section');section.className='graph-reading-group';
+    var heading=document.createElement('h4');heading.textContent=group[0]+' · '+group[1].length;
+    section.appendChild(heading);
+    if(!group[1].length){
+      var empty=document.createElement('p');empty.className='graph-reading-empty';
+      empty.textContent='暂无已记录关系';section.appendChild(empty);
+    }
+    group[1].sort(function(a,b){return a.other.name.localeCompare(b.other.name,'zh-CN');});
+    group[1].forEach(function(item){
+      var row=document.createElement('div');row.className='graph-reading-row';
+      var choose=document.createElement('button');choose.type='button';
+      choose.textContent=item.other.name;
+      choose.addEventListener('click',function(){selectNode(item.other,true);});
+      var open=document.createElement('a');open.href=themed(nodeHref(item.other));
+      open.textContent='打开正文';open.setAttribute('aria-label','打开'+item.other.name+'正文');
+      var evidence=document.createElement('small');
+      evidence.textContent=(item.outgoing?'本篇指向对方':'对方指向本篇')+
+        ' · '+(item.label==='显式链接'?'正文中的真实链接':'关系标注：'+item.label);
+      row.appendChild(choose);row.appendChild(open);row.appendChild(evidence);
+      section.appendChild(row);
     });
+    graphNeighbours.appendChild(section);
+  });
 }
 function appendFact(term,value){
   var dt=document.createElement('dt'),dd=document.createElement('dd');
@@ -8046,6 +9789,11 @@ function readingOrder(){
 }
 function selectNode(node,pushHistory){
   if(!node)return;
+  if(!matches(node)){
+    state.query='';state.category='*';state.relation='*';
+    if(search)search.value='';if(relationFilter)relationFilter.value='*';
+    syncGraphCategoryControls();
+  }
   if(workspaceFooter)workspaceFooter.hidden=false;
   var changed=state.selectedId!==node.id;
   state.selectedId=node.id;
@@ -8059,8 +9807,8 @@ function selectNode(node,pushHistory){
   if(selectedDetail)selectedDetail.hidden=false;
   if(selectionPrompt)selectionPrompt.hidden=true;
   placeGraphInspector(node);
-  graphSelectedMeta.textContent=String(nodes.indexOf(node)+1).padStart(2,'0')+
-    ' / '+categoryLabel(node.group||'未分类')+' / '+count(node.degree||0)+' 条关系';
+  graphSelectedMeta.textContent=(node.group?categoryLabel(node.group)+' · ':'')+
+    count(node.degree||0)+' 条直接关系';
   graphSelectedTitle.textContent=node.name||'未命名';
   graphSelectedDescription.textContent=(node.description||'').trim()||'这篇笔记尚未提供摘要，可打开正文继续阅读。';
   graphSelectedTags.textContent='';
@@ -8068,8 +9816,8 @@ function selectNode(node,pushHistory){
   graphSelectedFacts.textContent='';
   appendFact('创建',formatDate(node.created));appendFact('更新',formatDate(node.modified));
   appendFact('状态',node.status==='draft'?'草稿':'已发布');
+  appendFact('来源',node.id);
   graphOpenLink.href=themed(nodeHref(node));
-  graphTimelineLink.href=themed('timeline.html?focus='+encodeURIComponent(node.id));
   renderNeighbourList(node);
   var next=(node.linksTo||[])[0],previous=(node.linkedFrom||[])[0];
   if(graphRelatedLink){
@@ -8077,10 +9825,6 @@ function selectNode(node,pushHistory){
     if(next)graphRelatedLink.href=themed('related.html?source='+encodeURIComponent(node.id)+'&target='+encodeURIComponent(next));
     else if(previous)graphRelatedLink.href=themed('related.html?source='+encodeURIComponent(previous)+'&target='+encodeURIComponent(node.id));
   }
-  var order=readingOrder(),at=order.findIndex(function(entry){return entry.id===node.id;});
-  graphPrevious.disabled=at<=0;graphNext.disabled=at<0||at>=order.length-1;
-  graphPrevious.dataset.target=at>0?order[at-1].id:'';
-  graphNext.dataset.target=at>=0&&at<order.length-1?order[at+1].id:'';
   if(pushHistory&&changed)writeGraphUrl('push');else writeGraphUrl('replace');
   if(innerWidth<=820&&changed)requestAnimationFrame(function(){
     var top=selectedDetail.getBoundingClientRect().top,bottom=selectedDetail.getBoundingClientRect().bottom;
@@ -8123,10 +9867,8 @@ function navigateReading(button){
   if(node)selectNode(node,true);
 }
 if(clearSelectionButton)clearSelectionButton.addEventListener('click',function(){clearSelection(true);});
-if(graphPrevious)graphPrevious.addEventListener('click',function(){navigateReading(graphPrevious);});
-if(graphNext)graphNext.addEventListener('click',function(){navigateReading(graphNext);});
 
-renderFilters();renderLegend();
+renderFilters();renderLegend();renderLayoutOptions();
 if(hasIsolatedNodes)renderFallbackList();
 document.querySelectorAll('[data-graph-view]').forEach(function(button){
   button.addEventListener('click',function(){setGraphView(button.dataset.graphView,true);});
@@ -8164,23 +9906,60 @@ var height=canvas.clientHeight||760;
 var svg=d3.select(canvas).append('svg')
   .attr('viewBox','0 0 '+width+' '+height)
   .attr('role','group')
-  .attr('aria-label','Org Museum 知识图谱');
+  .attr('aria-label','Org Museum 知识图谱')
+  .style('display','block')
+  .style('width','100%%')
+  .style('height','100%%')
+  .style('pointer-events','all')
+  .style('cursor','grab');
+var bgCatcher=svg.append('rect')
+  .attr('class','graph-canvas-catcher')
+  .attr('width','100%%')
+  .attr('height','100%%')
+  .attr('fill','transparent')
+  .style('pointer-events','all')
+  .style('cursor','grab');
 var layer=svg.append('g');
 var defs=svg.append('defs');
 defs.append('marker').attr('id','graph-arrow').attr('viewBox','0 -5 10 10')
   .attr('refX',18).attr('refY',0).attr('markerWidth',6).attr('markerHeight',6)
   .attr('orient','auto-start-reverse').append('path').attr('d','M0,-5L10,0L0,5').attr('fill','context-stroke');
 var zoomScale=1;
-var zoom=d3.zoom().scaleExtent([0.35,5]).on('zoom',function(event){
+var zoom=d3.zoom().scaleExtent([0.1,5])
+  .wheelDelta(function(event){
+    return -event.deltaY * (event.deltaMode === 1 ? 0.05 : event.deltaMode ? 1 : 0.002);
+  })
+  .filter(function(event){
+    if(event.button === 2) return false;
+    if(event.type === 'wheel') return true;
+    return event.button === 0 || event.button === 1;
+  })
+  .on('zoom',function(event){
   zoomScale=event.transform.k;
   layer.attr('transform',event.transform);
   document.getElementById('btn-zoom-in').disabled=zoomScale>=4.999;
-  document.getElementById('btn-zoom-out').disabled=zoomScale<=0.351;
+  document.getElementById('btn-zoom-out').disabled=zoomScale<=0.101;
   layer.classed('graph-labels-dense',event.transform.k>=0.9);
+  if(nodeSelection){
+    nodeSelection.select('.graph-node-title').style('display',event.transform.k>=0.62?null:'none');
+    nodeSelection.select('.graph-node-category').style('display',event.transform.k>=0.95?null:'none');
+  }
+  if(linkLabelSelection){
+    linkLabelSelection.style('display',function(edge){
+      var source=edge.source.id||edge.source,target=edge.target.id||edge.target;
+      return event.transform.k>=1.05&&
+        (source===state.selectedId||target===state.selectedId||
+         source===hoveredId||target===hoveredId)?null:'none';
+    });
+  }
   // [UI-03] Keep graph-node pointer targets at least as large as the 44px UI baseline.
-  if(nodeSelection)nodeSelection.select('.graph-node-hit-target').attr('r',26/zoomScale);
+  if(nodeSelection)nodeSelection.select('.graph-node-hit-target')
+    .attr('r',Math.min(30,26/zoomScale));
 });
-svg.call(zoom);
+svg.call(zoom).on('dblclick.zoom',null);
+svg.on('mousedown.middle-prevent',function(event){
+  if(event.button === 1) event.preventDefault();
+});
 zoom.on('end.feedback',function(){announceGraph('缩放 '+Math.round(zoomScale*100)+'%%');});
 function zoomBy(factor){
   var action=function(){svg.call(zoom.scaleBy,factor);};
@@ -8203,11 +9982,12 @@ var nodeSelection=layer.append('g').attr('class','graph-nodes')
   .classed('is-isolated',function(node){return (node.degree||0)===0;})
   .attr('tabindex',0).attr('role','button').attr('aria-pressed','false')
   .attr('aria-label',function(node){
-    return (node.name||'未命名')+'，'+(node.group||'未分类')+'，'+
+    return (node.name||'未命名')+(node.group?'，'+node.group:'')+'，'+
       count(node.degree||0)+' 条关系'+(node.status==='draft'?'，草稿':'')+
       '，单击或 Space 选择，双击或 Enter 打开笔记';
   });
 graphReady=true;
+nodeSelection.append('title').text(function(node){return node.name||'未命名';});
 // [UI-03] A 23px radius survives SVG scaling while preserving a 44px touch target.
 nodeSelection.append('circle')
   .attr('class','graph-node-hit-target')
@@ -8222,15 +10002,20 @@ nodeSelection.append('circle')
   .attr('fill',function(node){return color(node.group);});
 function nodeLabelText(node){
   var name=node.name||'未命名';
-  var limit=width<600?12:22;
-  return name.length>limit?name.slice(0,limit)+'…':name;
+  var result='',units=0,letters=Array.from(name);
+  for(var i=0;i<letters.length;i+=1){
+    var next=letters[i].codePointAt(0)>127?2:1;
+    if(units+next>20)return result+'…';
+    result+=letters[i];units+=next;
+  }
+  return result;
 }
-nodeSelection.append('text').attr('x',14).attr('y',4)
+nodeSelection.append('text').attr('x',19).attr('y',1)
   .attr('class','graph-node-title')
   .text(nodeLabelText);
-nodeSelection.append('text').attr('x',14).attr('y',23)
+nodeSelection.append('text').attr('x',19).attr('y',20)
   .attr('class','graph-node-category')
-  .text(function(node){return categoryLabel(node.group||'未分类');});
+  .text(function(node){return categoryLabel(node.group);});
 function measureNodeLabels(){
   nodeSelection.select('text').text(nodeLabelText);
   nodeSelection.each(function(node){
@@ -8241,26 +10026,12 @@ function measureNodeLabels(){
 measureNodeLabels();
 
 function positionNodeLabels(){
-  nodeSelection.select('.graph-node-title')
-    .attr('x',function(node){return width<600?18:(node.x>width/2?-14:14);})
-    .attr('y',function(node){
-      if(width<600)return 4;
-      if(state.selectedId===node.id)return -16;
-      return 4;
-    })
-    .attr('text-anchor',function(node){return width<600?'start':(node.x>width/2?'end':'start');});
   nodeSelection.select('.graph-node-category')
-    .attr('x',function(node){return width<600?18:(node.x>width/2?-14:14);})
-    .attr('y',function(node){return width<600?22:22;})
-    .attr('text-anchor',function(node){return width<600?'start':(node.x>width/2?'end':'start');});
+    .style('display',function(node){return node.group?'':'none';});
 }
 function constrainNode(node){
-  var labelHalf=width<600?0:(node.labelWidth||0)/2;
-  var minX=width<600?32:Math.max(18,labelHalf+6);
-  var maxX=width<600?Math.max(minX,width-(node.labelWidth||0)-26):Math.max(minX,width-minX);
-  var minY=18,maxY=Math.max(minY,height-(width<600?30:18));
-  node.x=Math.max(minX,Math.min(maxX,node.x));
-  node.y=Math.max(minY,Math.min(maxY,node.y));
+  if(!Number.isFinite(node.x))node.x=0;
+  if(!Number.isFinite(node.y))node.y=0;
 }
 function renderTick(){
   canvasNodes.forEach(constrainNode);
@@ -8283,96 +10054,549 @@ function renderTick(){
     .attr('y',function(edge){var p=edgePoints(edge);return (p.source.y+p.target.y)/2+(width<600?-6:-10)+edgeOffset(edge,p);});
   nodeSelection.attr('transform',function(node){return 'translate('+node.x+','+node.y+')';});
   positionNodeLabels();
-  renderMinimap();
 }
-function renderMinimap(){
-  if(!minimap||innerWidth<1200||canvasNodes.length<8){if(minimap)minimap.hidden=true;return;}
-  minimap.hidden=false;
-  var mini=d3.select(minimap),mw=118,mh=76,pad=8;
-  mini.attr('viewBox','0 0 '+mw+' '+mh);mini.selectAll('*').remove();
-  var xs=canvasNodes.map(function(node){return node.x||0;}),ys=canvasNodes.map(function(node){return node.y||0;});
-  var x=d3.scaleLinear().domain([Math.min.apply(null,xs)-20,Math.max.apply(null,xs)+20]).range([pad,mw-pad]);
-  var y=d3.scaleLinear().domain([Math.min.apply(null,ys)-20,Math.max.apply(null,ys)+20]).range([pad,mh-pad]);
-  mini.append('g').selectAll('line').data(links).enter().append('line')
-    .attr('x1',function(edge){return x((edge.source.x||0));}).attr('y1',function(edge){return y((edge.source.y||0));})
-    .attr('x2',function(edge){return x((edge.target.x||0));}).attr('y2',function(edge){return y((edge.target.y||0));});
-  mini.append('g').selectAll('circle').data(canvasNodes).enter().append('circle')
-    .attr('cx',function(node){return x(node.x||0);}).attr('cy',function(node){return y(node.y||0);})
-    .attr('r',function(node){return state.selectedId===node.id?4:2.5;})
-    .attr('fill',function(node){return color(node.group);});
+var layoutStorageKey='org-museum-graph-positions:'+location.pathname+':'+state.layout;
+var manualPositions={};
+try{manualPositions=JSON.parse(localStorage.getItem(layoutStorageKey)||'{}')||{};}
+catch(_layoutReadError){manualPositions={};}
+function saveManualPositions(){
+  try{localStorage.setItem(layoutStorageKey,JSON.stringify(manualPositions));}
+  catch(_layoutWriteError){}
+}
+function fitView(ids){
+  var visible=canvasNodes.filter(function(node){return matches(node)&&(!ids||ids.has(node.id));});
+  if(!visible.length){svg.call(zoom.transform,d3.zoomIdentity);return;}
+  var xs=visible.map(function(node){return node.x||0;});
+  var ys=visible.map(function(node){return node.y||0;});
+  var minX=Math.min.apply(null,xs),maxX=Math.max.apply(null,xs);
+  var minY=Math.min.apply(null,ys),maxY=Math.max.apply(null,ys);
+  var centerX=(minX+maxX)/2,centerY=(minY+maxY)/2;
+  var marginX=90,marginY=55,safePad=32;
+  var bw=Math.max(maxX-minX+marginX*2,80);
+  var bh=Math.max(maxY-minY+marginY*2,80);
+  var availableW=Math.max(120,width-safePad*2);
+  var availableH=Math.max(120,height-safePad*2);
+  var scale=Math.max(0.1,Math.min(1.35,Math.min(availableW/bw,availableH/bh)));
+  var tx=width/2-centerX*scale;
+  var ty=height/2-centerY*scale;
+  svg.call(zoom.transform,d3.zoomIdentity.translate(tx,ty).scale(scale));
 }
 function applyAutoLayout(){
-  if(!compactRelationMode)return false;
-  var ordered=canvasNodes.slice();
-  if(width<600){
-    ordered.forEach(function(node,index){
-      var ratio=ordered.length===1?0.5:index/(ordered.length-1);
-      node.x=Math.min(62,width*.18);
-      node.y=height*(0.14+0.72*ratio);
-      node.fx=node.x;node.fy=node.y;
-    });
-    return true;
+  var visible=canvasNodes.filter(matches),positions=new Map();
+  if(!visible.length){renderTick();return false;}
+  var byId=new Map(visible.map(function(node){return [node.id,node];}));
+  var edges=links.filter(visibleEdge).map(function(edge){return {source:edge.source.id||edge.source,target:edge.target.id||edge.target,type:edge.type};})
+    .filter(function(edge){return byId.has(edge.source)&&byId.has(edge.target)&&edge.source!==edge.target;});
+  var adjacent=new Map(),outgoing=new Map(),incoming=new Map();
+  visible.forEach(function(node){adjacent.set(node.id,new Set());outgoing.set(node.id,new Set());incoming.set(node.id,new Set());});
+  edges.forEach(function(edge){
+    adjacent.get(edge.source).add(edge.target);adjacent.get(edge.target).add(edge.source);
+    outgoing.get(edge.source).add(edge.target);incoming.get(edge.target).add(edge.source);
+  });
+  function rank(a,b){
+    return adjacent.get(b.id).size-adjacent.get(a.id).size||
+      (a.group||'').localeCompare(b.group||'','zh-CN')||(a.name||'').localeCompare(b.name||'','zh-CN')||a.id.localeCompare(b.id);
   }
-  var span=Math.min(width*0.76,900),left=width/2-span/2;
-  ordered.forEach(function(node,index){
-    var ratio=ordered.length===1?0.5:index/(ordered.length-1);
-    node.x=left+span*ratio;
-    node.y=height/2+(ordered.length>2&&index%%2?42:-18);
-    node.fx=node.x;node.fy=node.y;
+  var ordered=visible.slice().sort(rank),cx=width/2,cy=height/2;
+  function put(node,x,y){positions.set(node.id,{x:x,y:y});}
+  function groupsOf(items,key){
+    var groups=new Map();
+    items.forEach(function(node){
+      var name=key(node);
+      if(!groups.has(name))groups.set(name,[]);
+      groups.get(name).push(node);
+    });
+    return Array.from(groups.values());
+  }
+
+  // 1. Cycle Breaking via DFS (from DuckDB Editor applyTopologicalFlowLayout)
+  var visited=new Set(),inStack=new Set(),backEdges=new Set();
+  function detectBackEdges(u){
+    visited.add(u);inStack.add(u);
+    var children=Array.from(outgoing.get(u)||[]).sort(function(a,b){return rank(byId.get(a),byId.get(b));});
+    children.forEach(function(v){
+      if(!visited.has(v))detectBackEdges(v);
+      else if(inStack.has(v))backEdges.add(u+'|'+v);
+    });
+    inStack.delete(u);
+  }
+  ordered.forEach(function(node){if(!visited.has(node.id))detectBackEdges(node.id);});
+
+  // 2. Longest-Path DAG Layering
+  function topologicalGroups(){
+    var dagInDeg=new Map(),ranks=new Map();
+    visible.forEach(function(node){
+      var deg=0;
+      (incoming.get(node.id)||[]).forEach(function(p){if(!backEdges.has(p+'|'+node.id))deg++;});
+      dagInDeg.set(node.id,deg);
+    });
+    var queue=ordered.filter(function(node){return (dagInDeg.get(node.id)||0)===0;}).map(function(node){return node.id;});
+    if(!queue.length&&visible.length)queue=[ordered[0].id];
+    queue.forEach(function(id){ranks.set(id,0);});
+    var cursor=0;
+    while(cursor<queue.length){
+      var u=queue[cursor++];
+      var rU=ranks.get(u)||0;
+      (outgoing.get(u)||[]).forEach(function(v){
+        if(backEdges.has(u+'|'+v))return;
+        var nextR=rU+1;
+        if(!ranks.has(v)||ranks.get(v)<nextR){
+          ranks.set(v,nextR);
+          queue.push(v);
+        }
+      });
+    }
+    visible.forEach(function(node){if(!ranks.has(node.id))ranks.set(node.id,0);});
+    var allRanks=Array.from(new Set(Array.from(ranks.values()))).sort(function(a,b){return a-b;});
+    var rankMap=new Map(allRanks.map(function(r,i){return [r,i];}));
+    var layers=Array.from({length:Math.max(allRanks.length,1)},function(){return [];});
+    visible.forEach(function(node){
+      var lIdx=rankMap.get(ranks.get(node.id))||0;
+      layers[lIdx].push(node);
+    });
+    return layers.filter(function(l){return l.length>0;});
+  }
+
+  // 3. Tree Depth Layering
+  function depthGroups(tree){
+    var depth=new Map(),todo=[],unseen=new Set(visible.map(function(node){return node.id;}));
+    while(unseen.size){
+      var root=ordered.find(function(node){return unseen.has(node.id)&&incoming.get(node.id).size===0;})||
+        ordered.find(function(node){return unseen.has(node.id);});
+      depth.set(root.id,0);unseen.delete(root.id);todo.push(root.id);
+      while(todo.length){
+        var id=todo.shift();
+        var next=tree?Array.from(outgoing.get(id)):Array.from(adjacent.get(id));
+        next.sort(function(a,b){return rank(byId.get(a),byId.get(b));});
+        next.forEach(function(other){
+          if(unseen.has(other)){unseen.delete(other);depth.set(other,depth.get(id)+1);todo.push(other);}
+        });
+      }
+    }
+    var result=[];
+    ordered.forEach(function(node){
+      var level=depth.get(node.id)||0;
+      if(!result[level])result[level]=[];
+      result[level].push(node);
+    });
+    return result.filter(Boolean);
+  }
+
+  // 4. Bi-directional Barycentric Crossing Minimization with Adjacent Transposition (from DuckDB Editor)
+  function minimizeCrossings(layers){
+    var K=layers.length;
+    if(K<=1)return layers;
+    for(var sweep=0;sweep<8;sweep++){
+      var forward=sweep%%2===0;
+      if(forward){
+        for(var layerIdx=1;layerIdx<K;layerIdx++){
+          var prevLayer=layers[layerIdx-1];
+          var prevPos=new Map(prevLayer.map(function(n,i){return [n.id,i];}));
+          layers[layerIdx].sort(function(a,b){
+            var predsA=Array.from(incoming.get(a.id)||[]).filter(function(id){return prevPos.has(id);});
+            var predsB=Array.from(incoming.get(b.id)||[]).filter(function(id){return prevPos.has(id);});
+            var bcA=predsA.length?predsA.reduce(function(s,id){return s+prevPos.get(id);},0)/predsA.length:layers[layerIdx].indexOf(a);
+            var bcB=predsB.length?predsB.reduce(function(s,id){return s+prevPos.get(id);},0)/predsB.length:layers[layerIdx].indexOf(b);
+            return bcA-bcB||rank(a,b);
+          });
+          var cur=layers[layerIdx];
+          for(var p=0;p<cur.length-1;p++){
+            var u=cur[p],v=cur[p+1];
+            var uPreds=Array.from(incoming.get(u.id)||[]).map(function(id){return prevPos.get(id);}).filter(function(x){return x!==undefined;});
+            var vPreds=Array.from(incoming.get(v.id)||[]).map(function(id){return prevPos.get(id);}).filter(function(x){return x!==undefined;});
+            var cb=0,ca=0;
+            uPreds.forEach(function(pu){vPreds.forEach(function(pv){if(pu>pv)cb++;if(pv>pu)ca++;});});
+            if(ca<cb){cur[p]=v;cur[p+1]=u;}
+          }
+        }
+      }else{
+        for(var layerIdx=K-2;layerIdx>=0;layerIdx--){
+          var nextLayer=layers[layerIdx+1];
+          var nextPos=new Map(nextLayer.map(function(n,i){return [n.id,i];}));
+          layers[layerIdx].sort(function(a,b){
+            var succsA=Array.from(outgoing.get(a.id)||[]).filter(function(id){return nextPos.has(id);});
+            var succsB=Array.from(outgoing.get(b.id)||[]).filter(function(id){return nextPos.has(id);});
+            var bcA=succsA.length?succsA.reduce(function(s,id){return s+nextPos.get(id);},0)/succsA.length:layers[layerIdx].indexOf(a);
+            var bcB=succsB.length?succsB.reduce(function(s,id){return s+nextPos.get(id);},0)/succsB.length:layers[layerIdx].indexOf(b);
+            return bcA-bcB||rank(a,b);
+          });
+          var cur=layers[layerIdx];
+          for(var p=0;p<cur.length-1;p++){
+            var u=cur[p],v=cur[p+1];
+            var uSuccs=Array.from(outgoing.get(u.id)||[]).map(function(id){return nextPos.get(id);}).filter(function(x){return x!==undefined;});
+            var vSuccs=Array.from(outgoing.get(v.id)||[]).map(function(id){return nextPos.get(id);}).filter(function(x){return x!==undefined;});
+            var cb=0,ca=0;
+            uSuccs.forEach(function(su){vSuccs.forEach(function(sv){if(su>sv)cb++;if(sv>su)ca++;});});
+            if(ca<cb){cur[p]=v;cur[p+1]=u;}
+          }
+        }
+      }
+    }
+    return layers;
+  }
+
+  // 5. Channel-aware layer coordinate placement
+  function placeLayers(layers,horizontal,barycentric){
+    if(barycentric)minimizeCrossings(layers);
+    var K=layers.length;
+    var maxSpan=1;
+    edges.forEach(function(e){
+      var lA=-1,lB=-1;
+      layers.forEach(function(grp,li){
+        if(grp.some(function(n){return n.id===e.source;}))lA=li;
+        if(grp.some(function(n){return n.id===e.target;}))lB=li;
+      });
+      if(lA>=0&&lB>=0)maxSpan=Math.max(maxSpan,Math.abs(lB-lA));
+    });
+    var channelGap=Math.min(70,(maxSpan-1)*16);
+    var layerSpacing=(horizontal?250:135)+channelGap;
+    var maxLayerLen=Math.max.apply(null,layers.map(function(l){return l.length;}));
+    var crossSpacing=horizontal?Math.max(85,Math.min(125,(height-120)/Math.max(1,maxLayerLen))):
+      Math.max(165,Math.min(235,(width-120)/Math.max(1,maxLayerLen)));
+
+    layers.forEach(function(group,level){
+      var totalCross=(group.length-1)*crossSpacing;
+      var startCross=(horizontal?cy:cx)-totalCross/2;
+      var startLevel=(horizontal?cx:cy)-((K-1)*layerSpacing)/2;
+      var levelPos=startLevel+level*layerSpacing;
+      group.forEach(function(node,index){
+        var crossPos=startCross+index*crossSpacing;
+        if(horizontal)put(node,levelPos,crossPos);
+        else put(node,crossPos,levelPos);
+      });
+    });
+  }
+
+  // 6. Category Affinity Matrix & Circular Spectral Ordering (from DuckDB Editor)
+  var catAffinity=new Map();
+  edges.forEach(function(e){
+    var nA=byId.get(e.source),nB=byId.get(e.target);
+    if(!nA||!nB)return;
+    var cA=nA.group||'其他',cB=nB.group||'其他';
+    if(cA!==cB){
+      var key=cA<cB?cA+'|'+cB:cB+'|'+cA;
+      catAffinity.set(key,(catAffinity.get(key)||0)+1);
+    }
   });
-  return true;
-}
-function syncGraphViewport(){
-  var nextWidth=canvas.clientWidth||width;
-  var nextHeight=canvas.clientHeight||height;
-  if(nextWidth===width&&nextHeight===height)return;
-  var scaleX=width?nextWidth/width:1;
-  var scaleY=height?nextHeight/height:1;
-  canvasNodes.forEach(function(node){
-    if(Number.isFinite(node.x))node.x*=scaleX;
-    if(Number.isFinite(node.y))node.y*=scaleY;
-    if(Number.isFinite(node.fx))node.fx*=scaleX;
-    if(Number.isFinite(node.fy))node.fy*=scaleY;
-  });
-  width=nextWidth;height=nextHeight;
-  svg.attr('viewBox','0 0 '+width+' '+height);
-  measureNodeLabels();
-  if(compactRelationMode){applyAutoLayout();renderTick();return;}
-  if(simulation){
-    simulation.force('center',d3.forceCenter(width/2,height/2));
-    simulation.force('x',d3.forceX(width/2).strength(0.035));
-    simulation.force('y',d3.forceY(height/2).strength(0.035));
-    if(reduceMotion){
-      simulation.alpha(.35).stop();
-      for(var resizeTick=0;resizeTick<40;resizeTick+=1)simulation.tick();
-      simulation.stop();
+  function orderCategoriesCirculary(categories){
+    if(categories.length<=2)return categories.slice();
+    var rem=new Set(categories);
+    var first=categories[0],bestCount=-1;
+    categories.forEach(function(cat){
+      var deg=0;
+      categories.forEach(function(other){
+        var key=cat<other?cat+'|'+other:other+'|'+cat;
+        deg+=catAffinity.get(key)||0;
+      });
+      if(deg>bestCount){bestCount=deg;first=cat;}
+    });
+    var orderedCats=[first];
+    rem.delete(first);
+    while(rem.size>0){
+      var curr=orderedCats[orderedCats.length-1];
+      var next=null,maxAff=-1;
+      rem.forEach(function(cand){
+        var key=curr<cand?curr+'|'+cand:cand+'|'+curr;
+        var aff=catAffinity.get(key)||0;
+        if(aff>maxAff){maxAff=aff;next=cand;}
+      });
+      if(!next||maxAff===0)next=Array.from(rem)[0];
+      orderedCats.push(next);
+      rem.delete(next);
+    }
+    return orderedCats;
+  }
+
+  function ring(items,x,y,r,start,span){
+    items.forEach(function(node,index){
+      var angle=start+span*index/Math.max(1,items.length);
+      put(node,x+Math.cos(angle)*r,y+Math.sin(angle)*r);
+    });
+  }
+
+  function forceLayout(){
+    ordered.forEach(function(node,index){
+      var angle=index*2.39996,r=50+Math.sqrt(index)*95;
+      put(node,cx+Math.cos(angle)*r,cy+Math.sin(angle)*r);
+    });
+    for(var step=0;step<140;step+=1){
+      var delta=new Map(ordered.map(function(node){return [node.id,{x:0,y:0}];}));
+      for(var i=0;i<ordered.length;i+=1)for(var j=i+1;j<ordered.length;j+=1){
+        var a=positions.get(ordered[i].id),b=positions.get(ordered[j].id),dx=b.x-a.x,dy=b.y-a.y;
+        var distance=Math.max(1,Math.hypot(dx,dy)),push=Math.min(20,9500/(distance*distance));
+        delta.get(ordered[i].id).x-=dx/distance*push;delta.get(ordered[i].id).y-=dy/distance*push;
+        delta.get(ordered[j].id).x+=dx/distance*push;delta.get(ordered[j].id).y+=dy/distance*push;
+      }
+      edges.forEach(function(edge){
+        var a=positions.get(edge.source),b=positions.get(edge.target),dx=b.x-a.x,dy=b.y-a.y;
+        var distance=Math.max(1,Math.hypot(dx,dy)),pull=(distance-220)*.014;
+        delta.get(edge.source).x+=dx/distance*pull;delta.get(edge.source).y+=dy/distance*pull;
+        delta.get(edge.target).x-=dx/distance*pull;delta.get(edge.target).y-=dy/distance*pull;
+      });
+      ordered.forEach(function(node){
+        var p=positions.get(node.id),d=delta.get(node.id);
+        p.x+=d.x*.45+(cx-p.x)*.002;p.y+=d.y*.45+(cy-p.y)*.002;
+      });
     }
   }
-  renderTick();
-}
-simulation=d3.forceSimulation(canvasNodes)
-    .force('charge',d3.forceManyBody().strength(charge))
-    .force('center',d3.forceCenter(width/2,height/2))
-    .force('x',d3.forceX(width/2).strength(0.035))
-    .force('y',d3.forceY(height/2).strength(0.035))
-    .force('collide',d3.forceCollide(links.length?58:42))
-    .alphaDecay(alphaDecay)
-    .stop();
-if(links.length)
-  simulation.force('link',d3.forceLink(links).id(function(node){return node.id;}).distance(130));
-  if(!applyAutoLayout()){
-    var layoutTicks=Math.max(preTicks,180);
-    for(var warmTick=0;warmTick<layoutTicks;warmTick+=1)simulation.tick();
+
+  function communities(){
+    var membership=new Map(ordered.map(function(node){return [node.id,node.id];}));
+    var total=Math.max(1,edges.length*2);
+    for(var pass=0;pass<10;pass+=1){
+      var changed=false;
+      var volumes=new Map();
+      ordered.forEach(function(node){var id=membership.get(node.id);volumes.set(id,(volumes.get(id)||0)+adjacent.get(node.id).size);});
+      ordered.forEach(function(node){
+        var degree=adjacent.get(node.id).size;if(!degree)return;
+        var current=membership.get(node.id),candidates=new Set([current]);
+        volumes.set(current,volumes.get(current)-degree);
+        adjacent.get(node.id).forEach(function(id){candidates.add(membership.get(id));});
+        var best=current,bestScore=-Infinity;
+        candidates.forEach(function(candidate){
+          var internal=Array.from(adjacent.get(node.id)).filter(function(id){return membership.get(id)===candidate;}).length;
+          var volume=volumes.get(candidate)||0;
+          var score=internal-degree*volume/total;
+          if(score>bestScore+1e-8||(Math.abs(score-bestScore)<1e-8&&candidate<best)){best=candidate;bestScore=score;}
+        });
+        volumes.set(best,(volumes.get(best)||0)+degree);
+        if(best!==current){membership.set(node.id,best);changed=true;}
+      });
+      if(!changed)break;
+    }
+    return groupsOf(ordered,function(node){return membership.get(node.id);});
   }
-  simulation.stop();frozen=true;
-  renderTick();
-  try{
-    nodeSelection.call(d3.drag().clickDistance(4)
-      .on('start',function(_event,node){node.fx=node.x;node.fy=node.y;})
-      .on('drag',function(event,node){node.fx=event.x;node.fy=event.y;if(reduceMotion){node.x=event.x;node.y=event.y;renderTick();}})
-      .on('drag.render',function(event,node){node.x=event.x;node.y=event.y;renderTick();})
-      .on('end',function(_event,node){node.fx=node.x;node.fy=node.y;}));
-  }catch(_dragError){canvas.classList.add('graph-drag-unavailable');}
+
+  var mode=state.layout;
+  if(mode==='semantic'){
+    // Semantic flow: left-to-right DAG topological flow with Sugiyama crossing reduction & channel routing
+    placeLayers(topologicalGroups(),true,true);
+  }else if(mode==='dagre'){
+    // Dagre: strict top-to-bottom DAG with crossing minimization
+    placeLayers(topologicalGroups(),false,true);
+  }else if(mode==='treeVertical'){
+    placeLayers(depthGroups(true),false,true);
+  }else if(mode==='treeHorizontal'){
+    placeLayers(depthGroups(true),true,true);
+  }else if(mode==='organic'){
+    forceLayout();
+  }else if(mode==='clusteredForce'||mode==='groupedCircular'){
+    // Community-Centric / Grouped Circular with Macro Circular Ordering
+    var isCluster=mode==='clusteredForce';
+    var rawGroups=isCluster?communities():groupsOf(ordered,function(node){return node.group||'其他';});
+    var groupKeys=rawGroups.map(function(g){return g[0].group||'其他';});
+    var orderedKeys=orderCategoriesCirculary(Array.from(new Set(groupKeys)));
+    var sortedGroups=rawGroups.slice().sort(function(a,b){
+      var kA=a[0].group||'其他',kB=b[0].group||'其他';
+      return orderedKeys.indexOf(kA)-orderedKeys.indexOf(kB);
+    });
+    var outerRadius=Math.max(260,sortedGroups.length*130);
+    sortedGroups.forEach(function(group,index){
+      var angle=2*Math.PI*index/sortedGroups.length-Math.PI/2;
+      var gx=cx+(sortedGroups.length===1?0:outerRadius*Math.cos(angle));
+      var gy=cy+(sortedGroups.length===1?0:outerRadius*Math.sin(angle));
+      var gRadius=isCluster?Math.max(75,Math.sqrt(group.length)*95):Math.max(115,group.length*44);
+      ring(group,gx,gy,gRadius,-Math.PI/2,2*Math.PI);
+    });
+  }else if(mode==='concentric'){
+    // DuckDB Editor concentric layout:
+    // Core center node at cx, cy. Surrounding categories ordered by affinity in sectors.
+    var hub=ordered[0];
+    put(hub,cx,cy);
+    var nonHub=ordered.filter(function(n){return n.id!==hub.id;});
+    var catsInGraph=orderCategoriesCirculary(Array.from(new Set(nonHub.map(function(n){return n.group||'其他';}))));
+    var catCount=Math.max(catsInGraph.length,1);
+    var sectorSpan=2*Math.PI/catCount;
+    catsInGraph.forEach(function(cat,catIdx){
+      var catNodes=nonHub.filter(function(n){return (n.group||'其他')===cat;});
+      var centerAngle=-Math.PI/2+catIdx*sectorSpan;
+      var baseR=Math.max(220,Math.min(width,height)*0.36);
+      var maxInRing=Math.max(3,Math.floor((sectorSpan*baseR)/155));
+      catNodes.forEach(function(node,i){
+        var ringIdx=Math.floor(i/maxInRing);
+        var inRing=i%%maxInRing;
+        var inRingCount=Math.min(maxInRing,catNodes.length-ringIdx*maxInRing);
+        var t=inRingCount<=1?0:(inRing-(inRingCount-1)/2)/(Math.max(1,inRingCount-1));
+        var angle=centerAngle+t*sectorSpan*0.75;
+        var r=baseR+ringIdx*130;
+        put(node,cx+Math.cos(angle)*r,cy+Math.sin(angle)*r);
+      });
+    });
+  }else if(mode==='starburst'){
+    // DuckDB Editor starburst layout:
+    // Core hub at cx, cy. Primary neighbors sorted by Hamiltonian greedy chain.
+    // Outlying descendants projected outward along parent ray.
+    var hub=ordered[0];
+    put(hub,cx,cy);
+    var primary=Array.from(adjacent.get(hub.id)).map(function(id){return byId.get(id);}).filter(Boolean);
+    var orderedPrimary=[];
+    if(primary.length>0){
+      var pRem=new Set(primary);
+      var pCurr=primary.slice().sort(rank)[0];
+      orderedPrimary.push(pCurr);pRem.delete(pCurr);
+      while(pRem.size>0){
+        var neighbors=adjacent.get(pCurr.id)||new Set();
+        var next=null;
+        for(var cand of pRem){if(neighbors.has(cand.id)){next=cand;break;}}
+        if(!next)next=Array.from(pRem)[0];
+        orderedPrimary.push(next);pRem.delete(next);pCurr=next;
+      }
+    }
+    var primarySet=new Set(orderedPrimary.map(function(n){return n.id;}));
+    var rest=ordered.filter(function(n){return n.id!==hub.id&&!primarySet.has(n.id);});
+    var pRadius=Math.max(210,orderedPrimary.length*40);
+    ring(orderedPrimary,cx,cy,pRadius,-Math.PI/2,2*Math.PI);
+    rest.forEach(function(node,index){
+      var parent=orderedPrimary.find(function(p){return adjacent.get(p.id).has(node.id);});
+      var anchor=parent?positions.get(parent.id):{x:cx,y:cy};
+      var angle=Math.atan2(anchor.y-cy,anchor.x-cx)+(index%%3-1)*0.32;
+      var dist=165+Math.floor(index/Math.max(1,orderedPrimary.length))*120+(index%%3)*35;
+      put(node,anchor.x+Math.cos(angle)*dist,anchor.y+Math.sin(angle)*dist);
+    });
+  }else if(mode==='dandelion'){
+    // DuckDB Editor dandelion layout:
+    // Core center. Category flower centers arranged circularly.
+    // Instances spread in multi-ring angular fans.
+    var hub=ordered[0];
+    put(hub,cx,cy);
+    var nonHub=ordered.filter(function(n){return n.id!==hub.id;});
+    var cats=orderCategoriesCirculary(Array.from(new Set(nonHub.map(function(n){return n.group||'其他';}))));
+    var catCount=Math.max(cats.length,1);
+    var sectorSize=2*Math.PI/catCount;
+    cats.forEach(function(cat,catIdx){
+      var items=nonHub.filter(function(n){return (n.group||'其他')===cat;});
+      var centerAngle=-Math.PI/2+catIdx*sectorSize;
+      var span=Math.max(sectorSize*0.68,Math.PI/4);
+      var maxPerRing=Math.max(2,Math.floor((span*260)/140));
+      items.forEach(function(node,j){
+        var ringIdx=Math.floor(j/maxPerRing);
+        var inRing=j%%maxPerRing;
+        var countInRing=Math.min(maxPerRing,items.length-ringIdx*maxPerRing);
+        var t=countInRing<=1?0:(inRing-(countInRing-1)/2)/Math.max(1,countInRing-1);
+        var angle=centerAngle+t*span*0.82;
+        var radius=220+ringIdx*120+(j%%2)*25;
+        put(node,cx+Math.cos(angle)*radius,cy+Math.sin(angle)*radius);
+      });
+    });
+  }else if(mode==='spoke'){
+    // DuckDB Editor spoke tree layout:
+    // Center-rooted tree with angle partitioning per subtree and outer satellite rings
+    var hub=ordered[0];
+    put(hub,cx,cy);
+    var visitedSpoke=new Set([hub.id]);
+    var children=Array.from(adjacent.get(hub.id)).map(function(id){return byId.get(id);}).filter(Boolean).sort(rank);
+    children.forEach(function(c){visitedSpoke.add(c.id);});
+    var branchCount=Math.max(children.length,1);
+    var baseAngle=-Math.PI/2;
+    var branchStep=2*Math.PI/branchCount;
+    var branchDist=Math.max(200,Math.min(width,height)*0.28);
+    children.forEach(function(child,bIdx){
+      var angle=baseAngle+bIdx*branchStep;
+      put(child,cx+Math.cos(angle)*branchDist,cy+Math.sin(angle)*branchDist);
+      var subChildren=Array.from(adjacent.get(child.id)).map(function(id){return byId.get(id);})
+        .filter(function(n){return n&&!visitedSpoke.has(n.id);}).sort(rank);
+      subChildren.forEach(function(sc,scIdx){
+        visitedSpoke.add(sc.id);
+        var spread=(scIdx-(subChildren.length-1)/2)*0.24;
+        var subAngle=angle+spread;
+        var subDist=branchDist+140;
+        put(sc,cx+Math.cos(subAngle)*subDist,cy+Math.sin(subAngle)*subDist);
+      });
+    });
+    var disconnected=ordered.filter(function(n){return !visitedSpoke.has(n.id);});
+    var satRadius=branchDist*1.95;
+    disconnected.forEach(function(node,dIdx){
+      var angle=baseAngle+((dIdx+0.5)/Math.max(disconnected.length,1))*2*Math.PI;
+      var ringIdx=Math.floor(dIdx/8);
+      put(node,cx+Math.cos(angle)*(satRadius+ringIdx*90),cy+Math.sin(angle)*(satRadius+ringIdx*90));
+    });
+  }else{
+    // Grid: orthogonal matrix sorted by category then rank with clean row/col spacing
+    var gridNodes=ordered.slice().sort(function(a,b){
+      return (a.group||'').localeCompare(b.group||'','zh-CN')||rank(a,b);
+    });
+    var cols=Math.max(1,Math.ceil(Math.sqrt(gridNodes.length*1.4)));
+    var colWidth=210,rowHeight=95;
+    var startX=cx-((cols-1)*colWidth)/2;
+    var rows=Math.ceil(gridNodes.length/cols);
+    var startY=cy-((rows-1)*rowHeight)/2;
+    gridNodes.forEach(function(node,index){
+      var c=index%%cols,r=Math.floor(index/cols);
+      put(node,startX+c*colWidth,startY+r*rowHeight);
+    });
+  }
+
+  visible.forEach(function(node){
+    var point=positions.get(node.id);
+    if(point){node.x=point.x;node.y=point.y;}
+  });
+  Object.keys(manualPositions).forEach(function(id){
+    var node=byId.get(id),saved=manualPositions[id];
+    if(node&&Number.isFinite(saved.x)&&Number.isFinite(saved.y)){node.x=saved.x;node.y=saved.y;}
+  });
+
+  // 7. Robust Overlap Prevention & Collision Relaxation (ensures label & node separation)
+  for(var iteration=0;iteration<visible.length*4;iteration+=1){
+    var moved=false;
+    for(var i=0;i<visible.length;i+=1)for(var j=i+1;j<visible.length;j+=1){
+      var a=visible[i],b=visible[j];
+      var dx=b.x-a.x,dy=b.y-a.y;
+      var reqX=Math.max(152,38+(a.labelWidth||100)/2+(b.labelWidth||100)/2);
+      var reqY=68;
+      var overlapX=reqX-Math.abs(dx);
+      var overlapY=reqY-Math.abs(dy);
+      if(overlapX>0&&overlapY>0){
+        var pinA=!!manualPositions[a.id],pinB=!!manualPositions[b.id];
+        if(pinA&&pinB)continue;
+        // Resolve along the axis with smaller intrusion
+        if(overlapY*1.8<overlapX){
+          var shiftY=overlapY+4;
+          if(pinA){b.y+=(dy>=0?shiftY:-shiftY);}
+          else if(pinB){a.y-=(dy>=0?shiftY:-shiftY);}
+          else{a.y-=(dy>=0?shiftY/2:-shiftY/2);b.y+=(dy>=0?shiftY/2:-shiftY/2);}
+        }else{
+          var shiftX=overlapX+6;
+          if(pinA){b.x+=(dx>=0?shiftX:-shiftX);}
+          else if(pinB){a.x-=(dx>=0?shiftX:-shiftX);}
+          else{a.x-=(dx>=0?shiftX/2:-shiftX/2);b.x+=(dx>=0?shiftX/2:-shiftX/2);}
+        }
+        moved=true;
+      }
+    }
+    if(!moved)break;
+  }
+  renderTick();fitView(activeNeighborhood);return true;
+}
+function setLayoutMode(mode){
+  if(!layoutModes[mode])return;
+  state.layout=mode;
+  try{localStorage.setItem('org-museum-graph-layout',mode);}catch(_layoutModeWriteError){}
+  layoutStorageKey='org-museum-graph-positions:'+location.pathname+':'+mode;
+  try{manualPositions=JSON.parse(localStorage.getItem(layoutStorageKey)||'{}')||{};}
+  catch(_layoutReadError){manualPositions={};}
+  if(layoutLabel)layoutLabel.textContent=layoutModes[mode].label;
+  renderLayoutOptions();
+  var details=layoutMenu&&layoutMenu.closest('details');if(details)details.open=false;
+  applyAutoLayout();announceGraph('已切换为 '+layoutModes[mode].label);
+}
+function syncGraphViewport(){
+  var nextWidth=canvas.clientWidth||width,nextHeight=canvas.clientHeight||height;
+  if(nextWidth===width&&nextHeight===height)return;
+  width=nextWidth;height=nextHeight;
+  svg.attr('viewBox','0 0 '+width+' '+height);
+  applyAutoLayout();
+}
+applyAutoLayout();
+try{
+  nodeSelection.call(d3.drag().clickDistance(4)
+    .on('start',function(_event,node){node.fx=node.x;node.fy=node.y;})
+    .on('drag',function(event,node){node.x=event.x;node.y=event.y;renderTick();})
+    .on('end',function(_event,node){
+      node.fx=node.x;node.fy=node.y;
+      manualPositions[node.id]={x:node.x,y:node.y};saveManualPositions();
+      applyAutoLayout();
+    }));
+}catch(_dragError){canvas.classList.add('graph-drag-unavailable');}
 try{
   if(window.ResizeObserver){
     var graphResizeObserver=new window.ResizeObserver(function(){syncGraphViewport();});
@@ -8380,7 +10604,7 @@ try{
   }else window.addEventListener('resize',syncGraphViewport);
 }catch(_resizeObserverError){window.addEventListener('resize',syncGraphViewport);}
 
-var activeNeighborhood=null;
+var activeNeighborhood=null,hoveredId='';
 function neighborhood(node){
   var ids=new Set([node.id]);
   links.forEach(function(link){
@@ -8390,45 +10614,64 @@ function neighborhood(node){
   });
   return ids;
 }
-function applyFilter(){
+function applyFilter(reflow){
   updateMatchStatus();
   if(!nodeSelection)return;
   nodeSelection
+    .style('display',function(node){return matches(node)?null:'none';})
     .classed('graph-node-neighbour',function(node){
       return !!activeNeighborhood&&activeNeighborhood.has(node.id);
     })
     .classed('is-context',function(node){
       return !!state.selectedId&&(!activeNeighborhood||!activeNeighborhood.has(node.id));
     })
-    .classed('is-dimmed',function(node){return !matches(node);});
-  function linkIsDimmed(link){
-    var source=link.source.id?link.source:nodes.find(function(node){return node.id===link.source;});
-    var target=link.target.id?link.target:nodes.find(function(node){return node.id===link.target;});
-    return !source||!target||!matches(source)||!matches(target);
-  }
+    .classed('is-dimmed',false);
   function linkIsFocused(link){
     var source=link.source.id||link.source,target=link.target.id||link.target;
-    return !!state.selectedId&&(source===state.selectedId||target===state.selectedId);
+    var focus=hoveredId||state.selectedId;
+    return !!focus&&(source===focus||target===focus);
   }
-  linkSelection.classed('is-dimmed',linkIsDimmed)
+  linkSelection.style('display',function(link){return visibleEdge(link)?null:'none';})
+    .classed('is-dimmed',false)
     .classed('is-focused',linkIsFocused)
     .classed('is-context',function(link){return !!state.selectedId&&!linkIsFocused(link);});
-  linkLabelSelection.classed('is-dimmed',linkIsDimmed)
+  linkLabelSelection.style('display',function(link){
+    var source=link.source.id||link.source,target=link.target.id||link.target;
+    return zoomScale>=1.05&&(source===state.selectedId||target===state.selectedId||
+      source===hoveredId||target===hoveredId)?null:'none';
+  })
+    .classed('is-dimmed',false)
     .classed('is-focused',linkIsFocused)
     .classed('is-context',function(link){return !!state.selectedId&&!linkIsFocused(link);});
+  if(reflow!==false)applyAutoLayout();
 }
 var tooltip=document.getElementById('graph-tooltip');
+linkSelection
+  .on('mouseenter',function(event,edge){
+    var source=nodes.find(function(node){return node.id===(edge.source.id||edge.source);});
+    var target=nodes.find(function(node){return node.id===(edge.target.id||edge.target);});
+    document.getElementById('tt-title').textContent=edge.type||'显式链接';
+    document.getElementById('tt-meta').textContent=(source?source.name:'')+' → '+(target?target.name:'');
+    tooltip.style.left=(event.clientX+16)+'px';tooltip.style.top=(event.clientY+16)+'px';
+    tooltip.classList.add('is-visible');
+  })
+  .on('mousemove',function(event){
+    tooltip.style.left=(event.clientX+16)+'px';tooltip.style.top=(event.clientY+16)+'px';
+  })
+  .on('mouseleave',function(){tooltip.classList.remove('is-visible');});
 nodeSelection
   .on('mouseenter',function(event,node){
     previewNode(node);
+    hoveredId=node.id;applyFilter(false);
     document.getElementById('tt-title').textContent=node.name;
-    document.getElementById('tt-meta').textContent=categoryLabel(node.group||'未分类')+' · '+count(node.degree||0)+' 条关系';
+    document.getElementById('tt-meta').textContent=(node.group?categoryLabel(node.group)+' · ':'')+count(node.degree||0)+' 条关系';
     tooltip.classList.add('is-visible');
   })
   .on('mousemove',function(event){
     tooltip.style.left=(event.clientX+16)+'px';tooltip.style.top=(event.clientY+16)+'px';
   })
   .on('mouseleave',function(){
+    hoveredId='';applyFilter(false);
     tooltip.classList.remove('is-visible');
     clearPreview();
   })
@@ -8440,38 +10683,19 @@ nodeSelection
     if(event.key==='Enter'){event.preventDefault();openNode(node);}
     else if(event.key===' '){event.preventDefault();selectNode(node,true);}
   });
-svg.on('click',function(event){if(event.target===svg.node()&&state.selectedId)clearSelection(true);});
+svg.on('click',function(event){if((event.target===svg.node()||(event.target&&event.target.classList&&event.target.classList.contains('graph-canvas-catcher')))&&state.selectedId)clearSelection(true);});
 
 document.getElementById('btn-reset').addEventListener('click',function(){
-  if(reduceMotion)svg.call(zoom.transform,d3.zoomIdentity);
-  else svg.transition().duration(180).call(zoom.transform,d3.zoomIdentity);
+  fitView(activeNeighborhood);
 });
-document.getElementById('btn-center').addEventListener('click',function(){
-  var node=canvasNodes.find(function(entry){return entry.id===state.selectedId;});
-  if(!node){document.getElementById('btn-reset').click();return;}
-  var transform=d3.zoomIdentity.translate(width/2-node.x,height/2-node.y);
-  if(reduceMotion)svg.call(zoom.transform,transform);else svg.transition().duration(180).call(zoom.transform,transform);
-});
-var linearLayout=false;
 function applyLayout(){
-  linearLayout=!linearLayout;
-  var button=document.getElementById('btn-layout');button.setAttribute('aria-pressed',linearLayout?'true':'false');
-  button.querySelector('span').textContent=linearLayout?'紧凑布局':'从左到右';
-  if(!linearLayout){canvasNodes.forEach(function(node){node.fx=null;node.fy=null;});simulation.alpha(1).stop();for(var tick=0;tick<180;tick+=1)simulation.tick();renderTick();return;}
-  var ordered=canvasNodes.slice().sort(function(a,b){return a.name.localeCompare(b.name,'zh-CN');});
-  var columns=Math.max(2,Math.ceil(Math.sqrt(ordered.length))),rows=Math.ceil(ordered.length/columns);
-  ordered.forEach(function(node,index){node.x=width*(index%%columns+.6)/columns;node.y=height*(Math.floor(index/columns)+.8)/(rows+.5);node.fx=node.x;node.fy=node.y;});
-  renderTick();
+  manualPositions={};saveManualPositions();
+  canvasNodes.forEach(function(node){node.fx=null;node.fy=null;});
+  applyAutoLayout();announceGraph('已重新布局');
 }
 document.getElementById('btn-layout').addEventListener('click',applyLayout);
-if(minimap){
-  var resetFromMinimap=function(){document.getElementById('btn-reset').click();};
-  minimap.addEventListener('click',resetFromMinimap);
-  minimap.addEventListener('keydown',function(event){if(event.key==='Enter'||event.key===' '){event.preventDefault();resetFromMinimap();}});
-}
 function syncMotionPreference(event){
   reduceMotion=event.matches;
-  simulation.stop();frozen=true;
 }
 syncMotionPreference(motionQuery);
 if(motionQuery.addEventListener)motionQuery.addEventListener('change',syncMotionPreference);
@@ -8489,6 +10713,10 @@ window.addEventListener('popstate',function(){
   var restoredCategory=params.get('category')||'*';
   state.category=restoredCategory==='*'||cats.indexOf(restoredCategory)>=0?
     restoredCategory:'*';
+  var restoredRelation=params.get('relation')||'*';
+  state.relation=restoredRelation==='*'||relationTypes.indexOf(restoredRelation)>=0?
+    restoredRelation:'*';
+  if(relationFilter)relationFilter.value=state.relation;
   state.view=params.get('view')==='triage'?'triage':'relations';
   state.selectedId=params.get('focus')||'';
   if(!nodes.some(function(node){return node.id===state.selectedId;}))state.selectedId='';
@@ -8512,6 +10740,18 @@ else if(initialSelectedNode)clearSelection(false);
      topbar
      (org-museum--generate-sidebar-html graph-file)
      safe-json
+     (or (org-museum--versioned-resource-href
+          (expand-file-name "resources/org-museum-graph-layout.js"
+                            (org-museum--shared-root)) graph-file)
+         "resources/org-museum-graph-layout.js")
+     (or (org-museum--versioned-resource-href
+          (expand-file-name "resources/org-museum-graph-edges.js"
+                            (org-museum--shared-root)) graph-file)
+         "resources/org-museum-graph-edges.js")
+     (or (org-museum--versioned-resource-href
+          (expand-file-name "resources/org-museum-graph-network.js"
+                            (org-museum--shared-root)) graph-file)
+         "resources/org-museum-graph-network.js")
      (json-encode org-museum--graph-palette)
      (org-museum--script-shell))))
 
@@ -8525,9 +10765,15 @@ sticky article identity and qualified reading-state persistence."
 
 /* ── 1. Keyboard navigation ── */
 var lastKey='',lastKeyTime=0;
+function readingShortcutBlocked(e){
+  return e.defaultPrevented||e.isComposing||e.metaKey||e.ctrlKey||e.altKey||
+    e.target.isContentEditable||e.target.closest('input,textarea,select,button,a,[role=\"dialog\"],dialog')||
+    document.querySelector('dialog[open],#image-lightbox-overlay.visible')||
+    document.body.classList.contains('museum-drawer-open')||
+    document.body.classList.contains('museum-toc-open');
+}
 document.addEventListener('keydown',function(e){
-  if(e.target.matches('input,textarea,[contenteditable=\"true\"]'))return;
-  if(e.metaKey||e.ctrlKey||e.altKey)return;
+  if(readingShortcutBlocked(e))return;
   var now=Date.now(),key=e.key,sc=document.getElementById('main-scroll')||window;
   if(key==='g'){
     if(lastKey==='g'&&(now-lastKeyTime<500)){
@@ -8801,11 +11047,57 @@ function updZ(){
   if(cls)cls.classList.add('zen-focus');
 }
 document.addEventListener('keydown',function(e){
-  if(!e.target.matches('input,textarea')&&e.key==='z'){
-    document.body.classList.toggle('zen-mode');
-    if(document.body.classList.contains('zen-mode'))updZ();
-  }
+  if(!readingShortcutBlocked(e)&&e.key==='z'){e.preventDefault();toggleZen();}
 });
+function toggleZen(){
+  var enabled=document.body.classList.toggle('zen-mode');
+  var button=document.querySelector('[data-reading-zen]');
+  if(button){button.setAttribute('aria-pressed',String(enabled));button.textContent=enabled?'退出专注':'专注阅读';}
+  if(enabled)updZ();
+}
+
+/* Reading actions stay visible even when mobile metadata is collapsed. */
+function initReadingActions(){
+  var article=document.querySelector('.article-container'),nav=document.querySelector('.article-back-nav');
+  if(!article||!nav)return;
+  var title=article.querySelector('h1.title');
+  article.insertBefore(nav,title||article.firstChild);
+  nav.classList.add('museum-reading-actions');nav.setAttribute('aria-label','阅读操作');
+  var status=document.createElement('span');status.className='museum-reading-action-status';
+  status.setAttribute('role','status');status.setAttribute('aria-live','polite');
+  function copy(value,button){
+    var label=button.dataset.label;
+    function done(ok){
+      status.textContent=ok?'已复制，可粘贴引用':'复制失败，请选择下方文本手动复制';
+      button.textContent=ok?'已复制':label;
+      clearTimeout(button.copyTimer);button.copyTimer=setTimeout(function(){button.textContent=label;},1800);
+      var old=nav.querySelector('textarea');if(old)old.remove();
+      if(!ok){var manual=document.createElement('textarea');manual.value=value;
+        manual.readOnly=true;manual.setAttribute('aria-label','手动复制引用');nav.appendChild(manual);manual.focus();manual.select();}
+    }
+    function fallback(){
+      var area=document.createElement('textarea');area.value=value;area.readOnly=true;
+      area.style.position='fixed';area.style.left='-9999px';document.body.appendChild(area);area.select();
+      var ok=false;try{ok=document.execCommand('copy')===true;}catch(_error){}
+      area.remove();button.focus({preventScroll:true});done(ok);
+    }
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(value).then(function(){done(true);},fallback);
+    else fallback();
+  }
+  function action(label,handler){
+    var button=document.createElement('button');button.type='button';button.textContent=label;button.dataset.label=label;
+    button.addEventListener('click',function(){handler(button);});nav.appendChild(button);return button;
+  }
+  action('复制链接',function(button){
+    var url=new URL(location.href);url.search='';copy(url.href,button);
+  });
+  if(document.body.dataset.pageId)action('复制 Org 引用',function(button){
+    var label=(title?title.textContent:document.title).replace(/[\\[\\]\\r\\n]/g,' ').trim();
+    copy('[[wiki:'+document.body.dataset.pageId+']['+label+']]',button);
+  });
+  var zen=action('专注阅读',toggleZen);zen.dataset.readingZen='';zen.setAttribute('aria-pressed','false');zen.title='快捷键 Z';
+  nav.appendChild(status);
+}
 (document.getElementById('main-scroll')||window).addEventListener(
   'scroll',function(){if(document.body.classList.contains('zen-mode'))updZ();},{passive:true});
 
@@ -8856,26 +11148,58 @@ function initLightbox(){
   ol.setAttribute('role','dialog');ol.setAttribute('aria-modal','true');
   ol.setAttribute('aria-label','图片预览');ol.hidden=true;
   var oli=document.createElement('img');oli.alt='';
+  var caption=document.createElement('p');caption.className='image-lightbox-caption';
+  caption.setAttribute('role','status');
+  var toolbar=document.createElement('div');toolbar.className='image-lightbox-toolbar';
+  var previous=document.createElement('button');previous.type='button';previous.textContent='上一张';
+  var next=document.createElement('button');next.type='button';next.textContent='下一张';
+  var original=document.createElement('a');original.textContent='打开原图';original.target='_blank';original.rel='noopener';
   var close=document.createElement('button');close.type='button';
   close.className='image-lightbox-close';close.textContent='关闭图片预览';
-  var lastFocus=null;
-  ol.appendChild(oli);ol.appendChild(close);document.body.appendChild(ol);
+  var lastFocus=null,background=[],activeIndex=0;
+  var images=Array.from(document.querySelectorAll('.article-container img')).filter(function(img){return !img.closest('a');});
+  if(!images.length)return;
+  toolbar.appendChild(previous);toolbar.appendChild(next);toolbar.appendChild(original);toolbar.appendChild(close);
+  ol.appendChild(oli);ol.appendChild(caption);ol.appendChild(toolbar);document.body.appendChild(ol);
   function hideLightbox(){
     ol.classList.remove('visible');ol.hidden=true;
-    if(lastFocus&&document.contains(lastFocus))lastFocus.focus();
+    background.forEach(function(item){item.element.inert=item.inert;});background=[];
+    document.documentElement.classList.remove('museum-lightbox-open');
+    if(lastFocus&&document.contains(lastFocus))lastFocus.focus({preventScroll:true});
+  }
+  function showImage(index){
+    activeIndex=(index+images.length)%images.length;
+    var img=images[activeIndex];oli.src=img.currentSrc||img.src;oli.alt=img.alt||'';
+    original.href=oli.src;
+    caption.textContent=(activeIndex+1)+' / '+images.length+(img.alt?' · '+img.alt:'');
+    previous.hidden=next.hidden=images.length<2;
   }
   function showLightbox(img){
-    lastFocus=img;oli.src=img.currentSrc||img.src;oli.alt=img.alt||'';
+    lastFocus=img;showImage(images.indexOf(img));
+    Array.from(document.body.children).forEach(function(element){
+      if(element===ol||/^(SCRIPT|STYLE|LINK)$/.test(element.tagName))return;
+      background.push({element:element,inert:element.inert});element.inert=true;
+    });
+    document.documentElement.classList.add('museum-lightbox-open');
     ol.hidden=false;ol.classList.add('visible');close.focus();
   }
+  previous.addEventListener('click',function(){showImage(activeIndex-1);});
+  next.addEventListener('click',function(){showImage(activeIndex+1);});
+  oli.addEventListener('error',function(){caption.textContent='图片加载失败，可尝试打开原图';});
   close.addEventListener('click',hideLightbox);
   ol.addEventListener('click',function(event){if(event.target===ol)hideLightbox();});
   ol.addEventListener('keydown',function(event){
     if(event.key==='Escape'){event.preventDefault();hideLightbox();}
-    else if(event.key==='Tab'){event.preventDefault();close.focus();}
+    else if(event.key==='ArrowLeft'){event.preventDefault();showImage(activeIndex-1);}
+    else if(event.key==='ArrowRight'){event.preventDefault();showImage(activeIndex+1);}
+    else if(event.key==='Tab'){
+      var items=Array.from(toolbar.querySelectorAll('button,a')).filter(function(item){return !item.hidden;});
+      var at=items.indexOf(document.activeElement);
+      if(event.shiftKey&&at<=0){event.preventDefault();items[items.length-1].focus();}
+      else if(!event.shiftKey&&at===items.length-1){event.preventDefault();items[0].focus();}
+    }
   });
-  document.querySelectorAll('.article-container img').forEach(function(img){
-    if(img.closest('a'))return;
+  images.forEach(function(img){
     img.tabIndex=0;img.setAttribute('role','button');
     img.setAttribute('aria-label',(img.alt||'图片')+'，打开预览');
     img.addEventListener('click',function(){showLightbox(img);});
@@ -8958,17 +11282,50 @@ function initDesktopSidebarToggle(){
   });
 }
 
+/* ── 13. Heading anchor copy ── */
+function initHeadingAnchors(){
+  var headings=document.querySelectorAll('.article-container h2[id],.article-container h3[id],.article-container h4[id]');
+  headings.forEach(function(h){
+    if(h.querySelector('.heading-anchor-copy'))return;
+    var btn=document.createElement('button');
+    btn.type='button';btn.className='heading-anchor-copy';
+    btn.setAttribute('aria-label','复制小节链接');
+    btn.title='复制小节链接';
+    btn.innerHTML='<span aria-hidden=\"true\">#</span>';
+    btn.onclick=function(e){
+      e.stopPropagation();
+      var url=new URL(location.href);url.hash='#'+h.id;
+      var clean=url.href;
+      function done(ok){
+        btn.classList.add('copied');
+        btn.setAttribute('aria-label',ok?'已复制小节链接':'复制失败');
+        setTimeout(function(){
+          btn.classList.remove('copied');
+          btn.setAttribute('aria-label','复制小节链接');
+        },1800);
+      }
+      if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(clean).then(function(){done(true);},function(){done(false);});
+      }else{
+        var ta=document.createElement('textarea');ta.value=clean;
+        ta.style.position='fixed';ta.style.left='-9999px';
+        document.body.appendChild(ta);ta.select();
+        var ok=false;try{ok=document.execCommand('copy')===true;}catch(_e){}
+        ta.remove();done(ok);
+      }
+    };
+    h.appendChild(btn);
+  });
+}
+
 window.addEventListener('load',function(){
+  initReadingActions();
+  initHeadingAnchors();
   initScrollSpy();
   initCodeBlocks();
   initReadingProgress();
-  initLinkTooltip();
   initLightbox();
-  initMarginNotes();
   initCJKSpacing();
-  initMagneticButtons();
-  initNavAura();
-  initDesktopSidebarToggle();
 });
 
 })();
@@ -9525,8 +11882,7 @@ Known limitation: does not re-parse file content; metadata may be stale."
                                :test #'equal))))
              pages)
     (org-museum--index-save org-museum--index (org-museum--index-file-path))
-    (message "Org Museum [Index]: verify complete — %d repair(s). \
-Ghost: %d, Broken links: %d"
+    (message "Org Museum 索引检查完成：修复 %d 项、幽灵条目 %d 项、失效链接 %d 条"
              repairs (length ghost) (length broken))))
 
 ;;;###autoload
@@ -9542,7 +11898,7 @@ isolated pages, quick action links.
          (stale  (org-museum--count-stale-pages))
          (css-status (org-museum--css-deployment-status))
          (runtime-status (org-museum--runtime-source-status)))
-    (with-current-buffer (get-buffer-create "*Org Museum Status*")
+    (with-current-buffer (get-buffer-create "*Org Museum 状态*")
       (erase-buffer) (org-mode)
       (insert "#+TITLE: Org Museum Status Report\n")
       (insert (format "#+DATE: %s\n\n" (format-time-string "%Y-%m-%d %H:%M")))
@@ -9618,7 +11974,7 @@ isolated pages, quick action links.
       (insert (format "- Stale Exports:  %d  %s\n"
                       stale
                       (if (> stale 0)
-                          "[[elisp:(org-museum-export-all)][Export now]]"
+                          "[[elisp:(call-interactively 'org-museum-export-all)][Export now]]"
                         "✓ All up to date")))
 
       (when (plist-get health :ghost)
@@ -9680,13 +12036,13 @@ isolated pages, quick action links.
                           (if (plist-get record :exists) "✓" "✗ MISSING")))))
 
       (insert "\n* Quick Actions\n\n")
-      (insert "- [[elisp:(org-museum-export-graph)][Generate Knowledge Graph]]\n")
+      (insert "- [[elisp:(call-interactively 'org-museum-export-graph)][Generate Knowledge Graph]]\n")
       (insert "- [[elisp:(org-museum-index-build t)][Force Rebuild Index]]\n")
       (insert "- [[elisp:(org-museum-index-verify)][Verify & Repair Index]]\n")
       (insert "- [[elisp:(org-museum-check-links)][Check All Links]]\n")
       (unless (plist-get runtime-status :in-sync)
         (insert "- [[elisp:(org-museum-reload)][Reload Current Runtime]]\n"))
-      (insert "- [[elisp:(org-museum-export-all)][Export All Pages]]\n")
+      (insert "- [[elisp:(call-interactively 'org-museum-export-all)][Export All Pages]]\n")
 
       (display-buffer (current-buffer)))))
 
@@ -9736,15 +12092,15 @@ When nil:
                        '("%latex -interaction nonstopmode -output-directory %o %f"
                          "%latex -interaction nonstopmode -output-directory %o %f"
                          "%latex -interaction nonstopmode -output-directory %o %f"))))
-     (message "Org Museum [LaTeX]: minted highlighting configured"))
+     (message "Org Museum LaTeX：已配置 minted 代码高亮"))
     ('listings
      (org-museum--set-latex-src-backend 'listings)
      (cl-pushnew '("" "listings" nil) org-latex-packages-alist :test #'equal)
      (cl-pushnew '("" "color" nil)    org-latex-packages-alist :test #'equal)
-     (message "Org Museum [LaTeX]: listings highlighting configured"))
+     (message "Org Museum LaTeX：已配置 listings 代码高亮"))
     (_
      (org-museum--set-latex-src-backend 'verbatim)
-     (message "Org Museum [LaTeX]: no code highlighting"))))
+     (message "Org Museum LaTeX：未配置代码高亮"))))
 
 (defun org-museum-init (root-dir)
   "Initialise an Org Museum workspace at ROOT-DIR."
@@ -9756,7 +12112,7 @@ When nil:
   (org-museum--ensure-css-deployed)
   (org-museum--setup-latex-export)
   (org-museum-index-build t)
-  (message "Org Museum initialised: %s" org-museum-root-dir))
+  (message "Org Museum 已初始化：%s" org-museum-root-dir))
 
 ;; ============================================================
 ;; §29  MINOR MODE  [Fix-02 debounce + Fix-13 defvar]
@@ -9765,31 +12121,46 @@ When nil:
 (defun org-museum--dispatch-status-string ()
   "Return a one-line status string for the dispatch panel."
   (if org-museum--index
-      (format "Index: %d pages | Root: %s"
+      (format "已索引 %d 篇笔记｜根目录：%s"
               (hash-table-count (org-museum-index-pages org-museum--index))
-              (abbreviate-file-name (or org-museum-root-dir "unset")))
-    "Index: not loaded"))
+              (abbreviate-file-name (or org-museum-root-dir "未设置")))
+    "索引尚未加载"))
 
 (defun org-museum--dispatch-minibuffer ()
   "Command panel fallback using `completing-read'."
   (let* ((status (org-museum--dispatch-status-string))
          (cmds
-          `(("n  Create Page"      . org-museum-create-page)
-            ("f  Complete Link"    . org-museum-link-complete)
-            ("e  Export This Page" . org-museum-export-page)
-            ("E  Export All"       . org-museum-export-all)
-            ("g  Export Graph"     . org-museum-export-graph)
-            ("p  Sync Publish Site" . org-museum-publish-sync)
-            ("!  Full Sync / Review Sharing" . org-museum-publish-sync-full)
-            ("P  Deploy to GitHub"  . org-museum-publish-deploy)
-            ("r  Rename Page"      . org-museum-rename-page)
-            ("i  Rebuild Index"    . org-museum-index-build)
-            ("v  Verify Index"     . org-museum-index-verify)
-            ("l  Check Links"      . org-museum-check-links)
-            ("c  Start Curation Server" . org-museum-curation-server-start)
-            ("C  Stop Curation Server" . org-museum-curation-server-stop)
-            ("s  Status Report"    . org-museum-status)
-            ("I  Init Workspace"   . org-museum-init)))
+          `(("n  新建笔记"       . org-museum-create-page)
+            ("f  补全链接"       . org-museum-link-complete)
+            ("e  导出当前笔记"   . org-museum-export-page)
+            ("E  导出全部"       . org-museum-export-all)
+            ("g  导出图谱"       . org-museum-export-graph)
+            ("G  打开可编辑图谱" . org-museum-graph-open-live)
+            ("p  同步发布站点"   . org-museum-publish-sync)
+            ("!  完整同步与公开检查" . org-museum-publish-sync-full)
+            ("P  部署到 GitHub" . org-museum-publish-deploy)
+            ("r  重命名笔记"     . org-museum-rename-page)
+            ("i  重建索引"       . org-museum-index-build)
+            ("v  检查索引"       . org-museum-index-verify)
+            ("l  检查链接"       . org-museum-check-links)
+            ("a  分析当前笔记"   . org-museum-analyze-current)
+            ("A  打开 AI 中心"   . org-museum-ai-center-open)
+            ("d  分析待处理笔记" . org-museum-analyze-dirty)
+            ("R  召回经验"       . org-museum-recall)
+            ("G  上下文图谱"     . org-museum-context-graph)
+            ("D  知识组合"       . org-museum-derive-current)
+            ("?  知识缺口"       . org-museum-knowledge-gap)
+            ("S  全库巡检"       . org-museum-deep-scan)
+            ("t  结算任务"       . org-museum-settle-task)
+            ("F  记录失败经验"   . org-museum-record-failure)
+            ("m  关联当前笔记"   . org-museum-relate-current)
+            ("M  查看关系"       . org-museum-relations)
+            ("X  移除关系"       . org-museum-relation-remove)
+            ("K  AI 队列"       . org-museum-ai-queue)
+            ("c  启动本机服务"   . org-museum-curation-server-start)
+            ("C  停止本机服务"   . org-museum-curation-server-stop)
+            ("s  状态报告"       . org-museum-status)
+            ("I  初始化工作区"   . org-museum-init)))
          (choice (completing-read
                   (format "Org Museum [%s]: " status)
                   (mapcar #'car cmds) nil t)))
@@ -9819,30 +12190,46 @@ Applicable scope: daily editing workflow, discoverability."
 (with-eval-after-load 'transient
   (eval
    '(transient-define-prefix org-museum--dispatch-transient ()
-      "Org Museum Command Panel."
+      "Org Museum 命令面板。"
       [:description
        (lambda () (format "Org Museum — %s"
                           (org-museum--dispatch-status-string)))
-       ["Pages"
-        ("n" "Create Page"      org-museum-create-page)
-        ("r" "Rename Page"      org-museum-rename-page)
-        ("f" "Complete Link"    org-museum-link-complete)]
-       ["Export"
-        ("e" "Export This Page" org-museum-export-page)
-        ("E" "Export All"       org-museum-export-all)
-        ("g" "Export Graph"     org-museum-export-graph)
-        ("p" "Sync Publish Site" org-museum-publish-sync)
-        ("!" "Full Sync / Review Sharing" org-museum-publish-sync-full)
-        ("P" "Deploy to GitHub"  org-museum-publish-deploy)]
-       ["Index"
-        ("i" "Rebuild Index"    org-museum-index-build)
-        ("v" "Verify & Repair"  org-museum-index-verify)
-        ("l" "Check Links"      org-museum-check-links)]
-       ["Workspace"
-        ("s" "Status Report"    org-museum-status)
-        ("I" "Init Workspace"   org-museum-init)
-        ("c" "Start Curation"   org-museum-curation-server-start)
-        ("C" "Stop Curation"    org-museum-curation-server-stop)]])
+       ["笔记"
+        ("n" "新建笔记"       org-museum-create-page)
+        ("r" "重命名笔记"     org-museum-rename-page)
+        ("f" "补全链接"       org-museum-link-complete)]
+       ["导出与发布"
+        ("e" "导出当前笔记"   org-museum-export-page)
+        ("E" "导出全部"       org-museum-export-all)
+        ("g" "导出图谱"       org-museum-export-graph)
+        ("G" "打开可编辑图谱" org-museum-graph-open-live)
+        ("p" "同步发布站点"   org-museum-publish-sync)
+        ("!" "完整同步与公开检查" org-museum-publish-sync-full)
+        ("P" "部署到 GitHub" org-museum-publish-deploy)]
+       ["索引"
+        ("i" "重建索引"       org-museum-index-build)
+        ("v" "检查并修复"     org-museum-index-verify)
+        ("l" "检查链接"       org-museum-check-links)]
+       ["知识"
+        ("a" "分析当前笔记"   org-museum-analyze-current)
+        ("A" "打开 AI 中心"   org-museum-ai-center-open)
+        ("d" "分析待处理笔记" org-museum-analyze-dirty)
+        ("R" "召回经验"       org-museum-recall)
+        ("G" "上下文图谱"     org-museum-context-graph)
+        ("D" "知识组合"       org-museum-derive-current)
+        ("?" "知识缺口"       org-museum-knowledge-gap)
+        ("S" "全库巡检"       org-museum-deep-scan)
+        ("t" "结算任务"       org-museum-settle-task)
+        ("F" "记录失败经验"   org-museum-record-failure)
+        ("m" "关联当前笔记"   org-museum-relate-current)
+        ("M" "查看关系"       org-museum-relations)
+        ("X" "移除关系"       org-museum-relation-remove)
+        ("K" "AI 队列"       org-museum-ai-queue)]
+       ["工作区"
+        ("s" "状态报告"       org-museum-status)
+        ("I" "初始化工作区"   org-museum-init)
+        ("c" "启动本机服务"   org-museum-curation-server-start)
+        ("C" "停止本机服务"   org-museum-curation-server-stop)]])
    t))
 
 (defvar org-museum-mode-map
@@ -9858,10 +12245,28 @@ Applicable scope: daily editing workflow, discoverability."
     (define-key map (kbd "C-c w i")   #'org-museum-index-build)
     (define-key map (kbd "C-c w v")   #'org-museum-index-verify)
     (define-key map (kbd "C-c w l")   #'org-museum-check-links)
+    (define-key map (kbd "C-c w a")   #'org-museum-analyze-current)
+    (define-key map (kbd "C-c w A")   #'org-museum-ai-center-open)
+    (define-key map (kbd "C-c w d")   #'org-museum-analyze-dirty)
+    (define-key map (kbd "C-c w R")   #'org-museum-recall)
+    (define-key map (kbd "C-c w G")   #'org-museum-context-graph)
+    (define-key map (kbd "C-c w D")   #'org-museum-derive-current)
+    (define-key map (kbd "C-c w ?")   #'org-museum-knowledge-gap)
+    (define-key map (kbd "C-c w S")   #'org-museum-deep-scan)
+    (define-key map (kbd "C-c w t")   #'org-museum-settle-task)
+    (define-key map (kbd "C-c w F")   #'org-museum-record-failure)
+    (define-key map (kbd "C-c w m")   #'org-museum-relate-current)
+    (define-key map (kbd "C-c w M")   #'org-museum-relations)
+    (define-key map (kbd "C-c w X")   #'org-museum-relation-remove)
+    (define-key map (kbd "C-c w K")   #'org-museum-ai-queue)
     (define-key map (kbd "C-c w s")   #'org-museum-status)
     (define-key map (kbd "C-c w SPC") #'org-museum-dispatch)
     map)
   "Keymap for `org-museum-mode'.")
+
+;; `defvar' preserves a keymap from an already running Emacs.  Install new
+;; bindings there too when this source is reloaded during an Org Museum update.
+(define-key org-museum-mode-map (kbd "C-c w A") #'org-museum-ai-center-open)
 
 ;;;###autoload
 (define-minor-mode org-museum-mode
@@ -9872,8 +12277,11 @@ Applicable scope: daily editing workflow, discoverability."
       (progn
         (when org-museum-root-dir
           (unless org-museum--index (org-museum-index-build)))
-        (add-hook 'after-save-hook #'org-museum--on-save nil t))
-    (remove-hook 'after-save-hook #'org-museum--on-save t)))
+        (add-hook 'after-save-hook #'org-museum--on-save nil t)
+        (add-hook 'after-save-hook #'org-museum-knowledge--on-save nil t)
+        (org-museum-knowledge--schedule-failure-reminder))
+    (remove-hook 'after-save-hook #'org-museum--on-save t)
+    (remove-hook 'after-save-hook #'org-museum-knowledge--on-save t)))
 
 ;; Fix-02: debounced on-save via run-with-idle-timer.
 (defun org-museum--on-save ()
@@ -9911,8 +12319,12 @@ Guards:
       (unless org-museum--index (org-museum-index-build))
       (let* ((working (org-museum--alist-to-index
                        (org-museum--index-to-alist org-museum--index)))
+             ;; A normal content save cannot change source files other than
+             ;; the one the user already saved.  Global snapshots are needed
+             ;; only for the rare WIKI_ID rename path that rewrites links.
              (source-snapshots
-              (org-museum--snapshot-files (org-museum--scan-files)))
+              (when (cl-some #'org-museum--on-save-id-changed-p files)
+                (org-museum--snapshot-files (org-museum--scan-files))))
              (index-path (org-museum--index-file-path))
              (index-existed (file-exists-p index-path))
              (index-snapshot (org-museum--snapshot-files (list index-path)))
@@ -9931,7 +12343,7 @@ Guards:
              (org-museum--restore-file-snapshots index-snapshot))
             ((and (not index-existed) (file-regular-p index-path))
              (delete-file index-path)))
-           (message "Org Museum [Index]: batched save update failed: %s"
+           (message "Org Museum 批量保存后的索引更新失败：%s"
                     (error-message-string err))
            (unless org-museum--project-save-retry-used
              (setq org-museum--project-save-retry-used t
@@ -9960,11 +12372,24 @@ Guards:
                      (org-museum--generate-id file)))))
     (when (and old-id new-id (not (equal old-id new-id)) pages)
       (if (gethash new-id pages)
-          (error "Org Museum [Index]: ID [%s] is already occupied" new-id)
+          (error "Org Museum 索引 ID [%s] 已被占用" new-id)
         (when (yes-or-no-p
                (format "Org Museum: WIKI_ID changed %s → %s; update all cross-links? "
                        old-id new-id))
           (org-museum--update-links-globally old-id new-id))))))
+
+(defun org-museum--on-save-id-changed-p (file)
+  "Return non-nil when FILE's WIKI_ID differs from the indexed page ID."
+  (when-let* ((pages (and org-museum--index (org-museum-index-pages org-museum--index)))
+              (old (org-museum--find-page-by-path file pages)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (let ((new-id (if (re-search-forward
+                        "^#\\+WIKI_ID:\\s-*\\(\\S-+\\)\\s-*$" nil t)
+                        (string-trim (match-string 1))
+                      (org-museum--generate-id file))))
+        (not (equal new-id (org-museum-page-id old)))))))
 
 (defun org-museum--on-save-flush (file)
   "Compatibility entry point: enqueue FILE and flush the project batch now."
@@ -10347,7 +12772,7 @@ CONFIRM-IDENTITY must be non-nil for WIKI_ID or path changes."
   "Open an Emacs diff review for curation PAYLOAD."
   (interactive)
   (let* ((transaction (org-museum-curation-preview payload))
-         (buffer (get-buffer-create "*Org Museum Curation Review*")))
+         (buffer (get-buffer-create "*Org Museum 策展预览*")))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (erase-buffer)
@@ -10362,12 +12787,12 @@ CONFIRM-IDENTITY must be non-nil for WIKI_ID or path changes."
          "确认应用"
          'follow-link t
          'action (lambda (_button)
-                   (when (yes-or-no-p "Apply this reviewed curation change? ")
+                   (when (yes-or-no-p "应用这项已预览的策展变更？")
                      (when (or (not (plist-get transaction :identity-change))
-                               (yes-or-no-p "Confirm identity/path change a second time? "))
+                               (yes-or-no-p "再次确认身份或路径变更？"))
                        (org-museum-curation-apply
                         (plist-get transaction :id) t)
-                       (message "Org Museum curation applied")))))
+                       (message "Org Museum 策展变更已应用")))))
         (insert "    ")
         (insert-text-button "取消" 'follow-link t
                             'action (lambda (_button) (kill-buffer buffer)))
@@ -10381,7 +12806,14 @@ CONFIRM-IDENTITY must be non-nil for WIKI_ID or path changes."
 
 (defun org-museum--curation-http-response (status body &optional type headers)
   "Return an HTTP response with STATUS, BODY, TYPE, and extra HEADERS."
-  (let* ((payload (encode-coding-string (or body "") 'utf-8 t))
+  (let* ((body (or body ""))
+         (payload (if (multibyte-string-p body)
+                      (encode-coding-string body 'utf-8 t)
+                    body))
+         (cache-control (or (cdr (assoc "Cache-Control" headers)) "no-store"))
+         (headers (cl-remove-if (lambda (header)
+                                  (equal (car header) "Cache-Control"))
+                                headers))
          (reason (pcase status (200 "OK") (201 "Created") (204 "No Content")
                         (400 "Bad Request") (401 "Unauthorized") (403 "Forbidden")
                         (404 "Not Found") (409 "Conflict") (413 "Payload Too Large")
@@ -10389,7 +12821,8 @@ CONFIRM-IDENTITY must be non-nil for WIKI_ID or path changes."
     (concat (format "HTTP/1.1 %d %s\r\n" status reason)
             (format "Content-Type: %s\r\n" (or type "application/json; charset=utf-8"))
             (format "Content-Length: %d\r\n" (string-bytes payload))
-            "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n"
+            (format "Cache-Control: %s\r\n" cache-control)
+            "X-Content-Type-Options: nosniff\r\n"
             "Referrer-Policy: no-referrer\r\nConnection: close\r\n"
             (mapconcat (lambda (header) (format "%s: %s\r\n" (car header) (cdr header))) headers "")
             "\r\n" payload)))
@@ -10453,6 +12886,56 @@ CONFIRM-IDENTITY must be non-nil for WIKI_ID or path changes."
     (when (and (file-in-directory-p file root) (file-regular-p file)
                (not (file-symlink-p file))) file)))
 
+(defun org-museum--ai-resources-need-deployment-p ()
+  "Whether AI Center assets are absent or newer than deployed copies.
+Avoid hashing large bundled fonts on every page visit."
+  (let ((names (append '("resources/org-museum.css"
+                         "resources/org-museum-ai.js"
+                         "resources/org-museum-ai-browser.js"
+                         "resources/org-museum-ai-workspace.js"
+                         "resources/org-museum-org-view.js"
+                         "resources/org-museum-markdown.js"
+                         "resources/vendor/markdown-it.umd.min.js")
+                       (mapcar (lambda (entry)
+                                 (concat "resources/fonts/" (car entry)))
+                               org-museum--font-resources)
+                       (mapcar (lambda (name)
+                                 (concat "resources/icons/" name))
+                               org-museum--icon-resources))))
+    (seq-some
+     (lambda (name)
+       (let ((source (expand-file-name name (org-museum--plugin-dir)))
+             (target (expand-file-name name (org-museum--shared-root))))
+         (and (file-regular-p source)
+              (or (not (file-regular-p target))
+                  (file-newer-than-file-p source target)))))
+     names)))
+
+(defun org-museum--ai-center-needs-export-p ()
+  "Whether the local AI Center HTML is missing or behind its sources."
+  (let* ((out (expand-file-name "ai-center.html" (org-museum--shared-root)))
+         (inputs (list (expand-file-name "org-museum-ai-web.el"
+                                         (org-museum--plugin-dir))
+                       (expand-file-name "org-museum.el"
+                                         (org-museum--plugin-dir))
+                       (expand-file-name "resources/org-museum-ai.js"
+                                         (org-museum--shared-root))
+                       (expand-file-name "resources/org-museum-ai-browser.js"
+                                         (org-museum--shared-root))
+                       (expand-file-name "resources/org-museum-ai-workspace.js"
+                                         (org-museum--shared-root))
+                       (org-museum--css-output-path)
+                       (org-museum-knowledge--derived-path))))
+    (or (not (file-regular-p out))
+        (seq-some (lambda (input)
+                    (and (file-regular-p input)
+                         (file-newer-than-file-p input out)))
+                  inputs)
+        (with-temp-buffer
+          (insert-file-contents out)
+          (goto-char (point-min))
+          (not (search-forward "data-ai-capture-results" nil t))))))
+
 (defun org-museum--curation-content-type (file)
   "Return a conservative response content type for FILE."
   (pcase (downcase (or (file-name-extension file) ""))
@@ -10461,6 +12944,103 @@ CONFIRM-IDENTITY must be non-nil for WIKI_ID or path changes."
     ("svg" "image/svg+xml") ("png" "image/png") ("woff2" "font/woff2")
     (_ "application/octet-stream")))
 
+(defun org-museum--graph-current-json ()
+  "Return a graph snapshot rebuilt from current Org files when needed."
+  (unless (and org-museum--index
+               (org-museum--index-fresh-p (org-museum--index-file-path)))
+    (org-museum-index-build))
+  (org-museum--generate-graph-json))
+
+(defun org-museum--graph-edit-edge (request)
+  "Persist one validated graph edge REQUEST to its owner Org note."
+  (org-museum--curation-reject-unknown
+   request '("action" "ownerId" "targetId" "expectedSha256"
+             "type" "label" "direction" "weight" "style") "graph edge")
+  (let* ((action (org-museum--curation-value "action" request))
+         (owner-id (org-museum--curation-clean-string
+                    (org-museum--curation-value "ownerId" request) "ownerId" 96))
+         (target-id (org-museum--curation-clean-string
+                     (org-museum--curation-value "targetId" request) "targetId" 96))
+         (expected (org-museum--curation-clean-string
+                    (org-museum--curation-value "expectedSha256" request)
+                    "expectedSha256" 64))
+         (page (org-museum--curation-page owner-id))
+         (file (org-museum-page-path page))
+         (transaction-id (secure-hash 'sha256
+                                      (format "%s%s%s" owner-id target-id (float-time)))))
+    (unless (member action '("upsert" "delete"))
+      (signal 'org-museum-curation-error (list "Unknown graph edge action")))
+    (unless (and (org-museum--curation-valid-id-p owner-id)
+                 (org-museum--curation-valid-id-p target-id)
+                 (not (equal owner-id target-id)))
+      (signal 'org-museum-curation-error (list "Invalid graph edge endpoints")))
+    (org-museum--curation-page target-id)
+    (unless (string= expected (org-museum--curation-sha256 file))
+      (signal 'org-museum-curation-error (list "Source changed; reload graph before editing")))
+    (when (org-museum--curation-modified-buffer (list file))
+      (signal 'org-museum-curation-error (list "Unsaved Org buffer blocks graph edit")))
+    (let* ((type (when (equal action "upsert")
+                   (org-museum--curation-clean-string
+                    (org-museum--curation-value "type" request) "type" 48)))
+           (label (when (equal action "upsert")
+                    (org-museum--curation-clean-string
+                     (org-museum--curation-value "label" request) "label" 96)))
+           (direction (or (org-museum--curation-value "direction" request) "forward"))
+           (weight (or (org-museum--curation-value "weight" request) 1))
+           (style (or (org-museum--curation-value "style" request) "solid"))
+           (record `((targetId . ,target-id)
+                     (state . ,(if (equal action "delete") "deleted" "active"))
+                     (type . ,(or type "")) (label . ,(or label ""))
+                     (direction . ,direction) (weight . ,weight) (style . ,style)))
+           (graph-html (expand-file-name "graph.html" (org-museum--shared-root)))
+           (graph-js (org-museum--runtime-resource-path 'graph))
+           (snapshot (org-museum--snapshot-files (list file graph-html graph-js)))
+           (existing-output (seq-filter #'file-regular-p (list graph-html graph-js)))
+           stage)
+      (unless (and (member direction '("forward" "reverse" "both"))
+                   (numberp weight) (<= 0.2 weight 5)
+                   (member style '("solid" "dashed" "dotted")))
+        (signal 'org-museum-curation-error (list "Invalid direction, weight or style")))
+      (org-museum--curation-persist-backups (list file) transaction-id)
+      (condition-case err
+          (progn
+            (setq stage 'write)
+            (with-temp-buffer
+              (insert-file-contents file)
+              (goto-char (point-min))
+              (let ((case-fold-search t))
+                (while (re-search-forward
+                        "^#\\+MUSEUM_GRAPH_EDGE:[[:space:]]*\\(.*\\)$" nil t)
+                  (let ((existing (condition-case nil
+                                      (let ((json-object-type 'alist)
+                                            (json-key-type 'string))
+                                        (json-read-from-string (match-string-no-properties 1)))
+                                    (error nil))))
+                    (when (equal (cdr (assoc "targetId" existing)) target-id)
+                      (let ((start (line-beginning-position))
+                            (end (min (point-max) (1+ (line-end-position)))))
+                        (delete-region start end)
+                        (goto-char start))))))
+              (goto-char (point-min))
+              (insert "#+MUSEUM_GRAPH_EDGE: " (org-museum--curation-json record) "\n")
+              (org-museum--write-content-if-changed file (buffer-string)))
+            (setq stage 'index)
+            (org-museum-index-build t)
+            (setq stage 'export)
+            (org-museum--export-graph-current :silent t)
+            (setq stage 'graph)
+            (org-museum--generate-graph-json))
+        (error
+         (org-museum--restore-file-snapshots snapshot)
+         (dolist (output (list graph-html graph-js))
+           (when (and (not (member output existing-output))
+                      (file-regular-p output))
+             (delete-file output)))
+         (org-museum-index-build t)
+         (signal 'org-museum-curation-error
+                 (list (format "Graph edit %s failed: %s" stage
+                               (error-message-string err)))))))))
+
 (defun org-museum--curation-dispatch-http (method path headers body)
   "Dispatch one loopback METHOD PATH request with HEADERS and BODY."
   (condition-case error-data
@@ -10468,7 +13048,9 @@ CONFIRM-IDENTITY must be non-nil for WIKI_ID or path changes."
           (progn
             (unless (org-museum--curation-authorized-p headers)
               (signal 'org-museum-curation-error (list "Unauthorized local session")))
-            (pcase (list method (car (split-string path "?")))
+            (if (string-prefix-p "/api/v1/ai/" path)
+                (org-museum-ai-web--dispatch-http method path body)
+              (pcase (list method (car (split-string path "?")))
               (`("GET" "/api/v1/session")
                (org-museum--curation-http-response
                 200 (org-museum--curation-json
@@ -10481,6 +13063,18 @@ CONFIRM-IDENTITY must be non-nil for WIKI_ID or path changes."
                  (org-museum--curation-http-response
                   200 (org-museum--curation-json
                        (org-museum--curation-page-json (url-unhex-string page-id))))))
+              (`("GET" "/api/v1/graph")
+               (org-museum--curation-http-response
+                200 (concat "{\"ok\":true,\"graph\":"
+                            (org-museum--graph-current-json) "}")))
+              (`("POST" "/api/v1/graph/edge")
+               (unless (string-prefix-p "application/json"
+                                        (or (cdr (assoc "content-type" headers)) ""))
+                 (signal 'org-museum-curation-error (list "Content-Type must be application/json")))
+               (org-museum--curation-http-response
+                200 (concat "{\"ok\":true,\"graph\":"
+                            (org-museum--graph-edit-edge
+                             (org-museum--curation-json-read body)) "}")))
               (`("POST" "/api/v1/preview")
                (unless (string-prefix-p "application/json"
                                         (or (cdr (assoc "content-type" headers)) ""))
@@ -10508,7 +13102,7 @@ CONFIRM-IDENTITY must be non-nil for WIKI_ID or path changes."
                    (org-museum--curation-http-response
                     200 (org-museum--curation-json
                          `((ok . t) (path . ,(file-relative-name target org-museum-root-dir))))))))
-              (_ (org-museum--curation-http-error 404 "Unknown API endpoint"))))
+              (_ (org-museum--curation-http-error 404 "Unknown API endpoint")))))
         (cond
          ((equal (car (split-string path "?")) "/__org-museum-curation.js")
           (let ((runtime (expand-file-name "resources/org-museum-curation.js"
@@ -10519,7 +13113,13 @@ CONFIRM-IDENTITY must be non-nil for WIKI_ID or path changes."
                   (org-museum--curation-http-response
                    200 (buffer-string) "application/javascript; charset=utf-8"))
               (org-museum--curation-http-error 404 "Curation runtime not found"))))
-         ((org-museum--curation-static-file path)
+         ((or (equal (car (split-string path "?")) "/ai-center.html")
+              (org-museum--curation-static-file path))
+          (when (equal (car (split-string path "?")) "/ai-center.html")
+            (when (org-museum--ai-resources-need-deployment-p)
+              (org-museum--ensure-css-deployed))
+            (when (org-museum--ai-center-needs-export-p)
+              (org-museum-ai-web--export-center)))
           (let ((file (org-museum--curation-static-file path)))
             (with-temp-buffer
               (set-buffer-multibyte nil) (insert-file-contents-literally file)
@@ -10531,7 +13131,12 @@ CONFIRM-IDENTITY must be non-nil for WIKI_ID or path changes."
                          contents t t)))
                 (org-museum--curation-http-response
                  200 contents (org-museum--curation-content-type file)
-                 '(("Content-Security-Policy" . "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'")))))))
+                 `(("Content-Security-Policy" . "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'")
+                   ("Cache-Control" . ,(if (string-prefix-p "/resources/" path)
+                                           (if (string-match-p "[?&]v=[[:xdigit:]]+" path)
+                                               "private, max-age=31536000, immutable"
+                                             "private, max-age=86400")
+                                         "no-store"))))))))
          (t (org-museum--curation-http-error 404 "Export not found"))))
     (org-museum-curation-error
      (org-museum--curation-http-error 409 (error-message-string error-data)))
@@ -10563,32 +13168,46 @@ CONFIRM-IDENTITY must be non-nil for WIKI_ID or path changes."
             (delete-process process)))))))
 
 ;;;###autoload
-(defun org-museum-curation-server-start ()
+(defun org-museum-curation-server-start (&optional page)
   "Start the authenticated Org Museum loopback server and open the export."
   (interactive)
   (unless (eq org-museum-curation-mode 'loopback)
     (signal 'org-museum-curation-error
             (list "Set org-museum-curation-mode to loopback before starting the server")))
-  (when (process-live-p org-museum--curation-server)
-    (org-museum-curation-server-stop))
   (org-museum--guard-init)
-  (unless (file-regular-p (expand-file-name "index.html" (org-museum--shared-root)))
+  (unless (file-regular-p
+           (expand-file-name (or page "index.html") (org-museum--shared-root)))
     (let ((org-museum-open-browser-after-export nil)) (org-museum-export-all)))
-  (setq org-museum--curation-token
-        (secure-hash 'sha256 (format "%s:%s:%s:%s" (float-time) (emacs-pid) (random) (user-uid))))
-  (setq org-museum--curation-server
-        (make-network-process
-         :name "org-museum-curation" :server t :host "127.0.0.1"
-         :service org-museum-curation-port :family 'ipv4 :noquery t
-         :coding 'binary :filter #'org-museum--curation-server-filter))
-  (setq org-museum--curation-server-port
-        (process-contact org-museum--curation-server :service))
-  (let ((url (format "http://127.0.0.1:%d/#org-museum-curation-token=%s"
-                     org-museum--curation-server-port org-museum--curation-token)))
+  (unless (and (process-live-p org-museum--curation-server)
+               org-museum--curation-token org-museum--curation-server-port)
+    (when (process-live-p org-museum--curation-server)
+      (org-museum-curation-server-stop))
+    (setq org-museum--curation-token
+          (secure-hash 'sha256 (format "%s:%s:%s:%s" (float-time) (emacs-pid) (random) (user-uid))))
+    (setq org-museum--curation-server
+          (make-network-process
+           :name "org-museum-curation" :server t :host "127.0.0.1"
+           :service org-museum-curation-port :family 'ipv4 :noquery t
+           :coding 'binary :filter #'org-museum--curation-server-filter))
+    (setq org-museum--curation-server-port
+          (process-contact org-museum--curation-server :service)))
+  (let ((url (format "http://127.0.0.1:%d/%s#org-museum-curation-token=%s"
+                     org-museum--curation-server-port (or page "")
+                     org-museum--curation-token)))
     (browse-url url)
-    (message "Org Museum curation server listening on 127.0.0.1:%d"
+    (message "Org Museum 本机服务已启动：127.0.0.1:%d"
              org-museum--curation-server-port)
     url))
+
+;;;###autoload
+(defun org-museum-graph-open-live ()
+  "Open the authenticated, live knowledge graph in the browser."
+  (interactive)
+  (org-museum--guard-init)
+  (org-museum-index-build)
+  (org-museum--export-graph-current :silent t)
+  (let ((org-museum-curation-mode 'loopback))
+    (org-museum-curation-server-start "graph.html")))
 
 ;;;###autoload
 (defun org-museum-curation-server-stop ()
@@ -10600,7 +13219,9 @@ CONFIRM-IDENTITY must be non-nil for WIKI_ID or path changes."
         org-museum--curation-token nil
         org-museum--curation-server-port nil)
   (clrhash org-museum--curation-transactions)
-  (message "Org Museum curation server stopped"))
+  (when (boundp 'org-museum-ai-web--previews)
+    (clrhash org-museum-ai-web--previews))
+  (message "Org Museum 本机服务已停止"))
 
 (defun org-museum--curation-protocol-handler (info)
   "Handle a short, local org-protocol curation request from INFO."
@@ -10646,7 +13267,7 @@ This command never modifies the registry itself."
                  "\\\"(progn (require 'org-protocol) "
                  "(org-protocol-check-filename-for-protocol \\\\\\\"%%1\\\\\\\"))\\\"\" /f")))
     (kill-new command)
-    (message "Registration command copied; inspect the existing handler before running it")))
+    (message "注册命令已复制；运行前请核对现有处理程序")))
 
 (defun org-museum-curation-protocol-uninstall-command ()
   "Copy a Windows command that removes the org-protocol handler.
@@ -10654,7 +13275,14 @@ This command never modifies the registry itself."
   (interactive)
   (let ((command "reg delete HKCU\\Software\\Classes\\org-protocol /f"))
     (kill-new command)
-    (message "Uninstall command copied; run it only after inspecting the registered handler")))
+    (message "卸载命令已复制；运行前请核对已注册的处理程序")))
+
+(load (expand-file-name "org-museum-knowledge.el" (org-museum--plugin-dir)))
+(load (expand-file-name "org-museum-context.el" (org-museum--plugin-dir)))
+(load (expand-file-name "org-museum-derived.el" (org-museum--plugin-dir)))
+(load (expand-file-name "org-museum-gap.el" (org-museum--plugin-dir)))
+(load (expand-file-name "org-museum-ai-session.el" (org-museum--plugin-dir)))
+(load (expand-file-name "org-museum-ai-web.el" (org-museum--plugin-dir)))
 
 (provide 'org-museum)
 

@@ -57,5 +57,21 @@
     });
   };
 
+  window.orgMuseumAiApi = function (route, payload) {
+    var options = payload === undefined ? {} : {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    };
+    return api("ai/" + route, options);
+  };
+
+  window.orgMuseumGraphApi = function (route, payload) {
+    var options = payload === undefined ? {} : {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    };
+    return api(route, options);
+  };
+
   if (window.orgMuseumCuration) window.orgMuseumCuration.mode = "loopback";
 })();
