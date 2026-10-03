@@ -4218,11 +4218,11 @@ Interactive calls run in an isolated background Emacs process."
            (data-unc-path
             "data-local-path=\\\"\\(//[^/[:space:]\"']+/[^\"\n\r]+\\)\\\"" 1)
            (file-url
-            "file:///[[:alpha:]]:[/\\\\][^<>\"'\n\r]+" 0)
+            "file:///[A-Za-z]:[/\\\\][^<>\"'\n\r]+" 0)
            (data-local-path
-            "data-local-path=\\\"\\([[:alpha:]]:[^\"\n\r]+\\)\\\"" 1)
+            "data-local-path=\\\"\\([A-Za-z]:[^\"\n\r]+\\)\\\"" 1)
            (windows-path
-            "\\(?:\\`\\|[^[:alnum:]?]\\)\\([[:alpha:]]:[/\\\\][^<>:\"/\\\\|?*\n\r][^<>\"'\n\r[:space:]]*\\)" 1)
+            "\\(?:\\`\\|[^[:alnum:]?]\\)\\([A-Za-z]:[/\\\\][^<>:\"/\\\\|?*\n\r][^<>\"'\n\r[:space:]]*\\)" 1)
            (unc-path
             "\\(?:\\`\\|[^\\\\]\\)\\(\\\\\\\\[[:alnum:]][[:alnum:]._-]+\\\\[[:alnum:]][^\\\\/[:space:]\"']*\\)" 1)))
         candidates selected)
