@@ -49,7 +49,19 @@
           (let ((tracked (split-string
                           (cdr (org-museum--publish-run "git" '("ls-files" "-z"))) "\0" t)))
             (should (member desired tracked))
-            (should-not (member old tracked)))
+            (should (member old tracked)))
+          (should (equal (cdr (org-museum--publish-run "git" (list "show" (concat "HEAD:" old))))
+                         "updated"))
+          (should-not (org-museum--publish-git-status-paths))
+          ;; A later edit updates both public URL spellings without an unmanaged
+          ;; dirty-path refusal or stale compatibility content.
+          (with-temp-file (expand-file-name desired root) (insert "next version"))
+          (org-museum--publish-write-manifest root (list desired ".nojekyll"))
+          (let ((dirty (org-museum--publish-git-status-paths)))
+            (org-museum--publish-validate-dirty-paths dirty (list desired) (list desired))
+            (org-museum--publish-stage-and-commit dirty))
+          (should (equal (cdr (org-museum--publish-run "git" (list "show" (concat "HEAD:" old))))
+                         "next version"))
           (org-museum--publish-validate-manifest-integrity
            root (org-museum--publish-read-manifest root)))
       (delete-directory root t)

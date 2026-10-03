@@ -5702,8 +5702,9 @@ Other Git failures remain fatal on the first attempt."
          (unexpected
           (cl-remove-if
            (lambda (path)
-             (member (org-museum--publish-normalise-relative-path path)
-                     allowed))
+             (cl-find (org-museum--publish-normalise-relative-path path)
+                      allowed :test (if (eq system-type 'windows-nt)
+                                        #'string-equal-ignore-case #'equal)))
            paths)))
     (when unexpected
       (signal 'org-museum-publish-error
@@ -5870,16 +5871,25 @@ configured fallbacks, authenticated GitHub account, or repository owner."
 (defun org-museum--publish-stage-and-commit (paths)
   "Stage validated PATHS and commit them; return non-nil when committed."
   (when paths
-    (let ((current (org-museum--publish-read-managed-files org-museum-publish-directory)))
+    (let ((current (org-museum--publish-read-managed-files org-museum-publish-directory))
+          case-aliases)
       (when (eq system-type 'windows-nt)
-        (let ((tracked (split-string
-                        (cdr (org-museum--publish-run "git" '("ls-files" "-z"))) "\0" t))
+        (let ((tracked (delete-dups
+                        (append
+                         (split-string (cdr (org-museum--publish-run "git" '("ls-files" "-z"))) "\0" t)
+                         ;; Recover legacy spellings after a case migration was
+                         ;; already committed by an older publisher.
+                         (split-string
+                          (cdr (org-museum--publish-run
+                                "git" '("ls-tree" "-r" "--name-only" "-z" "HEAD^") '(0 128)))
+                          "\0" t))))
               aliases replacements)
           (dolist (old tracked)
             (when-let* ((desired (cl-find old current :test #'string-equal-ignore-case)))
               (unless (equal old desired)
                 (push old aliases)
-                (push desired replacements))))
+                (push desired replacements)
+                (push (cons old desired) case-aliases))))
           (when aliases
             ;; Remove only the obsolete index spelling, keeping all disk files.
             (org-museum--publish-run
@@ -5887,6 +5897,15 @@ configured fallbacks, authenticated GitHub account, or repository owner."
             (setq paths (append (cl-set-difference paths aliases :test #'equal)
                                 replacements)))))
       (org-museum--publish-run "git" (append '("--literal-pathspecs" "add" "-A" "--") paths))
+      ;; Windows cannot store two case variants as separate disk files.  Git
+      ;; can publish both names with the same staged blob, preserving old URLs
+      ;; while the canonical manifest and all generated links use source case.
+      (dolist (alias case-aliases)
+        (let ((blob (string-trim
+                     (cdr (org-museum--publish-run
+                           "git" (list "rev-parse" (concat ":" (cdr alias))))))))
+          (org-museum--publish-run
+           "git" (list "update-index" "--add" "--cacheinfo" "100644" blob (car alias)))))
       (when (eq system-type 'windows-nt)
         (let* ((tracked (split-string
                          (cdr (org-museum--publish-run "git" '("ls-files" "-z"))) "\0" t))
