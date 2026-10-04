@@ -14,6 +14,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
+import urllib.request
 from contextlib import contextmanager
 from collections import Counter
 from urllib.parse import unquote, urlsplit
@@ -426,24 +428,62 @@ def sync_locked(root: Path):
             if checkout.resolve().is_relative_to(Path(temporary).resolve()):
                 git(root, "worktree", "remove", "--force", str(checkout))
 
+def verify_live(site: str, commit: str, attempts=12, interval=15):
+    "Attest real deployed bytes, so Chat can read proof using GitHub logs."
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise Invalid("verify: invalid source commit")
+    site = site.rstrip("/") + "/"
+    for attempt in range(attempts):
+        try:
+            request = urllib.request.Request(site + "museum-release.json?commit=" + commit,
+                                            headers={"Cache-Control": "no-cache"})
+            with urllib.request.urlopen(request, timeout=20) as response:
+                receipt = json.load(response)
+            if receipt.get("sourceCommit") != commit:
+                raise Invalid("verify: CDN has not served this source version yet")
+            for note in receipt["notes"]:
+                if note["status"] != "published":
+                    continue
+                href = note["href"]
+                if not href.startswith("pages/collected/") or ".." in Path(href).parts:
+                    raise Invalid("verify: invalid published page path")
+                with urllib.request.urlopen(site + href + "?commit=" + commit, timeout=20) as response:
+                    page = response.read().decode("utf-8")
+                if (f'name="museum-source-commit" content="{commit}"' not in page or
+                    f'name="museum-note-sha256" content="{note["sha256"]}"' not in page):
+                    raise Invalid("verify: page does not contain the expected content version")
+            receipt["status"] = "published"
+            receipt["siteUrl"] = site
+            return receipt
+        except (OSError, ValueError) as error:
+            if attempt == attempts - 1:
+                raise Invalid("verify: live page version could not be confirmed") from error
+            time.sleep(interval)
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["validate", "build", "sync"])
+    parser.add_argument("command", choices=["validate", "build", "sync", "verify"])
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--engine", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--emacs", default="emacs")
+    parser.add_argument("--site", default="https://lovemoganna.github.io/org-notes/")
+    parser.add_argument("--commit")
     args = parser.parse_args()
     try:
         if args.command == "validate":
             result = {"status": "valid", "notes": validate(args.root)}
         elif args.command == "sync":
             result = sync(args.root)
+        elif args.command == "verify":
+            if not args.commit:
+                parser.error("verify requires --commit")
+            result = verify_live(args.site, args.commit)
         else:
             if not args.engine or not args.output:
                 parser.error("build requires --engine and --output")
             result = build(args.root, args.engine, args.output, args.emacs)
-        print(json.dumps(result, ensure_ascii=False))
+        print(("MUSEUM-PUBLISHED-RECEIPT " if args.command == "verify" else "") + json.dumps(result, ensure_ascii=False))
     except (Invalid, OSError, subprocess.TimeoutExpired) as error:
         print(json.dumps({"status": "failed", "error": str(error)}, ensure_ascii=False))
         raise SystemExit(1)
