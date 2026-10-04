@@ -4,6 +4,9 @@ from pathlib import Path
 import tempfile
 import unittest
 import subprocess
+import threading
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 SPEC = importlib.util.spec_from_file_location("pipeline", Path(__file__).parents[1] / "tools/museum_pipeline.py")
 m = importlib.util.module_from_spec(SPEC)
@@ -137,5 +140,76 @@ class SourceSync(unittest.TestCase):
         before = self.run_git(self.root, "diff", "--cached")
         with self.assertRaises(m.Invalid): m.sync(self.root)
         self.assertEqual(self.run_git(self.root, "diff", "--cached"), before)
+    def test_push_race_preserves_changes_then_merges_on_retry(self):
+        self.write(self.root, "note-12345678", "local saved during race")
+        self.write(self.other, "note-87654321", "concurrent remote save")
+        self.commit(self.other)
+        remote_sha = self.run_git(self.other, "rev-parse", "HEAD")
+        base_sha = self.run_git(self.root, "rev-parse", "HEAD")
+        # Transfer the real competing commit without advancing main yet.
+        self.run_git(self.other, "push", "origin", "HEAD:refs/heads/racing-save")
+        hook = self.root / ".git/hooks/pre-push"
+        self.run_git(self.root, "config", "core.hooksPath", str(hook.parent))
+        hook.write_text("#!/bin/sh\n" +
+                        "unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\n" +
+                        f"git --git-dir='{self.remote.as_posix()}' update-ref refs/heads/main {remote_sha} {base_sha}\n",
+                        encoding="utf-8", newline="\n")
+        try:
+            with self.assertRaisesRegex(m.Invalid, "retry"):
+                m.sync(self.root)
+        finally:
+            hook.unlink()
+        self.assertEqual(self.run_git(self.root, "rev-parse", "HEAD"), base_sha)
+        self.assertIn("local saved during race", self.path.read_text(encoding="utf-8"))
+        self.assertEqual(m.sync(self.root)["status"], "submitted")
+        self.assertIn("concurrent remote save", (self.root / "notes/programming/sql/note-87654321.org").read_text(encoding="utf-8"))
+
+class LiveVerification(unittest.TestCase):
+    "Exercise the HTTP boundary, including stale deployment and wrong page bytes."
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.commit = "a" * 40
+        self.digest = "b" * 64
+        self.href = "pages/collected/knowledge/workflow/note-12345678.html"
+        self.receipt = {"sourceCommit": self.commit, "notes": [{
+            "id": "note-12345678", "status": "published", "href": self.href,
+            "sha256": self.digest}]}
+        class QuietHandler(SimpleHTTPRequestHandler):
+            def log_message(self, *args): pass
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), partial(QuietHandler, directory=str(self.root)))
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.site = f"http://127.0.0.1:{self.server.server_port}/"
+        self.write_receipt()
+        self.page = self.root / self.href
+        self.page.parent.mkdir(parents=True)
+        self.page.write_text(f'<meta name="museum-source-commit" content="{self.commit}">'
+                             f'<meta name="museum-note-sha256" content="{self.digest}">', encoding="utf-8")
+    def write_receipt(self):
+        (self.root / "museum-release.json").write_text(json.dumps(self.receipt), encoding="utf-8")
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+        self.tmp.cleanup()
+    def test_current_page_returns_verified_receipt(self):
+        receipt = m.verify_live(self.site, self.commit, attempts=1, interval=0)
+        self.assertEqual(receipt["status"], "published")
+        self.assertEqual(receipt["siteUrl"], self.site)
+    def test_stale_release_times_out_without_success(self):
+        self.receipt["sourceCommit"] = "c" * 40
+        self.write_receipt()
+        with self.assertRaisesRegex(m.Invalid, "could not be confirmed"):
+            m.verify_live(self.site, self.commit, attempts=1, interval=0)
+    def test_wrong_content_hash_is_not_published(self):
+        self.page.write_text(f'<meta name="museum-source-commit" content="{self.commit}">'
+                             f'<meta name="museum-note-sha256" content="{"c" * 64}">', encoding="utf-8")
+        with self.assertRaisesRegex(m.Invalid, "could not be confirmed"):
+            m.verify_live(self.site, self.commit, attempts=1, interval=0)
+    def test_missing_page_is_not_published(self):
+        self.page.unlink()
+        with self.assertRaisesRegex(m.Invalid, "could not be confirmed"):
+            m.verify_live(self.site, self.commit, attempts=1, interval=0)
 
 if __name__ == "__main__": unittest.main()

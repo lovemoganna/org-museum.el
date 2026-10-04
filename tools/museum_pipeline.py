@@ -44,7 +44,7 @@ def git(root: Path, *args: str, binary=False):
             raise Invalid("authentication: GitHub access must be restored")
         if any(x in error for x in ("could not resolve", "unable to access", "connection", "timed out")):
             raise Invalid("network: source changes remain pending")
-        if any(x in error for x in ("non-fast-forward", "fetch first", "cannot lock ref")):
+        if any(x in error for x in ("non-fast-forward", "fetch first", "cannot lock ref", "incorrect old value provided")):
             raise Invalid("retry: remote changed; source changes remain pending")
         raise Invalid("git: operation failed; source changes remain preserved")
     return result.stdout if binary else result.stdout.decode("utf-8").strip()
