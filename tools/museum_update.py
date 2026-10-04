@@ -204,10 +204,17 @@ def update(root, context, candidate):
                         p.git(root, "worktree", "remove", "--force", str(checkout))
 
 def github(root, endpoint):
-    result = subprocess.run(["gh", "api", endpoint], cwd=root, capture_output=True)
-    if result.returncode:
-        raise p.Invalid("publication: cannot inspect GitHub Actions")
-    return result.stdout.decode("utf-8-sig")
+    for attempt in range(3):
+        try:
+            result = subprocess.run(["gh", "api", endpoint], cwd=root, capture_output=True, timeout=30)
+            if result.returncode == 0:
+                return result.stdout.decode("utf-8-sig")
+            if re.search(rb"HTTP (?:401|403)", result.stderr):
+                break
+        except subprocess.TimeoutExpired:
+            pass
+        if attempt < 2: time.sleep(1)
+    raise p.Invalid("publication: cannot inspect GitHub Actions; source commit is preserved")
 
 def validate_commit_update(root, base, commit):
     "CI guard for a declared Museum-Update; require exactly one existing Org source."
