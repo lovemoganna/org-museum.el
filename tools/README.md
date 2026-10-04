@@ -1,0 +1,65 @@
+# Chat knowledge pipeline
+
+`museum_pipeline.py` is the shared entry for source validation, local preview,
+Actions export and source-only save synchronization. Python 3.10+ and Emacs
+27.1+ are required. The publisher checkout is pinned to a commit in the source
+repository's workflow. Notes are data: batch export disables Babel evaluation.
+
+```sh
+python tools/museum_pipeline.py validate --root /path/to/org-notes
+python tools/museum_pipeline.py build --root /path/to/org-notes --engine . --output /path/to/new-preview
+python tools/museum_pipeline.py sync --root /path/to/org-notes
+```
+
+Build requires an absent output directory and preserves legacy HTML bytes.
+Only pages/resources/assets and selected public site files enter its artifact;
+source notes, credentials, configuration and private skills do not. New pages
+live under `pages/collected/<kind>/<topic>/<stable-id>.html`. The generated
+`museum-release.json` records source commit, note paths and content hashes;
+each new page contains matching source-commit and note-hash metadata. A deploy
+success alone is insufficient to claim that a specific note is visible.
+
+Source notes live in `notes/{programming,knowledge,reading,ideas}/<topic>/<id>.org`.
+Required headers: TITLE, WIKI_ID (same as filename), CATEGORY, FILETAGS, DATE
+(ISO date), SOURCE and INGEST_ID. Missing sources are stated explicitly. Never
+put private material in a public draft. Raw active HTML and external export
+directives are rejected. Code samples are retained and are not executed.
+
+The private personal plugin in Org-Skills owns Chat routing and GitHub receipts.
+It pins the two existing content skills; those skills are not in this public
+repository. Chat must have GitHub read and write tools. This batch entry cannot
+make unavailable Chat tools appear or replace real Chat acceptance testing.
+
+Optional Emacs setup (after loading org-museum):
+
+```elisp
+(require 'org-museum-source-sync)
+(setq org-museum-source-sync-root "/path/to/org-notes/"
+      org-museum-source-sync-python "python")
+(org-museum-source-sync-mode 1)
+```
+
+Only saves under notes/ and note-assets/ trigger the ten-second debounce.
+The root must be main with an empty staging area and an Actions museum.json.
+Synchronization uses an OS lock, fetches remote first, commits in an isolated
+worktree, and pushes without force. Disjoint changes are merged; same-file
+conflicts preserve local bytes. Saves during a push remain pending. Network
+failures retry with backoff; permissions, invalid notes and conflicts halt
+until `M-x org-museum-source-sync-now` is explicitly invoked. Pending saved
+changes are recovered from Git when the mode starts again.
+
+Loading the adapter blocks legacy HTML deployment to an Actions-owned target.
+Existing org-roam/pages remains an independent source workspace. Do not use
+its legacy HTML push to publish the new notes/ repository.
+
+Validation:
+
+```sh
+python -m unittest discover -s test -p 'test_museum_pipeline*.py' -v
+MUSEUM_TEST_LEGACY=/path/to/org-notes MUSEUM_TEST_EMACS=emacs python -m unittest discover -s test -p test_museum_pipeline_build.py -v
+```
+
+Git integration tests use actual temporary bare repositories, including
+concurrent/disjoint writes, same-file conflict, repeated sync, offline recovery
+and preservation of staged changes. The optional real-site export regression
+checks Chinese titles, attachments, legacy bytes and a Babel execution probe.
