@@ -102,6 +102,10 @@ def resolve(root, url):
             raise p.Invalid("resolve: page identity conflicts with its source binding")
     # Do not infer identity from a filename, title, theme query or HTML body.
     path = record["path"]
+    expected_source_url = f"https://raw.githubusercontent.com/{config['repository']}/{published}/{path}"
+    if ((page.alternate and page.alternate != expected_source_url) or
+            (record.get("sourceUrl") and record["sourceUrl"] != expected_source_url)):
+        raise p.Invalid("resolve: original source URL conflicts with Git identity")
     target = p.within(root, path)
     if not target.is_file():
         raise p.Invalid("resolve: original Org file is absent locally; update stopped, no note created")
@@ -282,9 +286,11 @@ def publication_status(root, submitted):
     if len(deploys) != 1: return result
     logs = github(root, f"repos/lovemoganna/org-notes/actions/jobs/{deploys[0]['id']}/logs")
     receipts = [json.loads(line.split("MUSEUM-PUBLISHED-RECEIPT ", 1)[1]) for line in logs.splitlines() if "MUSEUM-PUBLISHED-RECEIPT {" in line]
-    matches = [r for r in receipts if r.get("sourceCommit") == commit and any(
+    site = json.loads((root / "museum.json").read_text(encoding="utf-8"))["siteUrl"]
+    _, expected_href = canonical_url(submitted["url"], site)
+    matches = [r for r in receipts if r.get("sourceCommit") == commit and r.get("status") == "published" and any(
         n["id"] == submitted["wikiId"] and n["path"] == submitted["path"] and n["sha256"] == submitted["sha256"] and
-        n["status"] == "published" for n in r.get("notes", []))]
+        n["status"] == "published" and n["href"] == expected_href for n in r.get("notes", []))]
     if len(matches) == 1:
         result.update(status="updated", pagesStatus="published", verification="post-deployment HTTP attestation")
     return result

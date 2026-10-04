@@ -135,6 +135,11 @@ class UrlUpdate(unittest.TestCase):
         self.page.write_text('<pre class="museum-org-source"><code>正文</code></pre>', encoding="utf-8")
         with self.assertRaisesRegex(u.p.Invalid, "different versions"):
             u.resolve(self.root, self.url)
+    def test_original_source_link_cannot_select_a_different_note(self):
+        self.page.write_text(self.page.read_text(encoding="utf-8") +
+                             '<link rel="alternate" type="text/org" href="https://example.com/other.org">', encoding="utf-8")
+        with self.assertRaisesRegex(u.p.Invalid, "source URL conflicts"):
+            u.resolve(self.root, self.url)
     def test_in_place_commit_and_repeat_keep_identity_and_path(self):
         context = u.resolve(self.root, self.url)
         result = u.update(self.root, context, CANDIDATE)
