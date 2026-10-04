@@ -284,13 +284,19 @@ def build(root: Path, engine: Path, output: Path, emacs: str):
                 (candidate / "assets.json").write_text(json.dumps(current, ensure_ascii=False), encoding="utf-8")
         check_site(candidate, records)
         sha = git(root, "rev-parse", "HEAD")
-        receipt = {"schemaVersion": 1, "sourceCommit": sha, "notes": records, "legacyPages": len(legacy)}
+        repository = json.loads((root / "museum.json").read_text(encoding="utf-8")).get("repository", "lovemoganna/org-notes")
+        for record in records:
+            record["sourceUrl"] = f"https://raw.githubusercontent.com/{repository}/{sha}/{record['path']}"
+        receipt = {"schemaVersion": 1, "repository": repository, "sourceCommit": sha, "notes": records, "legacyPages": len(legacy)}
         (candidate / "museum-release.json").write_text(json.dumps(receipt, ensure_ascii=False, indent=2), encoding="utf-8")
         for record in records:
             if record["status"] == "published":
                 path = candidate / record["href"]
                 text = path.read_text(encoding="utf-8")
                 marker = f'<meta name="museum-source-commit" content="{sha}"><meta name="museum-note-sha256" content="{record["sha256"]}">'
+                marker += (f'<meta name="museum-wiki-id" content="{html.escape(record["id"], quote=True)}">'
+                           f'<meta name="museum-source-path" content="{html.escape(record["path"], quote=True)}">'
+                           f'<link rel="alternate" type="text/org" href="{html.escape(record["sourceUrl"], quote=True)}">')
                 path.write_text(text.replace("</head>", marker + "</head>", 1), encoding="utf-8")
         (candidate / ".nojekyll").touch()
         for path in candidate.rglob("*"):

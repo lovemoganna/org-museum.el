@@ -18,7 +18,7 @@ class BatchBuild(unittest.TestCase):
             root = Path(temporary) / "repo"
             subprocess.run(["git", "clone", "--shared", os.environ["MUSEUM_TEST_LEGACY"], str(root)], check=True, capture_output=True)
             note = root / "notes/programming/python/note-e2e12345.org"
-            note.parent.mkdir(parents=True)
+            note.parent.mkdir(parents=True, exist_ok=True)
             marker = Path(temporary) / "EXECUTED"
             os.environ["MUSEUM_PROBE"] = str(marker)
             try:
@@ -40,12 +40,16 @@ class BatchBuild(unittest.TestCase):
 [[file:../../../note-assets/sample.csv][必要附件]]
 ''', encoding="utf-8")
                 asset = root / "note-assets/sample.csv"
-                asset.parent.mkdir()
+                asset.parent.mkdir(exist_ok=True)
                 asset.write_text("id,value\n1,2\n", encoding="utf-8")
                 output = Path(temporary) / "site"
                 receipt = m.build(root, ENGINE, output, os.getenv("MUSEUM_TEST_EMACS", "emacs"))
                 self.assertFalse(marker.exists(), "Babel must never execute")
-                self.assertTrue((output / receipt["notes"][0]["href"]).is_file())
+                record = next(r for r in receipt["notes"] if r["id"] == "note-e2e12345")
+                page = output / record["href"]
+                self.assertTrue(page.is_file())
+                self.assertIn('type="text/org"', page.read_text(encoding="utf-8"))
+                self.assertIn(record["sourceUrl"], page.read_text(encoding="utf-8"))
                 self.assertIn("note-e2e12345", (output / "resources/org-museum-related-data.js").read_text(encoding="utf-8"))
                 self.assertGreater(receipt["legacyPages"], 0)
                 for old in (root / "pages").rglob("*.html"):
