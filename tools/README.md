@@ -105,3 +105,9 @@ read its `MUSEUM-URL-RESOLVED` evidence through connected GitHub tools. The norm
 publish workflow also records these bindings after real HTTP verification.
 Historical HTML with no verified Git source binding stops without creating or
 renaming a note. Its filtered Org body is not a complete editable source.
+
+The URL workflow adds 16 tests covering identity, historical metadata, missing
+sources, literal code, references, stale pages, in-place/idempotent updates and
+real same-file Git conflicts. A live regression updated python-sum-function at
+its original path and verified the deployed note hash against the source blob.
+Existing note-reforge and programming skill files were not modified.
