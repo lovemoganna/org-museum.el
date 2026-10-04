@@ -247,10 +247,13 @@ def resolve_cloud(root, url, wait=150):
         matches = [r for r in runs if r.get("display_title") == "Resolve Museum URL " + request_id]
         if matches and matches[0]["status"] == "completed":
             run = matches[0]
-            if run["conclusion"] != "success":
-                raise p.Invalid("resolve: cloud resolution failed; inspect " + run["html_url"])
             jobs = json.loads(github(root, f"repos/lovemoganna/org-notes/actions/runs/{run['id']}/jobs"))["jobs"]
             logs = github(root, f"repos/lovemoganna/org-notes/actions/jobs/{jobs[0]['id']}/logs")
+            if run["conclusion"] != "success":
+                failures = [json.loads(line.split("MUSEUM-URL-FAILED ", 1)[1]) for line in logs.splitlines()
+                            if "MUSEUM-URL-FAILED {" in line]
+                reason = failures[0]["error"] if len(failures) == 1 else "resolve: cloud resolution failed"
+                raise p.Invalid(reason + "; inspect " + run["html_url"])
             contexts = [json.loads(line.split("MUSEUM-URL-RESOLVED ", 1)[1]) for line in logs.splitlines()
                         if "MUSEUM-URL-RESOLVED {" in line]
             if len(contexts) != 1 or contexts[0].get("url") != canonical or contexts[0].get("operation") != "update":
