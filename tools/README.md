@@ -72,3 +72,36 @@ pages and mismatched content hashes instead of returning a published receipt.
 These deterministic and Git/HTTP integration checks currently total 19 tests.
 The optional real-site export regression
 checks Chinese titles, attachments, legacy bytes and a Babel execution probe.
+
+## Updating a published URL
+
+Each newly built page now exposes its exact Git source through a `text/org`
+alternate link, `museum-wiki-id` and `museum-source-path`. The release manifest
+also includes the pinned raw source URL. Query strings and fragments describe
+presentation state and never select a different note.
+
+`museum_update.py resolve --root /path/to/org-notes --url <page> --output context.json`
+checks the real page, release version and original tracked Org file, and returns
+`operation: update`, its stable identity/path, the full Git source, and the
+filtered published Org body separately. Run the existing private note-reforge
+skill on the full source and save its candidate outside the source repository.
+Neither existing content skill needs to change.
+
+`museum_update.py update --root /path/to/org-notes --context context.json --candidate candidate.org --output submitted.json --wait 300`
+preserves metadata spelling, references, anchors, existing heading names and
+literal code, checks the latest target blob, and commits only the existing file.
+Unrelated remote changes can be rebased safely; a same-file change stops the
+update. A repeat with unchanged content reuses the source revision.
+
+`museum_update.py status --root /path/to/org-notes --context submitted.json`
+reports commit, Actions and verified Pages status separately. Success requires
+the deployed HTTP attestation to match this note's ID, path and committed hash.
+Declared Museum-Update commits can be checked in CI with `check-commit --base
+<parent> --commit <head>`; creating a file or changing identity is rejected.
+
+Clients without a working Pages TLS route can use `resolve --cloud` to execute
+the same resolver in the read-only resolve-url.yml workflow. Chat clients can
+read its `MUSEUM-URL-RESOLVED` evidence through connected GitHub tools. The normal
+publish workflow also records these bindings after real HTTP verification.
+Historical HTML with no verified Git source binding stops without creating or
+renaming a note. Its filtered Org body is not a complete editable source.
