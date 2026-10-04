@@ -65,5 +65,10 @@ MUSEUM_TEST_LEGACY=/path/to/org-notes MUSEUM_TEST_EMACS=emacs python -m unittest
 
 Git integration tests use actual temporary bare repositories, including
 concurrent/disjoint writes, same-file conflict, repeated sync, offline recovery
-and preservation of staged changes. The optional real-site export regression
+and preservation of staged changes. A real pre-push hook advances the remote
+after negotiation to verify that a rejected update preserves source changes
+and succeeds after refetching. Local HTTP tests reject stale releases, missing
+pages and mismatched content hashes instead of returning a published receipt.
+These deterministic and Git/HTTP integration checks currently total 19 tests.
+The optional real-site export regression
 checks Chinese titles, attachments, legacy bytes and a Babel execution probe.
