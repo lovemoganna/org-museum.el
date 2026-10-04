@@ -18,6 +18,10 @@ live under `pages/collected/<kind>/<topic>/<stable-id>.html`. The generated
 `museum-release.json` records source commit, note paths and content hashes;
 each new page contains matching source-commit and note-hash metadata. A deploy
 success alone is insufficient to claim that a specific note is visible.
+The `verify --commit <source-sha>` command fetches the live receipt and pages,
+checks those metadata values, and prints MUSEUM-PUBLISHED-RECEIPT only after
+actual HTTP verification. Actions deploy logs expose this attestation to Chat
+when its web tools cannot access Pages directly; failures never print success.
 
 Source notes live in `notes/{programming,knowledge,reading,ideas}/<topic>/<id>.org`.
 Required headers: TITLE, WIKI_ID (same as filename), CATEGORY, FILETAGS, DATE
