@@ -111,3 +111,5 @@ sources, literal code, references, stale pages, in-place/idempotent updates and
 real same-file Git conflicts. A live regression updated python-sum-function at
 its original path and verified the deployed note hash against the source blob.
 Existing note-reforge and programming skill files were not modified.
+Resolution failures emit MUSEUM-URL-FAILED with their exact stage and cause;
+missing bindings and network failures never cause a replacement note to be made.
