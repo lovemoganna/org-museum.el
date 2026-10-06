@@ -74,3 +74,50 @@ test('disconnected components remain separate and spacing expands geometry', () 
   const distance=p=>Math.hypot(p.get('a').x-p.get('b').x,p.get('a').y-p.get('b').y);
   assert(distance(far)>distance(near)*2);
 });
+
+test('graph commandbar includes time filter contracts and CSS', () => {
+  assert(html.includes('class="graph-filter-summary graph-time-summary"'), 'graph has time summary details');
+  assert(html.includes('id="graph-time-filters"'), 'graph has time filters container');
+  assert(html.includes('id="graph-time-label"'), 'graph has time label');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'resources', 'org-museum.css'), 'utf8');
+  assert(css.includes('.graph-page.is-network-runtime .graph-time-summary'), 'css includes graph time summary');
+  assert(css.includes('#graph-time-filters'), 'css includes graph time filters');
+  // Nodes in graph data contain created/modified timestamps for time filtering
+  const datedNodes = graph.nodes.filter(n => n.created || n.modified);
+  assert(datedNodes.length > 0, 'graph nodes contain created/modified dates');
+});
+
+test('graph time filter correctly partitions nodes by creation time window', () => {
+  function parseNodeTimestamp(val) {
+    if (!val) return NaN;
+    if (typeof val === 'number') return val > 1e11 ? val : val * 1000;
+    if (typeof val === 'string') {
+      var num = Number(val);
+      if (!isNaN(num) && num > 0) return num > 1e11 ? num : num * 1000;
+      var parsed = Date.parse(val.replace(/-/g, '/'));
+      return isNaN(parsed) ? Date.parse(val) : parsed;
+    }
+    return NaN;
+  }
+  const maxMs = Math.max(...graph.nodes.map(n => parseNodeTimestamp(n.created) || parseNodeTimestamp(n.modified) || 0));
+  const now = Date.now();
+  const anchorMs = Math.max(now, maxMs);
+
+  function filterByDays(days) {
+    const cutoff = anchorMs - (days - 1) * 86400000;
+    return graph.nodes.filter(n => {
+      const t = parseNodeTimestamp(n.created) || parseNodeTimestamp(n.modified);
+      return !isNaN(t) && t >= cutoff;
+    });
+  }
+
+  const nodes7 = filterByDays(7);
+  const nodes30 = filterByDays(30);
+  const nodes90 = filterByDays(90);
+  const nodesAll = graph.nodes;
+
+  assert(nodes7.length > 0 && nodes7.length < nodesAll.length, '7 days filters a subset of notes');
+  assert(nodes7.length <= nodes30.length, '30 days includes 7 days notes');
+  assert(nodes30.length <= nodes90.length, '90 days includes 30 days notes');
+  assert(nodes90.length <= nodesAll.length, 'All notes includes 90 days notes');
+});

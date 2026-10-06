@@ -1,0 +1,87 @@
+;;; org-museum-link-regression-test.el --- Exported-note link aliases -*- lexical-binding: t; -*-
+(require 'ert)
+(require 'org-museum)
+
+(ert-deftest org-museum-links-html-note-alias-is-not-an-attachment ()
+  (let* ((root (make-temp-file "museum-html-note-" t))
+         (org-museum-root-dir root) (org-museum-export-dir "dist/pages")
+         (org-museum-shared-export-dir "dist")
+         (source (expand-file-name "pages/source.org" root))
+         (target (expand-file-name "pages/target.org" root))
+         (pages (make-hash-table :test #'equal))
+         (org-museum--index (make-org-museum-index :pages pages))
+         (out (expand-file-name "dist/pages/source.html" root)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory source) t)
+          (with-temp-file source (insert "#+TITLE: Source\n[[file:target.html::#details][Target]]\n[[file:target.html#details][Fragment]]\n"))
+          (with-temp-file target (insert "#+TITLE: Target\n"))
+          (puthash "source" (make-org-museum-page :id "source" :path source) pages)
+          (puthash "target" (make-org-museum-page :id "target" :path target) pages)
+          (with-temp-buffer
+            (insert-file-contents source)
+            (setq buffer-file-name source)
+            (delay-mode-hooks (org-mode))
+            (cl-letf (((symbol-function 'org-museum--asset-register-local)
+                       (lambda (&rest _) (ert-fail "HTML note link became an asset"))))
+              (org-museum--prepare-page-assets (current-buffer) source out))
+            (org-museum--rewrite-org-museum-links (current-buffer) out source)
+            (should (string-search "[[file:target.html#details][Target]]" (buffer-string)))
+            (should (string-search "[[file:target.html#details][Fragment]]" (buffer-string))))
+          (should (member "target" (org-museum--extract-links-from-file source pages)))
+          (should (equal (with-temp-buffer (insert-file-contents source) (buffer-string))
+                         "#+TITLE: Source\n[[file:target.html::#details][Target]]\n[[file:target.html#details][Fragment]]\n")))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-links-standalone-html-remains-an-asset ()
+  (let* ((root (make-temp-file "museum-html-asset-" t))
+         (org-museum-root-dir root)
+         (source (expand-file-name "source.org" root))
+         (org-museum--index (make-org-museum-index :pages (make-hash-table :test #'equal)))
+         registered)
+    (unwind-protect
+        (with-temp-buffer
+          (insert "[[file:standalone.html][Standalone]]")
+          (setq buffer-file-name source)
+          (delay-mode-hooks (org-mode))
+          (cl-letf (((symbol-function 'org-museum--asset-register-local)
+                     (lambda (path &rest _) (setq registered path) nil)))
+            (org-museum--prepare-page-assets (current-buffer) source "dist/source.html"))
+          (should (equal registered (expand-file-name "standalone.html" root))))
+      (delete-directory root t))))
+
+(provide 'org-museum-link-regression-test)
+
+(ert-deftest org-museum-links-custom-id-survives-private-drawer-removal ()
+  (with-temp-buffer
+    (insert "#+TITLE: Test\n[[#details][Details]]\n* Details\n:PROPERTIES:\n:CUSTOM_ID: details\n:SECRET: private-token\n:END:\nText\n:LOGBOOK:\nprivate-log\n:END:\n:END:\n")
+    (delay-mode-hooks (org-mode))
+    (org-museum--strip-drawers)
+    (should (string-search ":CUSTOM_ID: details" (buffer-string)))
+    (should-not (string-search "private-token" (buffer-string)))
+    (should-not (string-search "private-log" (buffer-string)))
+    (let ((html (org-export-as 'html nil nil t)))
+      (should (string-search "href=\"#details\"" html))
+      (should (string-search "id=\"details\"" html))
+      (should-not (string-search "BROKEN LINK" html)))))
+
+(ert-deftest org-museum-links-custom-id-preserves-published-stable-anchor ()
+  (let* ((root (make-temp-file "museum-anchor-" t))
+         (org-museum-root-dir root)
+         (file (expand-file-name "note.org" root))
+         (pages (make-hash-table :test #'equal))
+         (page (make-org-museum-page :id "note" :path file))
+         (org-museum--index (make-org-museum-index :pages pages)) legacy)
+    (unwind-protect
+        (progn
+          (puthash "note" page pages)
+          (with-temp-file file (insert "#+TITLE: Note\n* Details\nText\n"))
+          (setq legacy (plist-get (car (org-museum--source-heading-inventory page)) :id))
+          (with-temp-file file
+            (insert "#+TITLE: Note\n* Details\n:PROPERTIES:\n:CUSTOM_ID: details\n:END:\nText\n"))
+          (with-temp-buffer
+            (insert "<h2 id=\"details\">Details</h2><a href=\"#details\">Jump</a>")
+            (org-museum--pp-stabilize-heading-anchors file)
+            (should (string-search (concat "<span id=\"" legacy "\"") (buffer-string)))
+            (should (string-search "href=\"#details\"" (buffer-string)))) )
+      (delete-directory root t))))

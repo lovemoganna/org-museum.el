@@ -17,6 +17,56 @@ async function settled(workspace,id) {
   for(let i=0;i<100;i++) { const s=await workspace.api('session?sessionId='+id); if(!['streaming','recommending','batching'].includes(s.status)) { await workspace.flush(); return s; } await new Promise(resolve=>setImmediate(resolve)); }
   throw new Error('session did not finish');
 }
+
+test('backup import waits for an already-started workspace operation', async()=>{
+  const backup=await fixture().workspace.exportData();
+  const {options}=fixture();
+  let release, entered;
+  const waiting=new Promise(resolve=>{release=resolve;});
+  const started=new Promise(resolve=>{entered=resolve;});
+  options.source=async p=>{entered(); await waiting; return {hash:p.sourceHash,text};};
+  const workspace=create(options), pending=workspace.api('session-start',{pageIds:['a']});
+  await started;
+  try { await assert.rejects(workspace.importData(backup),/运行中的操作/); }
+  finally { release(); await pending; }
+  assert.equal((await workspace.exportData()).sessions.length,1);
+});
+
+test('invalid late backup records cannot partially import earlier sessions', async()=>{
+  const source=fixture().workspace;
+  await settled(source,(await source.api('session-start',{pageIds:['a']})).id);
+  const backup=await source.exportData();
+  backup.queue=[{id:'invalid-job',pageId:'missing-page',status:'dirty'}];
+  const destination=fixture().workspace, before=await destination.exportData();
+  await assert.rejects(destination.importData(backup),/找不到/);
+  assert.deepEqual(await destination.exportData(),before);
+});
+
+test('imported source links use current catalog addresses instead of executable URLs', async()=>{
+  const source=fixture().workspace;
+  const session=await settled(source,(await source.api('session-start',{pageIds:['a']})).id);
+  await source.api('capture-add',{sessionId:session.id,turnId:session.turns[0].id});
+  const backup=await source.exportData();
+  backup.sessions[0].sources[0].href='javascript:alert(1)';
+  backup.captures[0].sources[0].href='data:text/html,unsafe';
+  const destination=fixture().workspace;
+  await destination.importData(backup);
+  const restored=await destination.exportData();
+  assert.equal(restored.sessions[0].sources[0].href,'a.html');
+  assert.equal(restored.captures[0].sources[0].href,'a.html');
+});
+
+test('failed durable backup save leaves the in-memory workspace unchanged', async()=>{
+  const source=fixture().workspace;
+  await settled(source,(await source.api('session-start',{pageIds:['a']})).id);
+  const backup=await source.exportData(), {workspace,options}=fixture();
+  const before=await workspace.exportData(), save=options.storage.save;
+  options.storage.save=async()=>{throw new Error('disk-full');};
+  await assert.rejects(workspace.importData(backup),/disk-full/);
+  options.storage.save=save;
+  await workspace.api('action',{action:'mode',mode:'assist'});
+  assert.deepEqual(await workspace.exportData(),before);
+});
 test('category display labels remain consistent while filter keys stay unchanged', async()=>{
   const {options}=fixture();
   options.pages=pages.map(p=>({...p,category:'uncategorized',categoryLabel:'其他笔记'}));

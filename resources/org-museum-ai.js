@@ -38,12 +38,18 @@
     var noteTitle = (articleNode && (articleNode.dataset.pageTitle || one("h1", articleNode)?.textContent)) || document.title;
     var center = one("[data-ai-center-link]", panel);
     var nav = one(".museum-nav-ai");
-    if (center && nav) center.href = nav.href + (pageId ? "?pageId=" + encodeURIComponent(pageId) : "");
+    if (center && (!center.getAttribute("href") || center.getAttribute("href") === "#") && nav) {
+      center.href = nav.href + (pageId ? "?pageId=" + encodeURIComponent(pageId) : "");
+    }
 
     var isMac = typeof navigator !== "undefined" && /(Mac|iPhone|iPod|iPad)/i.test(navigator.platform || "");
     var shortcutText = isMac ? "⌘I" : "Ctrl+I";
     var shortcutEl = one("[data-ai-trigger-shortcut]", trigger);
     if (shortcutEl) shortcutEl.textContent = shortcutText;
+    var composerHint = one(".museum-ai-composer-hint", panel);
+    if (composerHint) {
+      composerHint.innerHTML = "<kbd>" + (isMac ? "⌘Enter" : "Ctrl+Enter") + "</kbd> 发送";
+    }
 
     var triggerDot = one("[data-ai-trigger-dot]", trigger);
     var statusDot = one("[data-ai-status-dot]", panel);
@@ -60,6 +66,258 @@
     var exploreChips = one("[data-ai-explore-chips]", panel);
     var newChatBtn = one("[data-copilot-new]", panel);
     var engineBadge = one("[data-ai-engine-badge]", panel);
+
+    var modelSelect = one("[data-copilot-model-select]", panel);
+    var modelRefreshBtn = one("[data-copilot-model-refresh]", panel);
+    var configToggleBtn = one("[data-copilot-config-toggle]", panel);
+    var configPanel = one("[data-copilot-model-config]", panel);
+    var configForm = one("[data-copilot-config-form]", panel);
+    var configCancelBtn = one("[data-copilot-config-cancel]", panel);
+    var configStatus = one("[data-copilot-config-status]", panel);
+    var providerInput = one("[data-copilot-provider]", panel);
+    var endpointInput = one("[data-copilot-endpoint]", panel);
+    var keyInput = one("[data-copilot-key]", panel);
+
+    var savedConfig = { provider: "compatible", endpoint: "http://127.0.0.1:1234/v1", model: "" };
+    try {
+      var loaded = JSON.parse(localStorage.getItem("org-museum-browser-model") || "{}");
+      if (loaded && typeof loaded === "object") {
+        if (loaded.provider) savedConfig.provider = loaded.provider;
+        if (loaded.endpoint) savedConfig.endpoint = loaded.endpoint;
+        if (loaded.model) savedConfig.model = loaded.model;
+        if (loaded.system) savedConfig.system = loaded.system;
+      }
+    } catch (_) {}
+
+    var handleModelChanged = function (event) {
+      if (event && event.detail && typeof event.detail === "object") {
+        if (event.detail.model) {
+          savedConfig.model = event.detail.model;
+          updateBadgeModel(event.detail.model === "emacs-backend" ? "Emacs 后端" : event.detail.model);
+          if (modelSelect) {
+            var opts = modelSelect.options || modelSelect.children || [];
+            var exists = Array.from(opts).some(function (o) { return o.value === event.detail.model; });
+            if (!exists && event.detail.model) {
+              var opt = document.createElement("option");
+              opt.value = event.detail.model;
+              opt.textContent = event.detail.model;
+              modelSelect.appendChild(opt);
+            }
+            modelSelect.value = event.detail.model;
+          }
+        }
+        if (event.detail.provider) {
+          savedConfig.provider = event.detail.provider;
+          if (providerInput) providerInput.value = event.detail.provider;
+        }
+        if (event.detail.endpoint) {
+          savedConfig.endpoint = event.detail.endpoint;
+          if (endpointInput) endpointInput.value = event.detail.endpoint;
+        }
+      }
+    };
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      window.addEventListener("org-museum-model-changed", handleModelChanged);
+    } else if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+      document.addEventListener("org-museum-model-changed", handleModelChanged);
+    }
+
+    var cachedModels = [];
+    try {
+      var cached = JSON.parse(localStorage.getItem("org-museum-browser-models-list") || "[]");
+      if (Array.isArray(cached)) cachedModels = cached;
+    } catch (_) {}
+
+    function updateBadgeModel(modelName) {
+      if (!engineBadge) return;
+      if (engineBadge.classList.contains("is-generating")) return;
+      if (modelName) {
+        engineBadge.textContent = modelName;
+        engineBadge.title = "当前使用模型: " + modelName;
+      } else {
+        engineBadge.textContent = "未选模型";
+        engineBadge.title = "尚未选择 AI 模型";
+      }
+    }
+
+    function populateModelSelect(models, currentModel) {
+      if (!modelSelect) return;
+      modelSelect.replaceChildren();
+      var foundCurrent = false;
+
+      var placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.disabled = true;
+      placeholder.textContent = models && models.length ? "请选择模型…" : "未发现模型 (点击 ⚙ 配置)";
+      if (!currentModel) placeholder.selected = true;
+      modelSelect.appendChild(placeholder);
+
+      if (models && models.length) {
+        models.forEach(function (m) {
+          var opt = document.createElement("option");
+          opt.value = m;
+          opt.textContent = m;
+          if (currentModel && m === currentModel) {
+            opt.selected = true;
+            foundCurrent = true;
+          }
+          modelSelect.appendChild(opt);
+        });
+      }
+
+      if (currentModel && !foundCurrent && currentModel !== "emacs-backend") {
+        var customOpt = document.createElement("option");
+        customOpt.value = currentModel;
+        customOpt.textContent = currentModel + " (已配置)";
+        customOpt.selected = true;
+        modelSelect.appendChild(customOpt);
+        foundCurrent = true;
+      }
+
+      if (typeof window.orgMuseumAiApi === "function") {
+        var emacsOpt = document.createElement("option");
+        emacsOpt.value = "emacs-backend";
+        emacsOpt.textContent = "Emacs 本机后端";
+        if (currentModel === "emacs-backend") {
+          emacsOpt.selected = true;
+          foundCurrent = true;
+        }
+        modelSelect.appendChild(emacsOpt);
+      }
+
+      updateBadgeModel(currentModel);
+    }
+
+    populateModelSelect(cachedModels, savedConfig.model);
+
+    if (providerInput) providerInput.value = savedConfig.provider || "compatible";
+    if (endpointInput) endpointInput.value = savedConfig.endpoint || (savedConfig.provider === "ollama" ? "http://127.0.0.1:11434" : "http://127.0.0.1:1234/v1");
+
+    if (modelSelect) {
+      modelSelect.addEventListener("change", function () {
+        var selectedVal = modelSelect.value;
+        if (!selectedVal) return;
+        savedConfig.model = selectedVal;
+        try {
+          localStorage.setItem("org-museum-browser-model", JSON.stringify(savedConfig));
+        } catch (_) {}
+        updateBadgeModel(selectedVal === "emacs-backend" ? "Emacs 后端" : selectedVal);
+        if (typeof CustomEvent === "function") {
+          try {
+            var evt = new CustomEvent("org-museum-model-changed", { detail: savedConfig });
+            if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") window.dispatchEvent(evt);
+            if (typeof document !== "undefined" && typeof document.dispatchEvent === "function") document.dispatchEvent(evt);
+          } catch (_) {}
+        }
+      });
+    }
+
+    if (configToggleBtn && configPanel) {
+      configToggleBtn.addEventListener("click", function () {
+        configPanel.hidden = !configPanel.hidden;
+        configToggleBtn.setAttribute("aria-expanded", String(!configPanel.hidden));
+        if (!configPanel.hidden) {
+          if (endpointInput && !endpointInput.value) {
+            endpointInput.value = (providerInput && providerInput.value === "ollama") ? "http://127.0.0.1:11434" : "http://127.0.0.1:1234/v1";
+          }
+          if (configStatus) configStatus.textContent = "";
+        }
+      });
+    }
+
+    if (configCancelBtn && configPanel) {
+      configCancelBtn.addEventListener("click", function () {
+        configPanel.hidden = true;
+        if (configToggleBtn) configToggleBtn.setAttribute("aria-expanded", "false");
+      });
+    }
+
+    if (providerInput && endpointInput) {
+      providerInput.addEventListener("change", function () {
+        endpointInput.value = providerInput.value === "ollama" ? "http://127.0.0.1:11434" : "http://127.0.0.1:1234/v1";
+      });
+    }
+
+    async function fetchAndPopulateModels(cfg, isManual) {
+      if (!window.orgMuseumBrowserAi || typeof window.orgMuseumBrowserAi.models !== "function") {
+        if (configStatus) configStatus.textContent = "模型连接组件未就绪。";
+        return;
+      }
+      if (modelRefreshBtn) modelRefreshBtn.classList.add("is-spinning");
+      if (configStatus) configStatus.textContent = "正在读取模型列表…";
+      try {
+        var fetchedList = await window.orgMuseumBrowserAi.models(cfg);
+        if (modelRefreshBtn) modelRefreshBtn.classList.remove("is-spinning");
+        if (Array.isArray(fetchedList)) {
+          cachedModels = fetchedList;
+          try {
+            localStorage.setItem("org-museum-browser-models-list", JSON.stringify(fetchedList));
+          } catch (_) {}
+          var activeModel = cfg.model;
+          if (!activeModel || !fetchedList.includes(activeModel)) {
+            activeModel = fetchedList[0] || "";
+            cfg.model = activeModel;
+            savedConfig.model = activeModel;
+            try {
+              localStorage.setItem("org-museum-browser-model", JSON.stringify(savedConfig));
+            } catch (_) {}
+          }
+          populateModelSelect(fetchedList, activeModel);
+          if (configStatus) {
+            configStatus.textContent = fetchedList.length ? "已连接 · " + fetchedList.length + " 个可用模型" : "服务已连接，但暂无模型。";
+            configStatus.className = "museum-ai-config-status is-success";
+          }
+          if (isManual && configPanel && fetchedList.length > 0) {
+            setTimeout(function () { configPanel.hidden = true; }, 1200);
+          }
+        }
+      } catch (err) {
+        if (modelRefreshBtn) modelRefreshBtn.classList.remove("is-spinning");
+        var errMsg = (err && (err.message || err.toString())) || "";
+        if (err.name === "TypeError" || errMsg === "Failed to fetch" || errMsg.includes("NetworkError")) {
+          errMsg = "无法连接服务 (" + cfg.endpoint + ")：请确认本地服务已启动且端口一致。";
+        }
+        if (configStatus) {
+          configStatus.textContent = "读取模型失败：" + errMsg;
+          configStatus.className = "museum-ai-config-status is-error";
+        }
+        if (configPanel && configPanel.hidden) {
+          configPanel.hidden = false;
+        }
+      }
+    }
+
+    if (modelRefreshBtn) {
+      modelRefreshBtn.addEventListener("click", function () {
+        var cfg = {
+          provider: (providerInput && providerInput.value) || savedConfig.provider || "compatible",
+          endpoint: (endpointInput && endpointInput.value.trim()) || savedConfig.endpoint || "http://127.0.0.1:1234/v1",
+          key: (keyInput && keyInput.value.trim()) || "",
+          model: (modelSelect && modelSelect.value) || savedConfig.model || ""
+        };
+        fetchAndPopulateModels(cfg, false);
+      });
+    }
+
+    if (configForm) {
+      configForm.addEventListener("submit", function (e) {
+        e.preventDefault();
+        var cfg = {
+          provider: (providerInput && providerInput.value) || "compatible",
+          endpoint: (endpointInput && endpointInput.value.trim()) || "http://127.0.0.1:1234/v1",
+          key: (keyInput && keyInput.value.trim()) || "",
+          model: savedConfig.model || ""
+        };
+        savedConfig.provider = cfg.provider;
+        savedConfig.endpoint = cfg.endpoint;
+        try {
+          var toSave = Object.assign({}, savedConfig);
+          delete toSave.key;
+          localStorage.setItem("org-museum-browser-model", JSON.stringify(toSave));
+        } catch (_) {}
+        fetchAndPopulateModels(cfg, true);
+      });
+    }
 
     var messages = [];
     var storageKey = "org-museum-copilot-" + (pageId || "current");
@@ -100,6 +358,9 @@
 
     function renderChat() {
       if (!chatTurns) return;
+      if (panel && panel.classList) {
+        panel.classList.toggle("has-messages", Boolean(messages && messages.length > 0));
+      }
       chatTurns.replaceChildren();
       if (!messages || messages.length === 0) {
         var empty = document.createElement("div");
@@ -156,8 +417,9 @@
       if (chatSend) chatSend.hidden = isGen;
       if (chatStop) chatStop.hidden = !isGen;
       if (chatInput) chatInput.disabled = isGen;
+      if (modelSelect) modelSelect.disabled = isGen;
       if (engineBadge) {
-        engineBadge.textContent = isGen ? "生成中…" : "讨论模式";
+        engineBadge.textContent = isGen ? "生成中…" : (savedConfig.model || "讨论模式");
         engineBadge.classList.toggle("is-generating", isGen);
       }
     }
@@ -178,21 +440,35 @@
       renderChat();
       setGenerating(true);
 
-      var savedConfig = null;
-      try { savedConfig = JSON.parse(localStorage.getItem("org-museum-browser-model") || "{}"); } catch (_) {}
+      var activeModel = (modelSelect && modelSelect.value) || savedConfig.model;
+      if (!activeModel) {
+        setTimeout(function () {
+          assistantMsg.content = "尚未选择 AI 模型。\n\n请在上方模型选择框中选择模型，或点击 ⚙ 配置模型服务地址（如 Ollama `http://127.0.0.1:11434` 或 LM Studio `http://127.0.0.1:1234/v1`）。";
+          assistantMsg.isStreaming = false;
+          setGenerating(false);
+          persistMessages();
+          renderChat();
+          if (configPanel) configPanel.hidden = false;
+        }, 200);
+        return;
+      }
 
       var articleText = (articleNode ? (articleNode.innerText || articleNode.textContent) : "").slice(0, 16000);
       var systemPrompt = (savedConfig && savedConfig.system ? savedConfig.system : "你是一个深度阅读与知识复盘助手。") +
         "\n\n【当前阅读笔记】\n标题：" + noteTitle + "\n内容：\n" + articleText;
 
-      if (window.orgMuseumBrowserAi && savedConfig && savedConfig.model && savedConfig.endpoint) {
+      if (activeModel !== "emacs-backend" && window.orgMuseumBrowserAi && savedConfig.endpoint) {
+        var inferenceConfig = Object.assign({}, savedConfig, {
+          model: activeModel,
+          key: (keyInput && keyInput.value.trim()) || ""
+        });
         var chatHistory = [{ role: "system", content: systemPrompt }];
         messages.slice(0, -1).forEach(function (m) {
           chatHistory.push({ role: m.role, content: m.content });
         });
         var controller = new AbortController();
         activeAbortController = controller;
-        window.orgMuseumBrowserAi.chat(savedConfig, chatHistory, function (chunk) {
+        window.orgMuseumBrowserAi.chat(inferenceConfig, chatHistory, function (chunk) {
           assistantMsg.content = chunk;
           renderChat();
         }, controller.signal).then(function (finalText) {
@@ -206,7 +482,12 @@
           if (err.name === "AbortError" || err.message === "已停止生成") {
             assistantMsg.content = (assistantMsg.content || "") + "\n\n*(已停止生成)*";
           } else {
-            assistantMsg.content = (assistantMsg.content || "") + "\n\n*(生成错误：" + err.message + ")*";
+            var msg = err.message || "";
+            if (err.name === "TypeError" || msg === "Failed to fetch" || msg.includes("NetworkError")) {
+              msg = "无法连接到模型服务 (" + inferenceConfig.endpoint + ")。\n\n请确认：\n1. 本地模型服务（如 LM Studio 或 Ollama）已启动；\n2. 若使用 Ollama（默认端口 11434），请点击上方 ⚙ 切换为 Ollama；\n3. 若使用 LM Studio，请在 LM Studio 中启动 Local Server 并开启 CORS。";
+              if (configPanel) configPanel.hidden = false;
+            }
+            assistantMsg.content = (assistantMsg.content || "") + "\n\n*(生成错误：" + msg + ")*";
           }
           assistantMsg.isStreaming = false;
           setGenerating(false);
@@ -230,11 +511,12 @@
         });
       } else {
         setTimeout(function () {
-          assistantMsg.content = "当前尚未连接模型服务。\n\n你可以通过以下方式启用 AI 讨论：\n1. **浏览器直连（推荐）**：在页面右上角「设置」中填入模型服务地址（如 Ollama `http://127.0.0.1:11434` 或 LM Studio `http://127.0.0.1:1234/v1`）并选择模型；\n2. **Emacs 后端**：在 Emacs 中运行 `M-x org-museum-ai-center-open` 启用本机服务。\n\n配置完成后即可在此与笔记进行实时对话与深度推演。";
+          assistantMsg.content = "当前尚未连接模型服务。\n\n请在上方模型选择框中选择模型，或点击 ⚙ 填入模型服务地址（如 Ollama `http://127.0.0.1:11434` 或 LM Studio `http://127.0.0.1:1234/v1`）并读取模型列表。";
           assistantMsg.isStreaming = false;
           setGenerating(false);
           persistMessages();
           renderChat();
+          if (configPanel) configPanel.hidden = false;
         }, 300);
       }
     }
@@ -302,10 +584,19 @@
     }
 
     function setOpen(open, userAction) {
-      if (open && matchMedia("(max-width: 1439px)").matches &&
-          document.body.classList.contains("museum-toc-open")) {
-        var tocClose = one("[data-toc-close]");
-        if (tocClose) tocClose.click();
+      if (open && matchMedia("(max-width: 1439px)").matches) {
+        if (document.body.classList.contains("museum-toc-open")) {
+          var tocClose = one("[data-toc-close]");
+          if (tocClose) tocClose.click();
+        }
+        if (document.body.classList.contains("museum-drawer-open")) {
+          var drawerClose = one("[data-drawer-close]");
+          if (drawerClose) drawerClose.click();
+          else {
+            var drawerToggle = one("[data-drawer-toggle]");
+            if (drawerToggle) drawerToggle.click();
+          }
+        }
       }
       document.body.classList.toggle("museum-ai-open", open);
       panel.inert = !open;
@@ -317,7 +608,15 @@
       if (open) {
         load();
         renderChat();
-        if (userAction && chatInput) chatInput.focus();
+        if (userAction && chatInput) {
+          // Let the opening panel become visible before transferring focus.
+          var focusInput = function () {
+            if (document.body.classList.contains("museum-ai-open")) chatInput.focus();
+          };
+          // Visibility is animated for 200ms; focusing during that transition
+          // can be rejected by the browser while the input is still hidden.
+          setTimeout(focusInput, 220);
+        }
       }
     }
     trigger.addEventListener("click", function () { setOpen(!document.body.classList.contains("museum-ai-open"), true); });
@@ -333,7 +632,16 @@
         return;
       }
       if (event.key === "Escape" && document.body.classList.contains("museum-ai-open")) {
-        setOpen(false, true); trigger.focus();
+        if (configPanel && !configPanel.hidden) {
+          configPanel.hidden = true;
+          if (configToggleBtn) {
+            configToggleBtn.setAttribute("aria-expanded", "false");
+            configToggleBtn.focus();
+          }
+        } else {
+          setOpen(false, true);
+          trigger.focus();
+        }
       }
     });
 
@@ -361,8 +669,12 @@
         return;
       }
       if (typeof window.orgMuseumAiApi !== "function") {
-        updateStateVisual("idle", "未连接 Emacs");
-        if (analyzeBtn) analyzeBtn.hidden = true;
+        var activeM = (modelSelect && modelSelect.value) || savedConfig.model;
+        if (activeM) {
+          updateStateVisual("done", "模型就绪 · " + (activeM === "emacs-backend" ? "Emacs 后端" : activeM));
+        } else {
+          updateStateVisual("idle", "请选择模型");
+        }
         return;
       }
       api("page?pageId=" + encodeURIComponent(pageId)).then(function (data) {
@@ -389,16 +701,59 @@
 
     if (analyzeBtn) {
       analyzeBtn.addEventListener("click", function () {
-        updateStateVisual("running", "已提交分析，正在等待结果…");
-        api("action", { action: "analyze", pageId: pageId }).then(function (res) {
-          if (res && res.status && res.status !== "running" && res.status !== "queued") {
-            load();
-          } else {
-            setTimeout(load, 1200);
-          }
-        }).catch(function (error) {
-          updateStateVisual("failed", error.message);
-        });
+        var activeM = (modelSelect && modelSelect.value) || savedConfig.model;
+        if (typeof window.orgMuseumAiApi === "function" && activeM === "emacs-backend") {
+          updateStateVisual("running", "已提交分析，正在等待结果…");
+          api("action", { action: "analyze", pageId: pageId }).then(function (res) {
+            if (res && res.status && res.status !== "running" && res.status !== "queued") {
+              load();
+            } else {
+              setTimeout(load, 1200);
+            }
+          }).catch(function (error) {
+            updateStateVisual("failed", error.message);
+          });
+        } else if (window.orgMuseumBrowserAi && activeM && activeM !== "emacs-backend" && savedConfig.endpoint) {
+          updateStateVisual("running", "正在分析笔记…");
+          var summaryBox = one("[data-ai-summary]", panel);
+          var analyzePrompt = "请对以下笔记进行结构化深度分析，提炼核心论点、论证逻辑与可复用结论：\n\n【标题】" + noteTitle + "\n\n【正文】\n" + (articleNode ? (articleNode.innerText || articleNode.textContent) : "").slice(0, 16000);
+          markdown(summaryBox, "正在进行笔记结构化分析…", true);
+          var drawer = one("[data-ai-analysis-drawer]", panel);
+          if (drawer) drawer.open = true;
+          var inferenceCfg = Object.assign({}, savedConfig, {
+            model: activeM,
+            key: (keyInput && keyInput.value.trim()) || ""
+          });
+          window.orgMuseumBrowserAi.chat(inferenceCfg, [
+            { role: "system", content: "你是一个知识库深度分析与逻辑复盘专家。请条理清晰地梳理笔记核心结论。" },
+            { role: "user", content: analyzePrompt }
+          ], function (chunk) {
+            markdown(summaryBox, chunk, true);
+          }).then(function (finalSummary) {
+            markdown(summaryBox, finalSummary, false);
+            updateStateVisual("done", "分析已完成");
+          }).catch(function (err) {
+            var errMsg = err.message || "";
+            if (err.name === "TypeError" || errMsg === "Failed to fetch") {
+              errMsg = "无法连接服务 (" + inferenceCfg.endpoint + ")，请启动本地模型服务或检查端口。";
+            }
+            updateStateVisual("failed", "分析失败: " + errMsg);
+          });
+        } else if (typeof window.orgMuseumAiApi === "function") {
+          updateStateVisual("running", "已提交分析，正在等待结果…");
+          api("action", { action: "analyze", pageId: pageId }).then(function (res) {
+            if (res && res.status && res.status !== "running" && res.status !== "queued") {
+              load();
+            } else {
+              setTimeout(load, 1200);
+            }
+          }).catch(function (error) {
+            updateStateVisual("failed", error.message);
+          });
+        } else {
+          updateStateVisual("failed", "请先选择或配置 AI 模型");
+          if (configPanel) configPanel.hidden = false;
+        }
       });
     }
     renderChat();
@@ -706,8 +1061,20 @@
         api("action", payload(action)).then(function (data) {
           if (data.text) showText(action === "recall" || action === "relations" || action === "context" ?
             "[data-ai-recall-results]" : "[data-ai-review-results]", data.text);
+          if (action.startsWith("scan")) {
+            var scanState = one("[data-ai-scan-state]", shell);
+            if (scanState) put(scanState, data.message || "扫描状态已更新");
+          }
           notify(data.message || "操作已完成。"); refresh();
-        }).catch(function (error) { notify(error.message); });
+        }).catch(function (error) {
+          notify(error.message);
+          if (action.startsWith("scan")) {
+            var scanState = one("[data-ai-scan-state]", shell);
+            if (scanState) put(scanState, "扫描请求未完成：" + error.message);
+          } else if (["gap", "gap-ai", "derive", "derive-review"].includes(action)) {
+            showText("[data-ai-review-results]", "操作未完成：" + error.message);
+          }
+        });
       });
     });
     function connect() { api("catalog").then(function (data) {
@@ -762,7 +1129,7 @@
     }
     function sourceLink(source) {
       var page = pages.find(function (item) { return item.id === source.pageId; });
-      var href = source.href || (page && page.href);
+      var href = page && page.href;
       var label = source.title || pageTitle(source.pageId);
       if (!href) { var span = document.createElement("span"); span.textContent = label; return span; }
       var link = document.createElement("a"); link.href = href; link.textContent = label;
@@ -780,7 +1147,13 @@
     }
     function choose() {
       selection.replaceChildren();
-      if (!chosen.size) { put(selection, "请选择至少一篇笔记。"); return; }
+      if (!chosen.size) {
+        var emptyChip = document.createElement("span");
+        emptyChip.className = "museum-ai-selection-hint";
+        emptyChip.textContent = "尚未选择笔记（在下方勾选参与分析的资料，最多 12 篇）";
+        selection.appendChild(emptyChip);
+        return;
+      }
       chosen.forEach(function (id) {
         var chip = document.createElement("span"); chip.className = "museum-ai-chip";
         chip.textContent = pageTitle(id); selection.appendChild(chip);
@@ -1103,12 +1476,17 @@
           actions.append(button("查看与整理", function () { showCapture(item); }),
             button("继续讨论", function () { openSession(item.sessionId, item); }));
           card.append(meta, heading, question, conclusion, sources, actions);
-              section.appendChild(card);
-            });
+          section.appendChild(card);
+        });
             captureResults.appendChild(section);
           });
-        if (!captureResults.childElementCount) put(captureResults, "还没有匹配的结论。完成一轮回答后，可直接点击“收录此回答”。");
-      }).catch(function (error) { put(captureStatus, error.message); });
+        if (!captureResults.childElementCount) {
+          var emptyState = document.createElement("div");
+          emptyState.className = "museum-ai-empty-placeholder";
+          emptyState.textContent = "还没有匹配的结论。完成一轮回答后，可直接点击“收录此回答”。";
+          captureResults.appendChild(emptyState);
+        }
+      });
     }
     function proposalCard(item) {
       var card = document.createElement("article"); card.className = "museum-ai-proposal";

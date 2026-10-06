@@ -9,71 +9,114 @@
 (defvar org-museum-ai-web--previews (make-hash-table :test #'equal))
 (defconst org-museum-ai-web--preview-ttl 600)
 
-(defun org-museum-ai-web--article-panel-html (_page)
-  "Return the independent article AI Copilot right sidebar and control."
-  (concat
-   "<button type=\"button\" class=\"museum-ai-trigger\" data-ai-toggle "
-   "aria-controls=\"museum-ai-panel\" aria-expanded=\"false\" "
-   "title=\"AI Copilot 对话与分析 (Ctrl+I)\">"
-   "<span class=\"museum-ai-trigger-icon\" aria-hidden=\"true\"></span>"
-   "<span class=\"museum-ai-trigger-text\">AI 讨论</span>"
-   "<span class=\"museum-ai-trigger-dot\" data-ai-trigger-dot aria-hidden=\"true\"></span>"
-   "<kbd class=\"museum-ai-trigger-shortcut\" data-ai-trigger-shortcut aria-hidden=\"true\">Ctrl+I</kbd>"
-   "</button>"
-   "<aside id=\"museum-ai-panel\" class=\"museum-ai-panel museum-ai-sidebar\" "
-   "aria-label=\"AI Copilot 协作面板\" aria-hidden=\"true\" inert>"
-   "<header class=\"museum-ai-copilot-header\">"
-   "<div class=\"museum-ai-copilot-brand\">"
-   "<span class=\"museum-ai-copilot-brand-icon\" aria-hidden=\"true\"></span>"
-   "<div class=\"museum-ai-copilot-title-group\">"
-   "<h2 class=\"museum-ai-copilot-title\">AI Copilot</h2>"
-   "<span class=\"museum-ai-copilot-badge\" data-ai-engine-badge>讨论模式</span>"
-   "</div></div>"
-   "<div class=\"museum-ai-copilot-header-actions\">"
-   "<button type=\"button\" class=\"museum-ai-icon-btn\" data-copilot-new title=\"清空并开始新讨论\" aria-label=\"新建讨论\">↺</button>"
-   "<a data-ai-center-link class=\"museum-ai-icon-btn\" href=\"#\" title=\"打开完整 AI 中心\" aria-label=\"前往 AI 中心\">↗</a>"
-   "<button type=\"button\" class=\"museum-ai-icon-btn museum-ai-close-btn\" data-ai-close title=\"收起侧边栏 (Esc)\" aria-label=\"收起侧边栏\">×</button>"
-   "</div></header>"
-   "<div class=\"museum-ai-copilot-context\">"
-   "<div class=\"museum-ai-context-info\">"
-   "<span class=\"museum-ai-context-icon\" aria-hidden=\"true\">📄</span>"
-   "<span class=\"museum-ai-context-name\" data-ai-context-title>当前正文</span>"
-   "</div>"
-   "<div class=\"museum-ai-context-actions\">"
-   "<button type=\"button\" class=\"museum-ai-context-analyze-btn\" data-ai-analyze title=\"生成或刷新当前笔记结构化分析\">"
-   "<span class=\"museum-ai-btn-icon\" aria-hidden=\"true\"></span>"
-   "<span data-ai-analyze-label>分析笔记</span>"
-   "</button></div></div>"
-   "<details class=\"museum-ai-analysis-drawer\" data-ai-analysis-drawer>"
-   "<summary class=\"museum-ai-analysis-drawer-summary\">"
-   "<span class=\"museum-ai-status-dot\" data-ai-status-dot aria-hidden=\"true\"></span>"
-   "<span data-ai-status role=\"status\" aria-live=\"polite\">就绪</span>"
-   "<span class=\"museum-ai-analysis-toggle-label\">结构化分析结果</span>"
-   "</summary>"
-   "<div class=\"museum-ai-analysis-drawer-content\">"
-   "<div data-ai-summary class=\"museum-ai-summary-box\">暂无分析结果。</div>"
-   "<div class=\"museum-ai-experiences-section\">"
-   "<small class=\"museum-ai-subhead\">相关经验参考</small>"
-   "<div data-ai-experiences class=\"museum-ai-experiences-box\"></div>"
-   "</div></div></details>"
-   "<div class=\"museum-ai-copilot-chat\" data-ai-chat-area>"
-   "<div class=\"museum-ai-copilot-messages\" data-ai-chat-turns role=\"log\" aria-live=\"polite\"></div>"
-   "<div class=\"museum-ai-explore-prompts\" data-ai-explore-prompts>"
-   "<div class=\"museum-ai-explore-prompts-title\"><span>💡 探索建议</span></div>"
-   "<div class=\"museum-ai-explore-chips\" data-ai-explore-chips></div>"
-   "</div></div>"
-   "<div class=\"museum-ai-copilot-composer\">"
-   "<form data-ai-chat-form class=\"museum-ai-composer-form\">"
-   "<textarea data-ai-chat-input name=\"message\" rows=\"2\" "
-   "placeholder=\"围绕当前笔记提问、探讨或提炼知识… (Ctrl+Enter 发送)\" "
-   "aria-label=\"向 AI Copilot 提问\"></textarea>"
-   "<div class=\"museum-ai-composer-bar\">"
-   "<span class=\"museum-ai-composer-hint\"><kbd>Ctrl+Enter</kbd> 发送</span>"
-   "<div class=\"museum-ai-composer-actions\">"
-   "<button type=\"button\" class=\"museum-ai-stop-btn\" data-ai-chat-stop hidden aria-label=\"停止生成\">■ 停止</button>"
-   "<button type=\"submit\" class=\"museum-ai-send-btn\" data-ai-chat-send aria-label=\"发送消息\">发送 ↑</button>"
-   "</div></div></form></div>"
-   "</aside>"))
+(defun org-museum-ai-web--article-panel-html (_page &optional out-file)
+  "Return the independent article AI Copilot right sidebar and control.
+_PAGE is the current note object, OUT-FILE is the target HTML file path."
+  (let* ((shared-root (when (fboundp 'org-museum--shared-root) (org-museum--shared-root)))
+         (ai-center-out (when shared-root (expand-file-name "ai-center.html" shared-root)))
+         (page-id (and _page (fboundp 'org-museum-page-id) (org-museum-page-id _page)))
+         (base-href (if (and shared-root out-file (fboundp 'org-museum--relative-path))
+                        (org-museum--relative-path ai-center-out out-file)
+                      "ai-center.html"))
+         (final-href (if (and page-id (not (string-empty-p page-id)))
+                         (format "%s?pageId=%s" base-href (url-hexify-string page-id))
+                       base-href)))
+    (concat
+     "<button type=\"button\" class=\"museum-ai-trigger\" data-ai-toggle "
+     "aria-controls=\"museum-ai-panel\" aria-expanded=\"false\" "
+     "title=\"AI Copilot 对话与分析 (Ctrl+I)\">"
+     "<span class=\"museum-ai-trigger-icon\" aria-hidden=\"true\"></span>"
+     "<span class=\"museum-ai-trigger-text\">AI 讨论</span>"
+     "<span class=\"museum-ai-trigger-dot\" data-ai-trigger-dot aria-hidden=\"true\"></span>"
+     "<kbd class=\"museum-ai-trigger-shortcut\" data-ai-trigger-shortcut aria-hidden=\"true\">Ctrl+I</kbd>"
+     "</button>"
+     "<aside id=\"museum-ai-panel\" class=\"museum-ai-panel museum-ai-sidebar\" "
+     "aria-label=\"AI Copilot 协作面板\" aria-hidden=\"true\" inert>"
+     "<header class=\"museum-ai-copilot-header\">"
+     "<div class=\"museum-ai-copilot-brand\">"
+     "<span class=\"museum-ai-copilot-brand-icon\" aria-hidden=\"true\"></span>"
+     "<div class=\"museum-ai-copilot-title-group\">"
+     "<h2 class=\"museum-ai-copilot-title\">AI Copilot</h2>"
+     "<span class=\"museum-ai-copilot-badge\" data-ai-engine-badge>讨论模式</span>"
+     "</div></div>"
+     "<div class=\"museum-ai-copilot-header-actions\">"
+     "<button type=\"button\" class=\"museum-ai-icon-btn\" data-copilot-config-toggle title=\"配置或更换 AI 模型\" aria-label=\"模型设置\">⚙</button>"
+     "<button type=\"button\" class=\"museum-ai-icon-btn\" data-copilot-new title=\"清空并开始新讨论\" aria-label=\"新建讨论\">↺</button>"
+     "<a data-ai-center-link class=\"museum-ai-icon-btn\" href=\"" final-href "\" title=\"打开完整 AI 中心\" aria-label=\"前往 AI 中心\">↗</a>"
+     "<button type=\"button\" class=\"museum-ai-icon-btn museum-ai-close-btn\" data-ai-close title=\"收起侧边栏 (Esc)\" aria-label=\"收起侧边栏\">×</button>"
+     "</div></header>"
+     "<div class=\"museum-ai-copilot-model-bar\" data-copilot-model-bar>"
+     "<div class=\"museum-ai-model-select-wrapper\">"
+     "<span class=\"museum-ai-model-icon\" aria-hidden=\"true\">🤖</span>"
+     "<select class=\"museum-ai-model-select\" data-copilot-model-select aria-label=\"选择 AI 模型\" title=\"选择当前讨论使用的 AI 模型\">"
+     "<option value=\"\" disabled selected>选择 AI 模型…</option>"
+     "</select>"
+     "</div>"
+     "<button type=\"button\" class=\"museum-ai-model-refresh-btn\" data-copilot-model-refresh title=\"刷新可用模型列表\" aria-label=\"刷新模型\">↻</button>"
+     "</div>"
+     "<div class=\"museum-ai-copilot-model-config\" data-copilot-model-config hidden>"
+     "<form data-copilot-config-form class=\"museum-ai-copilot-config-form\">"
+     "<div class=\"museum-ai-config-field\">"
+     "<label>接入服务"
+     "<select name=\"provider\" data-copilot-provider>"
+     "<option value=\"compatible\">兼容 OpenAI API / LM Studio</option>"
+     "<option value=\"ollama\">Ollama</option>"
+     "</select></label></div>"
+     "<div class=\"museum-ai-config-field\">"
+     "<label>服务地址"
+     "<input name=\"endpoint\" type=\"url\" data-copilot-endpoint placeholder=\"http://127.0.0.1:1234/v1\" required>"
+     "</label></div>"
+     "<div class=\"museum-ai-config-field\">"
+     "<label>API 密钥（本地服务留空）"
+     "<input name=\"key\" type=\"password\" data-copilot-key placeholder=\"留空或输入密钥\" autocomplete=\"off\">"
+     "</label></div>"
+     "<div class=\"museum-ai-config-actions\">"
+     "<button type=\"submit\" class=\"museum-ai-config-save-btn\" data-copilot-fetch-models>读取并保存</button>"
+     "<button type=\"button\" class=\"museum-ai-config-cancel-btn\" data-copilot-config-cancel>收起</button>"
+     "</div>"
+     "<p class=\"museum-ai-config-status\" data-copilot-config-status role=\"status\" aria-live=\"polite\"></p>"
+     "</form></div>"
+     "<div class=\"museum-ai-copilot-context\">"
+     "<div class=\"museum-ai-context-info\">"
+     "<span class=\"museum-ai-context-icon\" aria-hidden=\"true\">📄</span>"
+     "<span class=\"museum-ai-context-name\" data-ai-context-title>当前正文</span>"
+     "</div>"
+     "<div class=\"museum-ai-context-actions\">"
+     "<button type=\"button\" class=\"museum-ai-context-analyze-btn\" data-ai-analyze title=\"生成或刷新当前笔记结构化分析\">"
+     "<span class=\"museum-ai-btn-icon\" aria-hidden=\"true\"></span>"
+     "<span data-ai-analyze-label>分析笔记</span>"
+     "</button></div></div>"
+     "<details class=\"museum-ai-analysis-drawer\" data-ai-analysis-drawer>"
+     "<summary class=\"museum-ai-analysis-drawer-summary\">"
+     "<span class=\"museum-ai-drawer-chevron\" aria-hidden=\"true\">▾</span>"
+     "<span class=\"museum-ai-status-dot\" data-ai-status-dot aria-hidden=\"true\"></span>"
+     "<span data-ai-status role=\"status\" aria-live=\"polite\">就绪</span>"
+     "<span class=\"museum-ai-analysis-toggle-label\">结构化分析结果</span>"
+     "</summary>"
+     "<div class=\"museum-ai-analysis-drawer-content\">"
+     "<div data-ai-summary class=\"museum-ai-summary-box\">暂无分析结果。</div>"
+     "<div class=\"museum-ai-experiences-section\">"
+     "<small class=\"museum-ai-subhead\">相关经验参考</small>"
+     "<div data-ai-experiences class=\"museum-ai-experiences-box\"></div>"
+     "</div></div></details>"
+     "<div class=\"museum-ai-copilot-chat\" data-ai-chat-area>"
+     "<div class=\"museum-ai-copilot-messages\" data-ai-chat-turns role=\"log\" aria-live=\"polite\"></div>"
+     "<div class=\"museum-ai-explore-prompts\" data-ai-explore-prompts>"
+     "<div class=\"museum-ai-explore-prompts-title\"><span>💡 探索建议</span></div>"
+     "<div class=\"museum-ai-explore-chips\" data-ai-explore-chips></div>"
+     "</div></div>"
+     "<div class=\"museum-ai-copilot-composer\">"
+     "<form data-ai-chat-form class=\"museum-ai-composer-form\">"
+     "<textarea data-ai-chat-input name=\"message\" rows=\"2\" "
+     "placeholder=\"围绕当前笔记提问、探讨或提炼知识… (Ctrl+Enter 发送)\" "
+     "aria-label=\"向 AI Copilot 提问\"></textarea>"
+     "<div class=\"museum-ai-composer-bar\">"
+     "<span class=\"museum-ai-composer-hint\"><kbd>Ctrl+Enter</kbd> 发送</span>"
+     "<div class=\"museum-ai-composer-actions\">"
+     "<button type=\"button\" class=\"museum-ai-stop-btn\" data-ai-chat-stop hidden aria-label=\"停止生成\">■ 停止</button>"
+     "<button type=\"submit\" class=\"museum-ai-send-btn\" data-ai-chat-send aria-label=\"发送消息\">发送 ↑</button>"
+     "</div></div></form></div>"
+     "</aside>")))
 
 (defun org-museum-ai-web--public-records (out-file)
   "Return only confirmed, current and published records for OUT-FILE."
@@ -178,7 +221,8 @@
       "<strong>Emacs 后端尚未连接。也可切换到浏览器模型直接使用 AI。</strong>"
       "<p>在 Emacs 中按 <kbd>M-x</kbd>，输入 <code>org-museum-ai-center-open</code> 并回车；"
       "请使用 Emacs 新打开的本机页面，并在模型服务中加载你选择的模型。</p>"
-      "<p>下方的已确认公开经验仍可直接阅读。</p></div></header>"
+      "<p>下方的已确认公开经验仍可直接阅读。</p>"
+      "<button type=\"button\" data-ai-switch-browser class=\"museum-ai-switch-btn\">切换到浏览器直连使用</button></div></header>"
       (org-museum-ai-web--browser-html)
       "<section class=\"museum-ai-conversation museum-ai-center-card\" data-ai-conversation hidden>"
       "<div class=\"museum-ai-conversation-head\"><div><small>人 × AI 多轮会话</small><h2>让讨论成为可复用的知识</h2></div>"
@@ -308,9 +352,7 @@
   (org-museum--curation-http-response 200 (org-museum--curation-json value)))
 
 (defun org-museum-ai-web--request (body)
-  (let ((json-object-type 'alist) (json-array-type 'list)
-        (json-key-type 'symbol) (json-false :json-false))
-    (json-read-from-string (decode-coding-string body 'utf-8 t))))
+  (org-museum--curation-json-read body 'symbol))
 
 (defun org-museum-ai-web--field (data key &optional required)
   (let ((value (alist-get key data)))
@@ -789,6 +831,13 @@
       ("scan-status"
        `((ok . t) (text . ,(org-museum-ai-web--buffer-result
                             #'org-museum-deep-scan-status))))
+      ("chat"
+       (let* ((prompt (org-museum-ai-web--field data 'message t))
+              (page-id (alist-get 'pageId data))
+              (page (and page-id (org-museum-ai-web--page page-id)))
+              (title (if page (org-museum-page-title page) "当前笔记")))
+         `((ok . t)
+           (answer . ,(format "（Emacs 后端已接收讨论）围绕《%s》：%s" title prompt)))))
       (_ (user-error "无法识别这项 AI 操作")))))
 
 (defun org-museum-ai-web--browser-fields (item fields)

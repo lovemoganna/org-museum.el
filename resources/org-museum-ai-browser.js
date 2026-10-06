@@ -99,6 +99,7 @@
     function save() {
       var value = read(); delete value.key;
       try { localStorage.setItem('org-museum-browser-model', JSON.stringify(value)); } catch (_error) {}
+      try { window.dispatchEvent(new CustomEvent('org-museum-model-changed', { detail: value })); } catch (_error) {}
     }
     function updateConnectionState() {
       if (!connection) return;
@@ -151,6 +152,13 @@
     shell.querySelectorAll('[data-ai-channel]').forEach(function (button) {
       button.addEventListener('click', function () { channel(button.dataset.aiChannel); });
     });
+    shell.addEventListener('click', function (event) {
+      var switchTarget = event.target && event.target.closest('[data-ai-switch-browser]');
+      if (switchTarget) {
+        event.preventDefault();
+        channel('browser');
+      }
+    });
     channel(typeof emacsApi === 'function' ? 'emacs' : 'browser');
     function download(name, text, type) {
       var url=URL.createObjectURL(new Blob([text],{type:type||'application/json;charset=utf-8'})), link=document.createElement('a');
@@ -194,6 +202,9 @@
       });
     }
     displaySources(); one('[data-browser-source-search]').addEventListener('input', displaySources);
+    // The shared settings menu owns its form on every page. Keep the legacy
+    // inline form working without attaching a second set of request handlers.
+    if (!config.closest('.museum-settings-menu')) {
     config.elements.provider.addEventListener('change', function () {
       if (listing) listing.abort();
       if (loading) loading.abort();
@@ -237,6 +248,7 @@
       finally { clearTimeout(timer); loading = null; one('[data-browser-load]').disabled = false; one('[data-browser-cancel-load]').hidden = true; }
     });
     one('[data-browser-cancel-load]').addEventListener('click', function () { if (loading) loading.abort(); });
+    }
     function render(node, text, streaming) {
       if (window.orgMuseumMarkdown) window.orgMuseumMarkdown.render(node, text, streaming); else node.textContent = text;
     }

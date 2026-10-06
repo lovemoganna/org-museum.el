@@ -64,6 +64,7 @@
 
   function syncCurrentThemeUrl(theme) {
     try {
+      if (typeof location !== "undefined" && location.protocol === "file:") return;
       var url = new URL(location.href);
       if (!/\.html$/i.test(url.pathname) || typeof history === "undefined" ||
           typeof history.replaceState !== "function") return;
@@ -260,9 +261,273 @@
     link.href = themeUrl(link.href);
   }
 
+  function bindSettingsTabs(menu) {
+    var tabs = menu.querySelectorAll("[data-settings-tab]");
+    var panels = menu.querySelectorAll("[data-settings-panel]");
+    if (!tabs.length || !panels.length) return;
+
+    function selectTab(tabName) {
+      if (!Array.from(tabs).some(function (btn) { return btn.dataset.settingsTab === tabName; })) return;
+      tabs.forEach(function (btn) {
+        var active = btn.dataset.settingsTab === tabName;
+        btn.classList.toggle("is-active", active);
+        btn.setAttribute("aria-selected", active ? "true" : "false");
+        btn.tabIndex = active ? 0 : -1;
+      });
+      panels.forEach(function (panel) {
+        var active = panel.dataset.settingsPanel === tabName;
+        panel.hidden = !active;
+      });
+      try { localStorage.setItem("org-museum-settings-tab", tabName); } catch (_) {}
+    }
+
+    tabs.forEach(function (btn) {
+      btn.addEventListener("click", function (e) {
+        e.preventDefault();
+        selectTab(btn.dataset.settingsTab);
+      });
+      btn.addEventListener("keydown", function (e) {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+        e.preventDefault();
+        var items = Array.from(tabs), index = items.indexOf(btn);
+        var next = e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 :
+          (index + (e.key === "ArrowRight" ? 1 : -1) + items.length) % items.length;
+        selectTab(items[next].dataset.settingsTab);
+        items[next].focus();
+      });
+    });
+
+    var initial = Array.from(tabs).find(function (btn) { return btn.getAttribute("aria-selected") === "true"; }) || tabs[0];
+    try {
+      var savedTab = localStorage.getItem("org-museum-settings-tab");
+      initial = Array.from(tabs).find(function (btn) { return btn.dataset.settingsTab === savedTab; }) || initial;
+    } catch (_) {}
+    selectTab(initial.dataset.settingsTab);
+  }
+
+  function bindGlobalAiSettings(menu) {
+    var config = menu.querySelector("form[data-browser-config]");
+    if (!config || config.dataset.boundGlobal) return;
+    config.dataset.boundGlobal = "true";
+
+    var connection = menu.querySelector("[data-browser-connection]");
+    var statusBox = menu.querySelector(".museum-settings-status-box");
+    var datalist = menu.querySelector("#museum-browser-model-list");
+    var loadBtn = menu.querySelector("[data-browser-load]");
+    var modelsBtn = menu.querySelector("[data-browser-models]");
+    var cancelBtn = menu.querySelector("[data-browser-cancel-load]");
+    var listing = null, loading = null;
+    if (config.elements.model) config.elements.model.required = false;
+
+    function updateStatus(state, msg) {
+      if (statusBox) statusBox.dataset.state = state;
+      if (connection) connection.textContent = msg;
+    }
+
+    try {
+      var saved = JSON.parse(localStorage.getItem("org-museum-browser-model") || "{}");
+      ["provider", "endpoint", "model", "system"].forEach(function (name) {
+        if (typeof saved[name] === "string" && config.elements[name]) {
+          config.elements[name].value = saved[name];
+        }
+      });
+      if (saved.model) {
+        updateStatus("ready", "已就绪 · " + saved.model);
+      }
+    } catch (_) {}
+
+    if (config.elements.endpoint && !config.elements.endpoint.value) {
+      config.elements.endpoint.value = "http://127.0.0.1:1234/v1";
+    }
+
+    function read() {
+      return {
+        provider: (config.elements.provider && config.elements.provider.value) || "compatible",
+        endpoint: (config.elements.endpoint && config.elements.endpoint.value.trim()) || "",
+        model: (config.elements.model && config.elements.model.value.trim()) || "",
+        key: (config.elements.key && config.elements.key.value.trim()) || "",
+        system: (config.elements.system && config.elements.system.value.trim()) || ""
+      };
+    }
+
+    function save() {
+      var val = read();
+      var persist = { provider: val.provider, endpoint: val.endpoint, model: val.model, system: val.system };
+      try {
+        localStorage.setItem("org-museum-browser-model", JSON.stringify(persist));
+      } catch (_) {}
+      try {
+        var evt = new CustomEvent("org-museum-model-changed", { detail: val });
+        if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+          window.dispatchEvent(evt);
+        } else if (typeof document !== "undefined" && typeof document.dispatchEvent === "function") {
+          document.dispatchEvent(evt);
+        }
+      } catch (_) {}
+    }
+
+    config.addEventListener("input", save);
+    config.addEventListener("change", save);
+    if (config.elements.provider) config.elements.provider.addEventListener("change", function () {
+      if (listing) listing.abort();
+      if (loading) loading.abort();
+      config.elements.endpoint.value = config.elements.provider.value === "ollama" ? "http://127.0.0.1:11434" : "http://127.0.0.1:1234/v1";
+      config.elements.model.value = "";
+      config.elements.key.value = "";
+      if (datalist) datalist.replaceChildren();
+      updateStatus("idle", "请读取此服务的模型列表。");
+      save();
+    });
+    config.addEventListener("submit", function (e) {
+      e.preventDefault();
+      fetchModels();
+    });
+
+    async function fetchModels() {
+      if (listing) return;
+      var val = read();
+      if (!val.endpoint) {
+        updateStatus("error", "请先填写服务地址");
+        return;
+      }
+      updateStatus("loading", "正在获取模型列表…");
+      listing = new AbortController();
+      var request = listing, timer = setTimeout(function () { request.abort(); }, 20000);
+      if (modelsBtn) modelsBtn.disabled = true;
+      try {
+        var url, headers = {};
+        if (val.provider === "ollama") {
+          var base = val.endpoint.replace(/\/+$/, "").replace(/\/v1$/, "");
+          url = base + "/api/tags";
+        } else {
+          var base = val.endpoint.replace(/\/+$/, "");
+          url = (base.endsWith("/v1") ? base : base + "/v1") + "/models";
+          if (val.key) headers["Authorization"] = "Bearer " + val.key;
+        }
+        var res = await fetch(url, { headers: headers, signal: request.signal });
+        if (!res.ok) throw new Error("HTTP " + res.status + " " + res.statusText);
+        var data = await res.json();
+        var models = [];
+        if (Array.isArray(data.models)) {
+          models = data.models.map(function (m) { return m.name || m.model || m; });
+        } else if (Array.isArray(data.data)) {
+          models = data.data.map(function (m) { return m.id || m.name || m; });
+        }
+        if (datalist) {
+          datalist.textContent = "";
+          models.forEach(function (m) {
+            var opt = document.createElement("option");
+            opt.value = m;
+            datalist.appendChild(opt);
+          });
+        }
+        if (models.length) {
+          if (!config.elements.model.value) config.elements.model.value = models[0];
+          save();
+          updateStatus("ready", "已获取 " + models.length + " 个模型");
+        } else {
+          updateStatus("idle", "未返回模型列表");
+        }
+      } catch (err) {
+        updateStatus("error", err.name === "AbortError" ? "读取超时或已取消，请重试。" : "获取失败：" + err.message);
+      } finally {
+        clearTimeout(timer); listing = null;
+        if (modelsBtn) modelsBtn.disabled = false;
+      }
+    }
+
+    if (modelsBtn) {
+      modelsBtn.addEventListener("click", function (e) {
+        e.preventDefault();
+        return fetchModels();
+      });
+    }
+
+    if (loadBtn) {
+      loadBtn.addEventListener("click", async function (e) {
+        e.preventDefault();
+        if (loading) return;
+        var val = read();
+        if (!val.endpoint) {
+          updateStatus("error", "请先填写服务地址");
+          return;
+        }
+        if (!val.model) {
+          updateStatus("error", "请先选择或输入模型");
+          return;
+        }
+        updateStatus("loading", "正在测试连接…");
+        loading = new AbortController();
+        var controller = loading, timer = setTimeout(function () { controller.abort(); }, 60000);
+        loadBtn.disabled = true;
+        if (cancelBtn) cancelBtn.hidden = false;
+        try {
+          var url, headers = { "Content-Type": "application/json" };
+          var body;
+          if (val.provider === "ollama") {
+            var base = val.endpoint.replace(/\/+$/, "").replace(/\/v1$/, "");
+            url = base + "/api/chat";
+            body = JSON.stringify({ model: val.model, messages: [{ role: "user", content: "ping" }], stream: false });
+          } else {
+            var base = val.endpoint.replace(/\/+$/, "");
+            url = (base.endsWith("/v1") ? base : base + "/v1") + "/chat/completions";
+            if (val.key) headers["Authorization"] = "Bearer " + val.key;
+            body = JSON.stringify({ model: val.model, messages: [{ role: "user", content: "ping" }], max_tokens: 5 });
+          }
+          var res = await fetch(url, { method: "POST", headers: headers, body: body, signal: controller.signal });
+          if (!res.ok) throw new Error("HTTP " + res.status + " " + res.statusText);
+          save();
+          updateStatus("ready", "已就绪 · " + val.model);
+        } catch (err) {
+          updateStatus("error", "连接失败：" + (err.name === "AbortError" ? "加载已取消或超时" : err.message));
+        } finally {
+          clearTimeout(timer); loading = null;
+          loadBtn.disabled = false;
+          if (cancelBtn) cancelBtn.hidden = true;
+        }
+      });
+    }
+    if (cancelBtn) cancelBtn.addEventListener("click", function () { if (loading) loading.abort(); });
+    window.addEventListener("pagehide", function () {
+      if (listing) listing.abort();
+      if (loading) loading.abort();
+    });
+  }
+
+  function bindGlobalSearch() {
+    var search = typeof document.getElementById === "function" ?
+      document.getElementById("org-museum-global-search") :
+      (typeof document.querySelector === "function" ? document.querySelector("#org-museum-global-search") : null);
+    var kind = document.body && document.body.dataset && document.body.dataset.pageKind;
+    if (search && (kind === "article" || kind === "ai" || kind === "related")) {
+      search.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" && !event.isComposing && search.value.trim()) {
+          var top = document.querySelector(".museum-topbar");
+          var home = top ? top.getAttribute("data-home-href") : "index.html";
+          var dest = (home || "index.html") + "?q=" + encodeURIComponent(search.value.trim()) + "#recent-updates";
+          location.href = themeUrl(dest);
+        }
+      });
+    }
+    document.addEventListener("keydown", function (event) {
+      if (event.defaultPrevented || event.isComposing || (document.activeElement && document.activeElement.isContentEditable)) return;
+      if (typeof document.querySelector === "function" && document.querySelector("dialog[open], #image-lightbox-overlay.visible")) return;
+      if (event.key === "/" && !event.metaKey && !event.ctrlKey && !event.altKey &&
+          document.activeElement && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) {
+        event.preventDefault();
+        var drawerInput = (document.body && document.body.classList && document.body.classList.contains("museum-drawer-open") && typeof document.getElementById === "function") ?
+          document.getElementById("org-museum-search-input") : null;
+        var indexInput = typeof document.getElementById === "function" ? document.getElementById("org-museum-index-search") : null;
+        var target = drawerInput || search || indexInput;
+        if (target && typeof target.focus === "function") target.focus({ preventScroll: true });
+      }
+    });
+  }
+
   function bindControls() {
     updateControls(normalize(document.documentElement.dataset.theme));
     bindReturnLink();
+    bindGlobalSearch();
     document.querySelectorAll("[data-theme-toggle]").forEach(function (button) {
       button.addEventListener("click", function () {
         var current = normalize(document.documentElement.dataset.theme);
@@ -277,6 +542,8 @@
       menu.addEventListener("keydown", function (event) {
         if (event.key === "Escape") { menu.open = false; menu.querySelector("summary").focus(); }
       });
+      bindSettingsTabs(menu);
+      bindGlobalAiSettings(menu);
     });
   }
 

@@ -29,6 +29,7 @@
     var query = (params.get('q') || '').trim().toLowerCase();
     var category = params.get('category') || '*';
     var relation = params.get('relation') || '*';
+    var timeRange = params.get('time') || 'all';
     var view = params.get('view') === 'triage' ? 'triage' : 'relations';
     var zoomScale = 1;
     var dimension = params.get('dimension') === '3d' ? '3d' : '2d';
@@ -196,7 +197,12 @@
       frozen = event.target.checked; rememberPositions(); savePresentation(); render();
     });
     settings.querySelector('[data-layout-reset]').addEventListener('click', function () { applyLayout(layoutMode); });
-    document.addEventListener('click', function (event) { if (!settings.contains(event.target)) settings.open = false; });
+    document.addEventListener('click', function (event) {
+      if (!settings.contains(event.target)) settings.open = false;
+      document.querySelectorAll('.graph-commandbar details[open]').forEach(function (d) {
+        if (!d.contains(event.target)) d.open = false;
+      });
+    });
     settings.addEventListener('keydown', function (event) {
       if (event.key === 'Escape') { settings.open = false; settings.querySelector('summary').focus(); }
     });
@@ -207,7 +213,9 @@
     function writeUrl(push) {
       var url = new URL(location.href);
       [['q', query], ['category', category === '*' ? '' : category],
-       ['relation', relation === '*' ? '' : relation], ['focus', selectedNodeId],
+       ['relation', relation === '*' ? '' : relation],
+       ['time', timeRange === 'all' ? '' : timeRange],
+       ['focus', selectedNodeId],
        ['view', view === 'triage' ? 'triage' : ''],
        ['dimension', dimension === '3d' ? '3d' : ''], ['layout', layoutMode]].forEach(function (entry) {
         if (entry[1]) url.searchParams.set(entry[0], entry[1]);
@@ -262,21 +270,39 @@
     // captures pointer, drag, and wheel events without browser SVG dropouts (from DuckDB Editor)
     var bgCatcher = svg.append('rect')
       .attr('class', 'graph-canvas-catcher')
+      .attr('x', 0)
+      .attr('y', 0)
       .attr('width', '100%')
       .attr('height', '100%')
-      .attr('fill', 'transparent')
+      .attr('fill', '#000')
+      .attr('fill-opacity', 0)
+      .attr('pointer-events', 'all')
       .style('pointer-events', 'all')
       .style('cursor', 'grab');
 
     var edgeLayer = svg.append('g').attr('class', 'graph-links');
     var root = svg.append('g');
     var nodeLayer = root.append('g').attr('class', 'graph-nodes');
-    svg.append('defs').append('marker').attr('id', 'network-arrow')
-      .attr('viewBox', '0 -3.5 7 7').attr('refX', 6.5).attr('refY', 0)
+    var defs = svg.append('defs');
+    defs.append('marker').attr('id', 'network-arrow')
+      .attr('viewBox', '0 -4 10 8').attr('refX', 9).attr('refY', 0)
       .attr('markerUnits', 'userSpaceOnUse')
-      .attr('markerWidth', 7).attr('markerHeight', 7)
+      .attr('markerWidth', 9.5).attr('markerHeight', 9.5)
       .attr('orient', 'auto-start-reverse').append('path')
-      .attr('d', 'M0,-3L6.5,0L0,3Z').attr('fill', 'context-stroke');
+      .attr('d', 'M0,-3.5L9,0L0,3.5L2.2,0Z').attr('fill', 'currentColor');
+    defs.append('marker').attr('id', 'network-arrow-selected')
+      .attr('viewBox', '0 -4 10 8').attr('refX', 9.2).attr('refY', 0)
+      .attr('markerUnits', 'userSpaceOnUse')
+      .attr('markerWidth', 11.5).attr('markerHeight', 11.5)
+      .attr('orient', 'auto-start-reverse').append('path')
+      .attr('d', 'M0,-3.5L9,0L0,3.5L2.2,0Z').attr('fill', 'currentColor');
+
+    function updateZoomButtons() {
+      var inBtn = document.getElementById('btn-zoom-in');
+      var outBtn = document.getElementById('btn-zoom-out');
+      if (inBtn) inBtn.disabled = zoomScale >= 9.9;
+      if (outBtn) outBtn.disabled = zoomScale <= 0.055;
+    }
 
     var zoom = d3.zoom()
       .scaleExtent([0.05, 10])
@@ -294,15 +320,44 @@
         if (event.sourceEvent) autoFitPending = false;
         zoomScale = event.transform.k;
         root.attr('transform', event.transform);
-        updateLabels(); drawEdges();
+        updateLabels(); drawEdges(); updateZoomButtons();
       });
 
     svg.call(zoom).on('dblclick.zoom', null);
 
-    // Prevent default Windows Chrome autoscroll compass icon on middle-click
-    svg.on('mousedown.middle-prevent', function (event) {
-      if (event.button === 1) event.preventDefault();
+    // Double-click on blank space triggers fit-all
+    svg.on('dblclick', function (event) {
+      if (event.target === svg.node() || (event.target && event.target.classList && event.target.classList.contains('graph-canvas-catcher'))) {
+        event.preventDefault();
+        fit();
+      }
     });
+
+    // Prevent default Windows Chrome autoscroll compass icon on middle-click
+    function preventMiddleAutoscroll(event) {
+      if (event.button === 1) event.preventDefault();
+    }
+    ['mousedown', 'pointerdown', 'auxclick'].forEach(function (type) {
+      svg.node().addEventListener(type, preventMiddleAutoscroll);
+      canvas.addEventListener(type, preventMiddleAutoscroll);
+    });
+
+    // Fallback wheel zoom delegator: guarantees any mousewheel on canvas or stage outside SVG triggers smooth zoom
+    function handleCanvasWheel(event) {
+      if (dimension !== '2d') return;
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      var delta = -event.deltaY * (event.deltaMode === 1 ? 0.05 : event.deltaMode ? 1 : 0.002);
+      var factor = Math.pow(2, delta);
+      var targetScale = Math.max(0.05, Math.min(10, zoomScale * factor));
+      if (Math.abs(targetScale - zoomScale) < 1e-4) return;
+      var rect = canvas.getBoundingClientRect();
+      var pointer = [event.clientX - rect.left, event.clientY - rect.top];
+      svg.call(zoom.scaleBy, factor, pointer);
+    }
+    canvas.addEventListener('wheel', handleCanvasWheel, { passive: false });
+    var stage = canvas.closest('.graph-canvas-stage');
+    if (stage) stage.addEventListener('wheel', handleCanvasWheel, { passive: false });
 
     function project(node) {
       if (dimension === '2d') return {x: node.x, y: node.y, scale: 1, depth: 0};
@@ -357,6 +412,35 @@
           return edge.type === relation && (edgeSource(edge) === node.id || edgeTarget(edge) === node.id);
         });
       });
+      function parseNodeTimestamp(val) {
+        if (!val) return NaN;
+        if (typeof val === 'number') return val > 1e11 ? val : val * 1000;
+        if (typeof val === 'string') {
+          var num = Number(val);
+          if (!isNaN(num) && num > 0) return num > 1e11 ? num : num * 1000;
+          var parsed = Date.parse(val.replace(/-/g, '/'));
+          return isNaN(parsed) ? Date.parse(val) : parsed;
+        }
+        return NaN;
+      }
+      if (timeRange !== 'all') {
+        var days = parseInt(timeRange, 10);
+        if (!isNaN(days) && days > 0) {
+          var refMs = 0;
+          graph.nodes.forEach(function (n) {
+            var ms = parseNodeTimestamp(n.created) || parseNodeTimestamp(n.modified);
+            if (!isNaN(ms) && ms > refMs) refMs = ms;
+          });
+          var now = Date.now();
+          var anchorMs = Math.max(now, refMs);
+          var cutoff = anchorMs - (days - 1) * 86400000;
+          filtered = filtered.filter(function (node) {
+            if (node.id === selectedNodeId) return true;
+            var t = parseNodeTimestamp(node.created) || parseNodeTimestamp(node.modified);
+            return !isNaN(t) && t >= cutoff;
+          });
+        }
+      }
       if (!selectedNodeId || !Number.isFinite(focusDepth)) return filtered;
       var allowed = new Set([selectedNodeId]);
       var frontier = [selectedNodeId];
@@ -440,6 +524,40 @@
           return !!selectedEdgeId || !!hoveredEdgeId || !selectedNodeId ||
             (edgeSource(edge) !== selectedNodeId && edgeTarget(edge) !== selectedNodeId);
         });
+      edgeSelection.select('.graph-network-edge-line')
+        .attr('marker-end', function (edge) {
+          if (!edgeMath.flow(edge).atEnd) return null;
+          return (edge.id === selectedEdgeId || edge.id === hoveredEdgeId)
+            ? 'url(#network-arrow-selected)'
+            : 'url(#network-arrow)';
+        })
+        .attr('marker-start', function (edge) {
+          if (!edgeMath.flow(edge).atStart) return null;
+          return (edge.id === selectedEdgeId || edge.id === hoveredEdgeId)
+            ? 'url(#network-arrow-selected)'
+            : 'url(#network-arrow)';
+        });
+      if (nodeSelection) {
+        nodeSelection
+          .classed('is-selected', function (node) { return node.id === selectedNodeId; })
+          .classed('is-endpoint', function (node) {
+            if (!selectedEdgeId && !hoveredEdgeId) return false;
+            var activeId = selectedEdgeId || hoveredEdgeId;
+            var edge = graph.links.find(function (e) { return e.id === activeId; });
+            return edge && (edgeSource(edge) === node.id || edgeTarget(edge) === node.id);
+          })
+          .classed('is-context', function (node) {
+            if (selectedEdgeId || hoveredEdgeId) {
+              var activeId = selectedEdgeId || hoveredEdgeId;
+              var edge = graph.links.find(function (e) { return e.id === activeId; });
+              return edge && edgeSource(edge) !== node.id && edgeTarget(edge) !== node.id;
+            }
+            return !!selectedNodeId && node.id !== selectedNodeId && !graph.links.some(function (edge) {
+              return (edgeSource(edge) === selectedNodeId && edgeTarget(edge) === node.id) ||
+                (edgeTarget(edge) === selectedNodeId && edgeSource(edge) === node.id);
+            });
+          });
+      }
     }
     function intersects(a, b, gap) {
       return a.x < b.x + b.width + gap && a.x + a.width + gap > b.x &&
@@ -539,7 +657,9 @@
         return ids.has(edgeSource(edge)) && ids.has(edgeTarget(edge)) &&
           (relation === '*' || relation === edge.type);
       }).map(function (edge) { return Object.assign({}, edge); });
-      svg.attr('viewBox', '0 0 ' + w + ' ' + h);
+      svg.attr('viewBox', '0 0 ' + w + ' ' + h)
+        .attr('preserveAspectRatio', 'none');
+      bgCatcher.attr('width', w).attr('height', h);
       edgeSelection = edgeLayer.selectAll('g.graph-network-edge').data(activeLinks, function (edge) { return edge.id; })
         .join(function (enter) {
           var item = enter.append('g').attr('class', 'graph-network-edge').attr('role', 'button').attr('tabindex', 0);
@@ -550,16 +670,22 @@
         });
       edgeSelection.select('.graph-network-edge-line')
         .style('--graph-edge-width', function (edge) {
-          return Math.max(1.25, Math.min(2.35, 1.5 + .42 * (Math.sqrt(Math.max(.2, edge.weight || 1)) - 1))) + 'px';
+          return Math.max(1.5, Math.min(2.8, 1.8 + .5 * (Math.sqrt(Math.max(.2, edge.weight || 1)) - 1))) + 'px';
         })
         .attr('stroke-dasharray', function (edge) {
           return edge.style === 'dashed' ? '7 5' : edge.style === 'dotted' ? '2 5' : null;
         })
         .attr('marker-end', function (edge) {
-          return edgeMath.flow(edge).atEnd ? 'url(#network-arrow)' : null;
+          if (!edgeMath.flow(edge).atEnd) return null;
+          return (edge.id === selectedEdgeId || edge.id === hoveredEdgeId)
+            ? 'url(#network-arrow-selected)'
+            : 'url(#network-arrow)';
         })
         .attr('marker-start', function (edge) {
-          return edgeMath.flow(edge).atStart ? 'url(#network-arrow)' : null;
+          if (!edgeMath.flow(edge).atStart) return null;
+          return (edge.id === selectedEdgeId || edge.id === hoveredEdgeId)
+            ? 'url(#network-arrow-selected)'
+            : 'url(#network-arrow)';
         });
       edgeSelection.select('.graph-network-edge-label').text(function (edge) { return edge.label || edge.type; });
       edgeSelection.attr('aria-label', function (edge) {
@@ -599,6 +725,28 @@
         .on('keydown', function (event, node) {
           if (event.key === 'Enter') location.href = node.url;
           if (event.key === ' ') {event.preventDefault(); showNode(node);}
+        })
+        .on('mouseenter', function (event, node) {
+          var tt = document.getElementById('graph-tooltip');
+          if (!tt) return;
+          var tTitle = document.getElementById('tt-title');
+          var tMeta = document.getElementById('tt-meta');
+          if (tTitle) tTitle.textContent = node.name;
+          if (tMeta) tMeta.textContent = (node.group || '未分类') + ' · ' + (node.degree || 0) + ' 条关系' +
+            (node.tags && node.tags.length ? ' · #' + node.tags.join(' #') : '');
+          tt.style.left = Math.min(window.innerWidth - 260, Math.max(10, event.clientX + 14)) + 'px';
+          tt.style.top = Math.min(window.innerHeight - 80, Math.max(10, event.clientY + 14)) + 'px';
+          tt.classList.add('is-visible');
+        })
+        .on('mousemove', function (event) {
+          var tt = document.getElementById('graph-tooltip');
+          if (!tt || !tt.classList.contains('is-visible')) return;
+          tt.style.left = Math.min(window.innerWidth - 260, Math.max(10, event.clientX + 14)) + 'px';
+          tt.style.top = Math.min(window.innerHeight - 80, Math.max(10, event.clientY + 14)) + 'px';
+        })
+        .on('mouseleave', function () {
+          var tt = document.getElementById('graph-tooltip');
+          if (tt) tt.classList.remove('is-visible');
         });
       nodeSelection.call(d3.drag().clickDistance(4)
         .on('start', function (event, node) {
@@ -663,10 +811,50 @@
         var button = document.createElement('button');
         button.type = 'button'; button.textContent = entry[1];
         button.setAttribute('aria-pressed', category === entry[0] ? 'true' : 'false');
-        button.addEventListener('click', function () { category = entry[0]; updateControls(); render(); fit(); writeUrl(true); });
+        button.addEventListener('click', function () {
+          category = entry[0];
+          var parentDetails = button.closest('details');
+          if (parentDetails) parentDetails.open = false;
+          updateControls(); render(); fit(); writeUrl(true);
+        });
         categoryFilters.appendChild(button);
       });
       document.getElementById('graph-filter-label').textContent = category === '*' ? '全部主题' : category;
+      var timeFilters = document.getElementById('graph-time-filters');
+      if (timeFilters) {
+        timeFilters.textContent = '';
+        var timeOptions = [
+          ['all', '全部'],
+          ['7', '近 7 天'],
+          ['30', '近 30 天'],
+          ['90', '近 90 天'],
+          ['180', '近半年'],
+          ['365', '近 1 年']
+        ];
+        timeOptions.forEach(function (entry) {
+          var button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = entry[1];
+          button.setAttribute('aria-pressed', timeRange === entry[0] ? 'true' : 'false');
+          button.addEventListener('click', function () {
+            if (entry[0] !== 'all' && timeRange === entry[0]) {
+              timeRange = 'all';
+            } else {
+              timeRange = entry[0];
+            }
+            var parentDetails = button.closest('details');
+            if (parentDetails) parentDetails.open = false;
+            updateControls();
+            render();
+            fit();
+            writeUrl(true);
+          });
+          timeFilters.appendChild(button);
+        });
+        var activeTime = timeOptions.find(function (opt) { return opt[0] === timeRange; });
+        var timeLabelEl = document.getElementById('graph-time-label');
+        if (timeLabelEl) timeLabelEl.textContent = activeTime ? activeTime[1] : '全部';
+      }
       var types = Array.from(new Set(graph.links.map(function (edge) { return edge.type; }))).sort();
       relationFilter.textContent = '';
       [['*', '全部关系']].concat(types.map(function (name) { return [name, name]; })).forEach(function (entry) {
@@ -678,12 +866,20 @@
       var legend = document.getElementById('graph-relation-legend'); legend.textContent = '';
       types.forEach(function (type) {var item = document.createElement('li'); item.textContent = type; legend.appendChild(item);});
       triageList.textContent = '';
-      graph.nodes.filter(function (node) { return node.degree === 0; }).forEach(function (node) {
-        var item = document.createElement('button'); item.type = 'button'; item.textContent = node.name;
-        item.addEventListener('click', function () { showIsolated = true; setView('relations'); showNode(node); });
-        triageList.appendChild(item);
-      });
-      document.getElementById('graph-isolated-count').textContent = graph.nodes.filter(function (node) { return node.degree === 0; }).length;
+      var isolatedList = graph.nodes.filter(function (node) { return node.degree === 0; });
+      if (!isolatedList.length) {
+        var emptyMsg = document.createElement('p');
+        emptyMsg.className = 'graph-isolated-empty';
+        emptyMsg.textContent = '所有笔记均已建立知识连线，暂无待连接笔记。';
+        triageList.appendChild(emptyMsg);
+      } else {
+        isolatedList.forEach(function (node) {
+          var item = document.createElement('button'); item.type = 'button'; item.textContent = node.name;
+          item.addEventListener('click', function () { showIsolated = true; setView('relations'); showNode(node); });
+          triageList.appendChild(item);
+        });
+      }
+      document.getElementById('graph-isolated-count').textContent = isolatedList.length;
       document.getElementById('graph-zero-notice').hidden = graph.links.length !== 0;
     }
     function setView(next, pushHistory) {
@@ -718,7 +914,11 @@
         key.textContent = item[0]; value.textContent = item[1]; facts.append(key, value);
       });
       document.getElementById('graph-open-link').href = node.url;
-      document.getElementById('graph-related-link').hidden = true;
+      var relatedLink = document.getElementById('graph-related-link');
+      if (relatedLink) {
+        relatedLink.href = 'related.html?source=' + encodeURIComponent(node.id);
+        relatedLink.hidden = false;
+      }
       var neighbours = document.getElementById('graph-neighbours'); neighbours.textContent = '';
       [['上游', graph.links.filter(function (edge) { return edgeMath.incoming(edge, node.id); })],
        ['下游', graph.links.filter(function (edge) { return edgeMath.outgoing(edge, node.id); })]].forEach(function (group) {
@@ -933,6 +1133,22 @@
       search.value = query;
       search.addEventListener('input', function () { query = search.value.trim().toLowerCase(); render(); fit(); writeUrl(false); });
     }
+    document.addEventListener('keydown', function (event) {
+      if (event.target && (/^(input|select|textarea)$/i.test(event.target.tagName) || event.target.isContentEditable)) return;
+      if (event.key === '+' || event.key === '=') {
+        event.preventDefault(); scaleView(1.25);
+      } else if (event.key === '-' || event.key === '_') {
+        event.preventDefault(); scaleView(0.8);
+      } else if (event.key === '0') {
+        event.preventDefault(); fit();
+      } else if (event.key === 'Escape') {
+        if (selectedNodeId || selectedEdgeId) {
+          event.preventDefault();
+          selectedNodeId = ''; selectedEdgeId = '';
+          showPrompt(); render(); writeUrl(true);
+        }
+      }
+    });
     svg.on('click', function (event) {
       if (event.target === svg.node() || (event.target && event.target.classList && event.target.classList.contains('graph-canvas-catcher'))) {
         selectedNodeId = ''; selectedEdgeId = ''; showPrompt(); render(); writeUrl(true);
@@ -942,6 +1158,7 @@
       var restored = new URLSearchParams(location.search);
       query = (restored.get('q') || '').trim().toLowerCase();
       category = restored.get('category') || '*'; relation = restored.get('relation') || '*';
+      timeRange = restored.get('time') || 'all';
       selectedNodeId = restored.get('focus') || '';
       view = restored.get('view') === 'triage' ? 'triage' : 'relations';
       dimension = restored.get('dimension') === '3d' ? '3d' : '2d';

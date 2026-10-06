@@ -57,10 +57,10 @@ assert.match(css,/\.museum-search-line\s*\{[^}]*border:\s*1px solid var\(--museu
 assert.match(css,/\.graph-page \.graph-view-controls button\s*\{[^}]*border:\s*1px solid var\(--museum-control-border\)/s);
 assert.match(css,/\.graph-mode-tabs button\.is-active\s*\{[^}]*border-color:\s*var\(--museum-control-border\)/s);
 assert.match(css,/\.museum-status-filters button\.is-active,[^}]*background:\s*var\(--museum-selected-surface\)/s);
-assert.match(css,/\.article-container blockquote\s*\{[^}]*border-left:\s*3px solid var\(--museum-accent\)[^}]*border-radius:\s*var\(--museum-radius-control\)[^}]*background:\s*var\(--museum-surface-muted\)/s);
+assert.match(css,/:is\(\.article-container, \.museum-md\) blockquote\s*\{[^}]*border-inline-start:\s*3px solid var\(--museum-accent\)[^}]*border-radius:\s*var\(--museum-radius-control\)[^}]*background:\s*var\(--museum-surface-muted\)/s);
 assert.match(css,/\.museum-table-scroll\s*\{[^}]*border:\s*1px solid var\(--museum-border-soft\)[^}]*border-radius:\s*var\(--museum-radius-control\)/s);
 assert.match(css,/(?:pre\.src|pre\.example|pre\.org-museum-code-block)\s*\{[^}]*border:\s*1px solid var\(--museum-code-border\)[^}]*border-radius:\s*var\(--museum-radius-control\)[^}]*background:\s*var\(--museum-code-surface\)/s);
-assert.match(css,/\.article-container img\s*\{[^}]*border-radius:\s*var\(--museum-radius-control\)/s);
+assert.match(css,/:is\(\.article-container, \.museum-md\) img\s*\{[^}]*border-radius:\s*var\(--museum-radius-control\)/s);
 assert.match(css,/\.article-container a:hover,[\s\S]*?text-decoration-thickness:\s*2px/s);
 assert.match(css,/\.museum-table-scroll:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--museum-focus-ring\)/s);
 assert.match(css,/\.reading-restore-notice\s*\{[^}]*border-radius:\s*var\(--museum-radius-panel\)/s);
@@ -73,6 +73,9 @@ for(const level of [4,5,6]) {
 }
 assert.match(css,/\.timeline-hero h1\s*\{[^}]*font:[^;}]*var\(--museum-weight-bold\)[^;}]*var\(--museum-type-display\)[^;}]*var\(--museum-serif-font\)/s);
 assert.match(css,/\.museum-index-entry h3\s*\{[^}]*font-size:\s*var\(--museum-type-h5\)/s);
+assert.match(css,/\.museum-entry-tags\s*\{[^}]*margin-left:\s*auto[^}]*justify-content:\s*flex-end/s);
+assert.match(css,/\.dashboard-result-tags\s*\{[^}]*margin-left:\s*auto[^}]*justify-content:\s*flex-end/s);
+assert(!/\.dashboard-result-tags\s*\{[^}]*justify-content:\s*flex-start/s.test(css),'Index filetag chips must remain right-aligned across all media tiers');
 assert.match(blocks[1][1],/--museum-control-border:\s*#[0-9a-f]{6}/i,'Light theme must own its control boundary token');
 // Theme runtime: URL priority, default, blocked storage, toggle and cross-tab change.
 const themeSource=fs.readFileSync(path.join(root,'resources/org-museum-theme.js'),'utf8');

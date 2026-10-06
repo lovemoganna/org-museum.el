@@ -28,6 +28,7 @@ function createMockElement(tagName = "div") {
     dataset: {},
     attributes: {},
     children: [],
+    get options() { return this.children; },
     listeners: {},
     parentElement: null,
     scrollHeight: 44,
@@ -134,6 +135,8 @@ const cssContent = fs.readFileSync(path.join(root, "resources/org-museum.css"), 
 
 assert.ok(cssContent.includes(".museum-ai-sidebar"), "CSS must contain .museum-ai-sidebar");
 assert.ok(cssContent.includes(".museum-ai-copilot-header"), "CSS must contain .museum-ai-copilot-header");
+assert.ok(cssContent.includes(".museum-ai-copilot-model-bar"), "CSS must contain .museum-ai-copilot-model-bar");
+assert.ok(cssContent.includes(".museum-ai-copilot-model-config"), "CSS must contain .museum-ai-copilot-model-config");
 assert.ok(cssContent.includes(".museum-ai-copilot-context"), "CSS must contain .museum-ai-copilot-context");
 assert.ok(cssContent.includes(".museum-ai-copilot-chat"), "CSS must contain .museum-ai-copilot-chat");
 assert.ok(cssContent.includes(".museum-ai-copilot-messages"), "CSS must contain .museum-ai-copilot-messages");
@@ -143,7 +146,9 @@ assert.ok(cssContent.includes(".museum-ai-explore-prompts"), "CSS must contain .
 assert.ok(cssContent.includes(".museum-ai-chip"), "CSS must contain .museum-ai-chip");
 assert.ok(cssContent.includes(".museum-ai-copilot-composer"), "CSS must contain .museum-ai-copilot-composer");
 assert.ok(cssContent.includes(".museum-ai-send-btn"), "CSS must contain .museum-ai-send-btn");
-assert.ok(cssContent.includes(".museum-ai-stop-btn"), "CSS must contain .museum-ai-stop-btn");
+assert.ok(cssContent.includes(".museum-ai-drawer-chevron"), "CSS must contain .museum-ai-drawer-chevron");
+assert.ok(cssContent.includes(".museum-ai-stop-btn:focus-visible"), "CSS must contain .museum-ai-stop-btn:focus-visible");
+assert.ok(cssContent.includes(".museum-ai-message-bubble .museum-md"), "CSS must contain high-density typography rules for copilot markdown");
 
 // Check right-sidebar positioning
 assert.ok(/right:\s*0/.test(cssContent), "Sidebar must dock to the right side");
@@ -154,7 +159,14 @@ console.log("--- TEST 2: Article Panel HTML Contract in org-museum-ai-web.el ---
 const elContent = fs.readFileSync(path.join(root, "org-museum-ai-web.el"), "utf8");
 
 assert.ok(elContent.includes("museum-ai-sidebar"), "HTML generator must declare .museum-ai-sidebar");
+assert.ok(elContent.includes("museum-ai-drawer-chevron"), "HTML generator must declare drawer chevron");
+assert.ok(elContent.includes("?pageId="), "HTML generator must compute static ai-center link with pageId");
+assert.ok(elContent.includes("data-ai-center-link"), "HTML generator must declare data-ai-center-link");
 assert.ok(elContent.includes("data-copilot-new"), "HTML generator must declare new session trigger");
+assert.ok(elContent.includes("data-copilot-model-select"), "HTML generator must declare model select dropdown");
+assert.ok(elContent.includes("data-copilot-model-refresh"), "HTML generator must declare model refresh button");
+assert.ok(elContent.includes("data-copilot-config-toggle"), "HTML generator must declare model config toggle button");
+assert.ok(elContent.includes("data-copilot-model-config"), "HTML generator must declare model config container");
 assert.ok(elContent.includes("data-ai-context-title"), "HTML generator must declare context title element");
 assert.ok(elContent.includes("data-ai-chat-turns"), "HTML generator must declare chat turns log");
 assert.ok(elContent.includes("data-ai-explore-chips"), "HTML generator must declare explore chips area");
@@ -184,6 +196,48 @@ panel.className = "museum-ai-panel museum-ai-sidebar";
 const engineBadge = createMockElement("span");
 engineBadge.setAttribute("data-ai-engine-badge", "");
 panel.appendChild(engineBadge);
+
+const modelSelect = createMockElement("select");
+modelSelect.setAttribute("data-copilot-model-select", "");
+panel.appendChild(modelSelect);
+
+const modelRefreshBtn = createMockElement("button");
+modelRefreshBtn.setAttribute("data-copilot-model-refresh", "");
+panel.appendChild(modelRefreshBtn);
+
+const configToggleBtn = createMockElement("button");
+configToggleBtn.setAttribute("data-copilot-config-toggle", "");
+panel.appendChild(configToggleBtn);
+
+const configPanel = createMockElement("div");
+configPanel.setAttribute("data-copilot-model-config", "");
+configPanel.hidden = true;
+
+const configForm = createMockElement("form");
+configForm.setAttribute("data-copilot-config-form", "");
+
+const providerInput = createMockElement("select");
+providerInput.setAttribute("data-copilot-provider", "");
+configForm.appendChild(providerInput);
+
+const endpointInput = createMockElement("input");
+endpointInput.setAttribute("data-copilot-endpoint", "");
+configForm.appendChild(endpointInput);
+
+const keyInput = createMockElement("input");
+keyInput.setAttribute("data-copilot-key", "");
+configForm.appendChild(keyInput);
+
+const configCancelBtn = createMockElement("button");
+configCancelBtn.setAttribute("data-copilot-config-cancel", "");
+configForm.appendChild(configCancelBtn);
+
+const configStatus = createMockElement("p");
+configStatus.setAttribute("data-copilot-config-status", "");
+configForm.appendChild(configStatus);
+
+configPanel.appendChild(configForm);
+panel.appendChild(configPanel);
 
 const newChatBtn = createMockElement("button");
 newChatBtn.setAttribute("data-copilot-new", "");
@@ -229,7 +283,18 @@ const chatSend = createMockElement("button");
 chatSend.setAttribute("data-ai-chat-send", "");
 chatForm.appendChild(chatSend);
 
+const composerHint = createMockElement("small");
+composerHint.className = "museum-ai-composer-hint";
+composerHint.setAttribute("data-ai-composer-hint", "");
+composerHint.textContent = "Ctrl+Enter 发送 · Enter 换行";
+chatForm.appendChild(composerHint);
+
 panel.appendChild(chatForm);
+
+const centerLink = createMockElement("a");
+centerLink.setAttribute("data-ai-center-link", "");
+centerLink.href = "ai-center.html?pageId=duckdb-analytics";
+panel.appendChild(centerLink);
 
 const articleContainer = createMockElement("main");
 articleContainer.className = "article-container";
@@ -289,6 +354,9 @@ const mockDoc = {
 let streamChunkHandler = null;
 let streamSignal = null;
 const mockBrowserAi = {
+  models: async (config) => {
+    return ["qwen2.5:7b", "llama3.1:8b", "deepseek-r1:7b"];
+  },
   chat: async (config, messages, onChunk, signal) => {
     streamChunkHandler = onChunk;
     streamSignal = signal;
@@ -343,6 +411,9 @@ vm.runInNewContext(jsContent, {
 // Verify initial setup
 assert.equal(triggerShortcut.textContent, "Ctrl+I", "Windows trigger shortcut should display Ctrl+I");
 assert.equal(contextTitle.textContent, "DuckDB 深度分析与架构笔记", "Context title should match article title");
+assert.ok(centerLink.href.includes("ai-center.html?pageId="), "ai-center link must point to ai-center.html with pageId");
+assert.notEqual(centerLink.href, "#", "ai-center link must not be dummy # dead link");
+assert.equal(composerHint.textContent, "Ctrl+Enter 发送 · Enter 换行", "Composer hint matches Windows platform");
 
 // Verify explore chips initialization
 assert.equal(exploreChips.children.length, 4, "Should initialize 4 default prompt chips");
@@ -371,9 +442,18 @@ mockDoc.dispatchEvent({ type: "keydown", key: "i", ctrlKey: true, preventDefault
 assert.equal(body.classList.contains("museum-ai-open"), true, "Ctrl+I re-opens sidebar");
 assert.equal(mockLocalStorage.getItem("copilot_sidebar_open"), "true", "Saves open state to localStorage");
 
+// Esc hierarchy: config panel closes before main sidebar
+configToggleBtn.click();
+assert.equal(configPanel.hidden, false, "Config panel opens");
+assert.equal(configToggleBtn.getAttribute("aria-expanded"), "true", "configToggleBtn has aria-expanded=true");
+mockDoc.dispatchEvent({ type: "keydown", key: "Escape" });
+assert.equal(configPanel.hidden, true, "First Escape closes config panel");
+assert.equal(configToggleBtn.getAttribute("aria-expanded"), "false", "configToggleBtn has aria-expanded=false");
+assert.equal(body.classList.contains("museum-ai-open"), true, "Sidebar remains open after closing config panel");
+
 // Esc Keydown closes
 mockDoc.dispatchEvent({ type: "keydown", key: "Escape" });
-assert.equal(body.classList.contains("museum-ai-open"), false, "Escape closes sidebar");
+assert.equal(body.classList.contains("museum-ai-open"), false, "Second Escape closes sidebar");
 
 // Re-open for following tests
 triggerBtn.click();
@@ -424,6 +504,40 @@ async function runAsyncTests() {
   assert.deepEqual(newStored, [], "SessionStorage updated to empty array");
 
   console.log("✓ New chat resets conversation and clears session storage");
+
+  // Test 7: Frontend Model Selection and Switching
+  console.log("--- TEST 7: Frontend Model Selection and Switching ---");
+  assert.ok(modelSelect.children.length >= 2, "Model selector should have populated options");
+  assert.equal(engineBadge.textContent, "qwen2.5:7b", "Engine badge reflects active model");
+
+  // Switch model in frontend
+  modelSelect.value = "llama3.1:8b";
+  modelSelect.dispatchEvent({ type: "change" });
+  const updatedCfg = JSON.parse(mockLocalStorage.getItem("org-museum-browser-model"));
+  assert.equal(updatedCfg.model, "llama3.1:8b", "Switching model updates localStorage");
+  assert.equal(engineBadge.textContent, "llama3.1:8b", "Engine badge updates to newly selected model");
+
+  // Refresh models
+  modelRefreshBtn.click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.ok(modelSelect.children.some(c => c.value === "deepseek-r1:7b"), "Refresh populates models from frontend service");
+
+  // Config panel toggle
+  assert.equal(configPanel.hidden, true, "Config panel is initially hidden");
+  configToggleBtn.click();
+  assert.equal(configPanel.hidden, false, "Clicking config toggle opens panel");
+  configCancelBtn.click();
+  assert.equal(configPanel.hidden, true, "Clicking cancel hides config panel");
+
+  // Test two-way org-museum-model-changed event
+  mockDoc.dispatchEvent({
+    type: "org-museum-model-changed",
+    detail: { model: "deepseek-r1:7b" }
+  });
+  assert.equal(modelSelect.value, "deepseek-r1:7b", "Two-way model changed event updates modelSelect.value");
+  assert.equal(engineBadge.textContent, "deepseek-r1:7b", "Two-way model changed event updates engine badge");
+
+  console.log("✓ Frontend model selection, switching, refreshing, and configuration verified");
 
   console.log("\n========================================");
   console.log("ALL AI ARTICLE COPILOT TESTS PASSED!");
