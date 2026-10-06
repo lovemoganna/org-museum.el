@@ -1,5 +1,8 @@
 ;;; org-museum-ai-web-test.el --- AI Center contract tests -*- lexical-binding: t -*-
 
+(set-language-environment "UTF-8")
+(prefer-coding-system 'utf-8)
+
 (require 'ert)
 (setq load-prefer-newer t)
 (require 'org-museum)
@@ -621,6 +624,10 @@
     (should (string-match-p "class=\"[^\"]*museum-ai-copilot-header[^\"]*\"" html))
     (should (string-match-p "data-ai-engine-badge" html))
     (should (string-match-p "data-copilot-new" html))
+    (should (string-match-p "data-copilot-config-toggle" html))
+    (should (string-match-p "data-copilot-model-select" html))
+    (should (string-match-p "data-copilot-model-refresh" html))
+    (should (string-match-p "data-copilot-model-config" html))
     (should (string-match-p "data-ai-context-title" html))
     (should (string-match-p "data-ai-analyze" html))
     (should (string-match-p "data-ai-analysis-drawer" html))

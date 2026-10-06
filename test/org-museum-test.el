@@ -1,4 +1,4 @@
-;;; org-museum-test.el --- Tests for org-museum -*- lexical-binding: t; -*-
+;;; org-museum-test.el --- Tests for org-museum -*- coding: utf-8; lexical-binding: t; -*-
 
 (set-language-environment "UTF-8")
 (prefer-coding-system 'utf-8)
@@ -3143,6 +3143,35 @@
                       "localStorage.setItem('org-museum-graph-layout'"))
       (should (string-search needle graph)))))
 
+(ert-deftest org-museum-graph-http-page-decodes-chinese-identities ()
+  "The HTTP lookup used before saving an edge accepts UTF-8 Wiki IDs."
+  (let* ((root (make-temp-file "org-museum-graph-unicode-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir nil)
+         (org-museum--index nil)
+         (org-museum--curation-token "fixture-token")
+         (headers '(("authorization" . "Bearer fixture-token")
+                    ("x-org-museum-curation" . "1")))
+         (source (expand-file-name "pages/source.org" root)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory source) t)
+          (dolist (page-id '("本体mvp" "alpha"))
+            (with-temp-file source
+              (insert "#+TITLE: Source\n#+WIKI_ID: " page-id "\n"))
+            (org-museum-index-build t)
+            (let* ((response
+                    (org-museum--curation-dispatch-http
+                     "GET" (concat "/api/v1/page?pageId="
+                                   (url-hexify-string page-id)) headers ""))
+                   (body (substring response (+ 4 (string-match "\r\n\r\n" response))))
+                   (data (org-museum--curation-json-read body)))
+              (should (string-prefix-p "HTTP/1.1 200" response))
+              (should (equal (cdr (assoc "pageId" data)) page-id))
+              (should (equal (cdr (assoc "sha256" data))
+                             (org-museum--curation-sha256 source))))))
+      (delete-directory root t))))
+
 (ert-deftest org-museum-graph-edits-use-org-source-of-truth ()
   "Graph mutations survive rescans and reject stale source hashes."
   (let* ((root (make-temp-file "org-museum-network-" t))
@@ -3876,7 +3905,11 @@
     (should (string-search "data-browser-models" ai-topbar))
     (should (string-search "data-browser-load" ai-topbar))
     (should (string-search "museum-settings-ai-section" ai-topbar))
-    (should-not (string-search "museum-settings-ai-section" home-topbar))))
+    (should (string-search "museum-settings-ai-section" home-topbar))
+    (should (string-search "data-settings-tab" home-topbar))
+    (should (string-search "data-browser-config" home-topbar))
+    (should (string-search "data-browser-models" home-topbar))
+    (should (string-search "data-browser-load" home-topbar))))
 
 (ert-deftest org-museum-related-data-keeps-explicit-direction-and-deduplicates-pairs ()
   (let* ((pages (make-hash-table :test #'equal))
@@ -4091,7 +4124,7 @@
                             "timeline-scope-bar" "timeline-filter-sheet"
                             "timeline-focus-card" "timeline-previous"
                             "timeline-next" "timeline-return"
-                            "q" "category" "status" "focus"
+                            "q" "category" "status" "focus" "from" "to"
                             "ArrowLeft" "ArrowRight" "ArrowUp" "ArrowDown"
                             "同日更新" "筛选后已清除原选择"
                             "Date.parse(page.createdDate+'T00:00:00Z')"
@@ -4115,6 +4148,40 @@
           (should (member "timeline.html"
                           (plist-get (org-museum--publish-default-policy)
                                      :include))))
+      (delete-directory root t))))
+
+(ert-deftest org-museum-timeline-supports-time-range-filter ()
+  "Timeline filter sheet exposes time filter shortcuts and date inputs."
+  (let* ((root (make-temp-file "org-museum-timeline-time-filter-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-shared-export-dir "exports/html")
+         (out-file (expand-file-name "exports/html/timeline.html" root))
+         (html (org-museum--build-timeline-html
+                out-file "{\"schemaVersion\":1,\"today\":\"2026-10-03\",\"pages\":[],\"edges\":[]}"
+                "resources/d3.min.js"))
+         (script (org-museum--script-timeline)))
+    (unwind-protect
+        (progn
+          (dolist (needle '("timeline-time-filters"
+                            "timeline-date-start"
+                            "timeline-date-end"
+                            "timeline-date-clear"
+                            "timeline-date-feedback"
+                            "按时间范围筛选"
+                            "timeline-date-shortcuts"))
+            (should (string-search needle html)))
+          (dolist (needle '("timelineReferenceDate"
+                            "recentDaysRange"
+                            "isRecentRange"
+                            "dateShortcutDefs"
+                            "applyDateInputs"
+                            "state.from"
+                            "state.to"
+                            "matchTime"
+                            "getActiveTimeLabel"
+                            "from"
+                            "to"))
+            (should (string-search needle script))))
       (delete-directory root t))))
 
 (ert-deftest org-museum-related-summary-falls-back-to-exported-content ()
@@ -6284,8 +6351,8 @@
             (with-temp-buffer
               (insert-file-contents html)
               (should (search-forward "museum-asset-image" nil t))
-              (should (search-forward "<video controls preload=\"none\">" nil t))
-              (should (search-forward "<audio controls preload=\"none\">" nil t))
+              (should (re-search-forward "<video controls[^>]*preload=\"none\"[^>]*>" nil t))
+              (should (re-search-forward "<audio controls[^>]*preload=\"none\"[^>]*>" nil t))
               (should (search-forward "museum-asset-pdf" nil t))
               (should (search-forward "id=\"museum-page-assets-title\"" nil t))
               (should-not
