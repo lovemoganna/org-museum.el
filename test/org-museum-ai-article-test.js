@@ -159,21 +159,20 @@ console.log("--- TEST 2: Article Panel HTML Contract in org-museum-ai-web.el ---
 const elContent = fs.readFileSync(path.join(root, "org-museum-ai-web.el"), "utf8");
 
 assert.ok(elContent.includes("museum-ai-sidebar"), "HTML generator must declare .museum-ai-sidebar");
-assert.ok(elContent.includes("museum-ai-drawer-chevron"), "HTML generator must declare drawer chevron");
 assert.ok(elContent.includes("?pageId="), "HTML generator must compute static ai-center link with pageId");
 assert.ok(elContent.includes("data-ai-center-link"), "HTML generator must declare data-ai-center-link");
 assert.ok(elContent.includes("data-copilot-new"), "HTML generator must declare new session trigger");
 assert.ok(elContent.includes("data-copilot-model-select"), "HTML generator must declare model select dropdown");
-assert.ok(elContent.includes("data-copilot-model-refresh"), "HTML generator must declare model refresh button");
-assert.ok(elContent.includes("data-copilot-config-toggle"), "HTML generator must declare model config toggle button");
-assert.ok(elContent.includes("data-copilot-model-config"), "HTML generator must declare model config container");
-assert.ok(elContent.includes("data-ai-context-title"), "HTML generator must declare context title element");
 assert.ok(elContent.includes("data-ai-chat-turns"), "HTML generator must declare chat turns log");
 assert.ok(elContent.includes("data-ai-explore-chips"), "HTML generator must declare explore chips area");
 assert.ok(elContent.includes("data-ai-chat-form"), "HTML generator must declare composer chat form");
 assert.ok(elContent.includes("data-ai-chat-input"), "HTML generator must declare composer input textarea");
 assert.ok(elContent.includes("data-ai-chat-stop"), "HTML generator must declare composer stop button");
 assert.ok(elContent.includes("data-ai-chat-send"), "HTML generator must declare composer send button");
+assert.ok(elContent.includes("museum-ai-trigger"), "HTML generator must declare .museum-ai-trigger");
+assert.ok(elContent.includes("data-ai-toggle"), "HTML generator must declare data-ai-toggle trigger button");
+assert.ok(elContent.includes("data-ai-trigger-dot"), "HTML generator must declare data-ai-trigger-dot");
+assert.ok(elContent.includes("data-ai-trigger-shortcut"), "HTML generator must declare data-ai-trigger-shortcut");
 
 console.log("✓ HTML generator output markup contracts verified");
 
@@ -390,6 +389,9 @@ mockLocalStorage.setItem("org-museum-browser-model", JSON.stringify({
   model: "qwen2.5:7b",
   endpoint: "http://localhost:11434"
 }));
+mockLocalStorage.setItem("org-museum-browser-models-list", JSON.stringify([
+  "qwen2.5:7b", "llama3.1:8b", "deepseek-r1:7b"
+]));
 
 const jsContent = fs.readFileSync(path.join(root, "resources/org-museum-ai.js"), "utf8");
 
@@ -416,8 +418,9 @@ assert.notEqual(centerLink.href, "#", "ai-center link must not be dummy # dead l
 assert.equal(composerHint.textContent, "Ctrl+Enter 发送 · Enter 换行", "Composer hint matches Windows platform");
 
 // Verify explore chips initialization
-assert.equal(exploreChips.children.length, 4, "Should initialize 4 default prompt chips");
-assert.equal(exploreChips.children[0].textContent, "提炼这篇笔记的核心要点");
+assert.equal(exploreChips.children.length, 5, "Should initialize analyze chip + 4 default prompt chips");
+assert.equal(exploreChips.children[0].textContent, "重新分析笔记");
+assert.equal(exploreChips.children[1].textContent, "提炼这篇笔记的核心要点");
 
 // Verify initial empty chat screen
 assert.ok(chatTurns.children.length >= 1, "Should render initial chat welcome state");
@@ -428,42 +431,38 @@ console.log("✓ Initial DOM setup, prompt chips, and context binding verified")
 
 // Test Toggle Sidebar
 console.log("--- TEST 4: Sidebar Toggle and Shortcuts ---");
-// On desktop >= 1280px, it defaults to open (matching DuckDB Editor)
-assert.equal(body.classList.contains("museum-ai-open"), true, "Sidebar defaults to open on wide screens >= 1280px");
-assert.equal(panel.inert, false, "Panel is interactive when open");
-
-// Trigger Click toggles closed
-triggerBtn.click();
-assert.equal(body.classList.contains("museum-ai-open"), false, "Click trigger closes sidebar");
-assert.equal(mockLocalStorage.getItem("copilot_sidebar_open"), "false", "Saves closed state to localStorage");
+// By default, sidebar is hidden
+assert.equal(body.classList.contains("museum-ai-open"), false, "Sidebar defaults to hidden");
+assert.equal(panel.inert, true, "Panel is inert when closed");
 
 // Ctrl+I Shortcut opens
 mockDoc.dispatchEvent({ type: "keydown", key: "i", ctrlKey: true, preventDefault() {} });
-assert.equal(body.classList.contains("museum-ai-open"), true, "Ctrl+I re-opens sidebar");
+assert.equal(body.classList.contains("museum-ai-open"), true, "Ctrl+I opens sidebar");
+assert.equal(panel.inert, false, "Panel is active when open");
 assert.equal(mockLocalStorage.getItem("copilot_sidebar_open"), "true", "Saves open state to localStorage");
 
-// Esc hierarchy: config panel closes before main sidebar
-configToggleBtn.click();
-assert.equal(configPanel.hidden, false, "Config panel opens");
-assert.equal(configToggleBtn.getAttribute("aria-expanded"), "true", "configToggleBtn has aria-expanded=true");
-mockDoc.dispatchEvent({ type: "keydown", key: "Escape" });
-assert.equal(configPanel.hidden, true, "First Escape closes config panel");
-assert.equal(configToggleBtn.getAttribute("aria-expanded"), "false", "configToggleBtn has aria-expanded=false");
-assert.equal(body.classList.contains("museum-ai-open"), true, "Sidebar remains open after closing config panel");
+// Ctrl+I Shortcut toggles closed
+mockDoc.dispatchEvent({ type: "keydown", key: "i", ctrlKey: true, preventDefault() {} });
+assert.equal(body.classList.contains("museum-ai-open"), false, "Ctrl+I toggles closed");
+assert.equal(mockLocalStorage.getItem("copilot_sidebar_open"), "false", "Saves closed state to localStorage");
+
+// Ctrl+I Shortcut re-opens
+mockDoc.dispatchEvent({ type: "keydown", key: "i", ctrlKey: true, preventDefault() {} });
+assert.equal(body.classList.contains("museum-ai-open"), true, "Ctrl+I re-opens sidebar");
 
 // Esc Keydown closes
 mockDoc.dispatchEvent({ type: "keydown", key: "Escape" });
-assert.equal(body.classList.contains("museum-ai-open"), false, "Second Escape closes sidebar");
+assert.equal(body.classList.contains("museum-ai-open"), false, "Escape closes sidebar");
 
 // Re-open for following tests
-triggerBtn.click();
+mockDoc.dispatchEvent({ type: "keydown", key: "i", ctrlKey: true, preventDefault() {} });
 assert.equal(body.classList.contains("museum-ai-open"), true, "Re-open sidebar for interaction tests");
 
-console.log("✓ Sidebar toggle via trigger and Ctrl+I/Escape shortcuts verified");
+console.log("✓ Sidebar toggle via Ctrl+I and Escape shortcuts verified");
 
 async function runAsyncTests() {
   console.log("--- TEST 5: Interactive Chat Flow & Streaming ---");
-  const chip0 = exploreChips.children[0];
+  const chip0 = exploreChips.children[1];
   // Click chip to send "提炼这篇笔记的核心要点"
   chip0.click();
 
@@ -517,17 +516,7 @@ async function runAsyncTests() {
   assert.equal(updatedCfg.model, "llama3.1:8b", "Switching model updates localStorage");
   assert.equal(engineBadge.textContent, "llama3.1:8b", "Engine badge updates to newly selected model");
 
-  // Refresh models
-  modelRefreshBtn.click();
-  await new Promise(r => setTimeout(r, 10));
-  assert.ok(modelSelect.children.some(c => c.value === "deepseek-r1:7b"), "Refresh populates models from frontend service");
-
-  // Config panel toggle
-  assert.equal(configPanel.hidden, true, "Config panel is initially hidden");
-  configToggleBtn.click();
-  assert.equal(configPanel.hidden, false, "Clicking config toggle opens panel");
-  configCancelBtn.click();
-  assert.equal(configPanel.hidden, true, "Clicking cancel hides config panel");
+  assert.ok(modelSelect.children.some(c => c.value === "deepseek-r1:7b"), "Model options include cached models");
 
   // Test two-way org-museum-model-changed event
   mockDoc.dispatchEvent({

@@ -6,6 +6,8 @@ var data={pages:[],generatedAt:''};
 try{data=JSON.parse(dataEl?dataEl.textContent:'{"pages":[]}');}catch(_error){}
 var sourceData=Array.isArray(data.pages)?data.pages:[];
 var search=document.getElementById('org-museum-global-search');
+var suggestEl=document.getElementById('museum-index-suggest');
+var clearSearchBtn=document.querySelector('[data-index-search-clear]');
 var resultList=document.getElementById('index-search-list');
 var fallbackList=document.querySelector('.museum-index-matrix');
 var empty=document.getElementById('index-search-empty');
@@ -706,7 +708,21 @@ function renderResults(){
       row.appendChild(header);
 
       var meta=document.createElement('div');meta.className='dashboard-result-meta';
-      var topic=document.createElement('span');topic.className='dashboard-result-topic';
+      var categoryVal=page.category||'';
+      var topic=document.createElement(categoryVal?'button':'span');
+      topic.className='dashboard-result-topic museum-entry-category';
+      if(categoryVal){
+        topic.type='button';
+        topic.dataset.categoryLink=categoryVal;
+        var activeCat=(state.filters.dimensions.category||[]).indexOf(categoryVal)>=0;
+        if(activeCat)topic.classList.add('is-active');
+        topic.setAttribute('aria-pressed',activeCat?'true':'false');
+        topic.title=(activeCat?'取消筛选主题：':'筛选主题：')+(page.categoryLabel||categoryVal);
+        topic.addEventListener('click',function(e){
+          if(e&&typeof e.stopPropagation==='function')e.stopPropagation();
+          setDimension('category',categoryVal);
+        });
+      }
       topic.textContent=page.categoryLabel||page.category||'未分类';
       meta.appendChild(topic);
 
@@ -817,19 +833,228 @@ state.refresh=function(newPages){
   else update('replace',false);
 };
 
-if(search){
-  search.addEventListener('input',function(){state.filters.keyword=search.value;update('replace',false);});
-  search.addEventListener('keydown',function(event){
-    if(event.isComposing)return;
-    if(event.key==='Enter'||event.key==='ArrowDown'){
-      var first=resultList.querySelector('a[href]');
-      if(first){event.preventDefault();if(event.key==='Enter')first.click();else first.focus();}
+var selectedSuggestIndex=-1;
+
+function highlightMatch(text,query){
+  if(!query||!text)return document.createTextNode(text||'');
+  var span=document.createElement('span');
+  var words=query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  if(!words.length){span.textContent=text;return span;}
+  var lower=text.toLocaleLowerCase();
+  var matchRanges=[];
+  words.forEach(function(w){
+    var idx=0;
+    while((idx=lower.indexOf(w,idx))>=0){
+      matchRanges.push([idx,idx+w.length]);
+      idx+=w.length;
     }
-    if(event.key==='Escape'){
-      event.preventDefault();state.filters.keyword='';update('replace',false);search.blur();
+  });
+  if(!matchRanges.length){span.textContent=text;return span;}
+  matchRanges.sort(function(a,b){return a[0]-b[0];});
+  var merged=[];
+  matchRanges.forEach(function(r){
+    if(!merged.length||merged[merged.length-1][1]<r[0]){
+      merged.push(r.slice());
+    }else if(merged[merged.length-1][1]<r[1]){
+      merged[merged.length-1][1]=r[1];
+    }
+  });
+  var lastIdx=0;
+  merged.forEach(function(r){
+    if(r[0]>lastIdx){
+      span.appendChild(document.createTextNode(text.slice(lastIdx,r[0])));
+    }
+    var mark=document.createElement('mark');
+    mark.textContent=text.slice(r[0],r[1]);
+    span.appendChild(mark);
+    lastIdx=r[1];
+  });
+  if(lastIdx<text.length){
+    span.appendChild(document.createTextNode(text.slice(lastIdx)));
+  }
+  return span;
+}
+
+function closeSuggest(){
+  if(suggestEl){
+    suggestEl.hidden=true;
+    suggestEl.textContent='';
+  }
+  selectedSuggestIndex=-1;
+  if(search)search.setAttribute('aria-expanded','false');
+}
+
+function updateSuggestSelection(items){
+  items.forEach(function(item,i){
+    var isSel=i===selectedSuggestIndex;
+    item.classList.toggle('is-selected',isSel);
+    item.setAttribute('aria-selected',isSel?'true':'false');
+    if(isSel&&typeof item.scrollIntoView==='function'){
+      item.scrollIntoView({block:'nearest'});
     }
   });
 }
+
+function renderSuggest(){
+  if(!suggestEl||!search)return;
+  var query=search.value.trim().toLocaleLowerCase();
+  if(!query){closeSuggest();return;}
+  var matches=state.filteredData.slice(0,7);
+  suggestEl.textContent='';
+  if(!matches.length){
+    var emptyLi=document.createElement('li');
+    emptyLi.className='museum-index-suggest-item';
+    emptyLi.style.pointerEvents='none';
+    var emptyCopy=document.createElement('span');
+    emptyCopy.className='museum-index-suggest-context';
+    emptyCopy.textContent='未找到匹配的笔记，按 Enter 查看筛选列表';
+    emptyLi.appendChild(emptyCopy);
+    suggestEl.appendChild(emptyLi);
+    suggestEl.hidden=false;
+    search.setAttribute('aria-expanded','true');
+    selectedSuggestIndex=-1;
+    return;
+  }
+  selectedSuggestIndex=-1;
+  matches.forEach(function(page,idx){
+    var li=document.createElement('li');
+    li.className='museum-index-suggest-item';
+    li.setAttribute('role','option');
+    li.setAttribute('id','suggest-item-'+idx);
+    li.dataset.index=String(idx);
+
+    var icon=document.createElement('span');
+    icon.className='museum-index-suggest-icon';
+    icon.setAttribute('aria-hidden','true');
+    li.appendChild(icon);
+
+    var main=document.createElement('div');
+    main.className='museum-index-suggest-main';
+
+    var title=document.createElement('div');
+    title.className='museum-index-suggest-title';
+    title.appendChild(highlightMatch(page.title||page.pageId,query));
+    main.appendChild(title);
+
+    var matchInfo=bestMatch(page);
+    var contextText=matchInfo.context||page.description||(page.tags&&page.tags.length?'#'+page.tags.join(' #'):'');
+    if(contextText){
+      var context=document.createElement('div');
+      context.className='museum-index-suggest-context';
+      context.appendChild(highlightMatch(contextText,query));
+      main.appendChild(context);
+    }
+    li.appendChild(main);
+
+    var badge=document.createElement('span');
+    badge.className='museum-index-suggest-badge';
+    badge.textContent=page.categoryLabel||page.category||'笔记';
+    li.appendChild(badge);
+
+    li.addEventListener('mousedown',function(e){
+      e.preventDefault();
+      var targetUrl=window.orgMuseumThemeUrl?window.orgMuseumThemeUrl(matchInfo.href):matchInfo.href;
+      location.href=targetUrl;
+    });
+
+    suggestEl.appendChild(li);
+  });
+
+  var footer=document.createElement('li');
+  footer.className='museum-index-suggest-footer';
+  footer.innerHTML='<span>共找到 '+state.filteredData.length+' 篇笔记 · ↑↓ 键导航 · Enter 打开</span><span>Esc 关闭</span>';
+  suggestEl.appendChild(footer);
+
+  suggestEl.hidden=false;
+  search.setAttribute('aria-expanded','true');
+}
+
+function updateClearButton(){
+  if(clearSearchBtn&&search){
+    clearSearchBtn.hidden=!search.value;
+  }
+}
+
+if(clearSearchBtn){
+  clearSearchBtn.addEventListener('click',function(){
+    if(search){
+      search.value='';
+      state.filters.keyword='';
+      updateClearButton();
+      closeSuggest();
+      update('replace',false);
+      search.focus();
+    }
+  });
+}
+
+if(search){
+  search.addEventListener('input',function(){
+    state.filters.keyword=search.value;
+    updateClearButton();
+    update('replace',false);
+    renderSuggest();
+  });
+  search.addEventListener('focus',function(){
+    if(search.value.trim()){
+      renderSuggest();
+    }
+  });
+  search.addEventListener('keydown',function(event){
+    if(event.isComposing)return;
+    var items=suggestEl?Array.from(suggestEl.querySelectorAll('.museum-index-suggest-item[role="option"]')):[];
+    if(event.key==='ArrowDown'){
+      if(items.length>0&&!suggestEl.hidden){
+        event.preventDefault();
+        selectedSuggestIndex=(selectedSuggestIndex+1)%items.length;
+        updateSuggestSelection(items);
+        return;
+      }
+      var first=resultList&&resultList.querySelector('a[href]');
+      if(first){event.preventDefault();first.focus();}
+    }else if(event.key==='ArrowUp'){
+      if(items.length>0&&!suggestEl.hidden){
+        event.preventDefault();
+        selectedSuggestIndex=(selectedSuggestIndex-1+items.length)%items.length;
+        updateSuggestSelection(items);
+        return;
+      }
+    }else if(event.key==='Enter'){
+      if(items.length>0&&selectedSuggestIndex>=0&&!suggestEl.hidden){
+        event.preventDefault();
+        var selectedItem=items[selectedSuggestIndex];
+        var pageIdx=Number(selectedItem.dataset.index);
+        var page=state.filteredData[pageIdx];
+        if(page){
+          var m=bestMatch(page);
+          var href=window.orgMuseumThemeUrl?window.orgMuseumThemeUrl(m.href):m.href;
+          location.href=href;
+          return;
+        }
+      }
+      closeSuggest();
+      var firstLink=resultList&&resultList.querySelector('a[href]');
+      if(firstLink){event.preventDefault();firstLink.click();}
+    }else if(event.key==='Escape'){
+      event.preventDefault();
+      if(suggestEl&&!suggestEl.hidden){
+        closeSuggest();
+      }else{
+        state.filters.keyword='';
+        if(search)search.value='';
+        updateClearButton();
+        update('replace',false);
+        search.blur();
+      }
+    }
+  });
+}
+
+document.addEventListener('click',function(e){
+  if(suggestEl&&!suggestEl.hidden&&search&&!search.contains(e.target)&&!suggestEl.contains(e.target)){
+    closeSuggest();
+  }
+});
 if(resultList)resultList.addEventListener('keydown',function(event){
   if(['ArrowDown','ArrowUp','Escape'].indexOf(event.key)<0)return;
   var links=Array.from(resultList.querySelectorAll('a[href]'));
@@ -1044,6 +1269,13 @@ function renderResume(records){
   });
   resume.hidden=false;
 }
+document.addEventListener('click',function(e){
+  var catBtn=e.target&&e.target.closest?e.target.closest('[data-category-link], .museum-entry-category'):null;
+  if(catBtn&&catBtn.dataset&&catBtn.dataset.categoryLink){
+    e.preventDefault();
+    setDimension('category',catBtn.dataset.categoryLink);
+  }
+});
 readUrl();validateFilters();writeUrl('replace');render();
 openReadingDb().then(function(db){
   return loadRecentRecords(db).finally(function(){db.close();});

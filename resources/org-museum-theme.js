@@ -313,6 +313,8 @@
     var connection = menu.querySelector("[data-browser-connection]");
     var statusBox = menu.querySelector(".museum-settings-status-box");
     var datalist = menu.querySelector("#museum-browser-model-list");
+    var modelSelect = menu.querySelector("[data-browser-model-select]");
+    var cycleBtn = menu.querySelector("[data-browser-cycle-model]");
     var loadBtn = menu.querySelector("[data-browser-load]");
     var modelsBtn = menu.querySelector("[data-browser-models]");
     var cancelBtn = menu.querySelector("[data-browser-cancel-load]");
@@ -324,13 +326,107 @@
       if (connection) connection.textContent = msg;
     }
 
+    function getAvailableModels() {
+      var cached = [];
+      try { cached = JSON.parse(localStorage.getItem("org-museum-browser-models-list") || "[]"); } catch (_) {}
+      if (Array.isArray(cached) && cached.length) return cached;
+      if (modelSelect && modelSelect.options) {
+        var opts = Array.from(modelSelect.options).map(function (o) { return o.value; }).filter(Boolean);
+        if (opts.length) return opts;
+      }
+      if (datalist && datalist.options) {
+        var dOpts = Array.from(datalist.options).map(function (o) { return o.value; }).filter(Boolean);
+        if (dOpts.length) return dOpts;
+      }
+      return [];
+    }
+
+    function populateModelOptions(models, currentVal) {
+      if (!Array.isArray(models)) return;
+      if (datalist) {
+        datalist.replaceChildren();
+        models.forEach(function (m) {
+          var opt = document.createElement("option");
+          opt.value = m;
+          datalist.appendChild(opt);
+        });
+      }
+      if (modelSelect) {
+        modelSelect.replaceChildren();
+        var placeholderOpt = document.createElement("option");
+        placeholderOpt.value = "";
+        placeholderOpt.textContent = models.length ? "选择模型…" : "(请先读取模型列表或手动输入)";
+        modelSelect.appendChild(placeholderOpt);
+        models.forEach(function (m) {
+          var opt = document.createElement("option");
+          opt.value = m;
+          opt.textContent = m;
+          modelSelect.appendChild(opt);
+        });
+        if (currentVal) {
+          if (!models.includes(currentVal)) {
+            var customOpt = document.createElement("option");
+            customOpt.value = currentVal;
+            customOpt.textContent = currentVal + " (当前设置)";
+            modelSelect.appendChild(customOpt);
+          }
+          modelSelect.value = currentVal;
+        }
+      }
+    }
+
+    function selectModel(modelName) {
+      if (config.elements.model && config.elements.model.value !== modelName) {
+        config.elements.model.value = modelName;
+      }
+      if (modelSelect && modelSelect.value !== modelName) {
+        var hasOpt = Array.from(modelSelect.options || []).some(function (o) { return o.value === modelName; });
+        if (!hasOpt && modelName) {
+          var opt = document.createElement("option");
+          opt.value = modelName;
+          opt.textContent = modelName;
+          modelSelect.appendChild(opt);
+        }
+        modelSelect.value = modelName;
+      }
+      save();
+      if (modelName) updateStatus("ready", "已就绪 · " + modelName);
+      else updateStatus("idle", "未选择模型");
+    }
+
+    function cycleModel(direction) {
+      var step = (typeof direction === "number") ? direction : 1;
+      var models = getAvailableModels();
+      if (!models.length) {
+        updateStatus("loading", "正在获取模型列表以供切换…");
+        return fetchModels().then(function () {
+          var refreshed = getAvailableModels();
+          if (refreshed.length) {
+            selectModel(config.elements.model.value || refreshed[0]);
+          }
+        });
+      }
+      var current = (config.elements.model && config.elements.model.value.trim()) || (modelSelect && modelSelect.value) || "";
+      var idx = models.indexOf(current);
+      var nextIdx;
+      if (idx === -1) {
+        nextIdx = step >= 0 ? 0 : models.length - 1;
+      } else {
+        nextIdx = (idx + step + models.length) % models.length;
+      }
+      selectModel(models[nextIdx]);
+    }
+
     try {
       var saved = JSON.parse(localStorage.getItem("org-museum-browser-model") || "{}");
+      var cachedModels = [];
+      try { cachedModels = JSON.parse(localStorage.getItem("org-museum-browser-models-list") || "[]"); } catch (_) {}
       ["provider", "endpoint", "model", "system"].forEach(function (name) {
         if (typeof saved[name] === "string" && config.elements[name]) {
           config.elements[name].value = saved[name];
         }
       });
+      populateModelOptions(cachedModels, saved.model || (config.elements.model && config.elements.model.value));
       if (saved.model) {
         updateStatus("ready", "已就绪 · " + saved.model);
       }
@@ -341,10 +437,12 @@
     }
 
     function read() {
+      var modelVal = (config.elements.model && config.elements.model.value.trim()) ||
+                     (modelSelect && modelSelect.value.trim()) || "";
       return {
         provider: (config.elements.provider && config.elements.provider.value) || "compatible",
         endpoint: (config.elements.endpoint && config.elements.endpoint.value.trim()) || "",
-        model: (config.elements.model && config.elements.model.value.trim()) || "",
+        model: modelVal,
         key: (config.elements.key && config.elements.key.value.trim()) || "",
         system: (config.elements.system && config.elements.system.value.trim()) || ""
       };
@@ -368,6 +466,65 @@
 
     config.addEventListener("input", save);
     config.addEventListener("change", save);
+
+    if (modelSelect) {
+      var onModelSelectChange = function () {
+        selectModel(modelSelect.value);
+      };
+      modelSelect.addEventListener("change", onModelSelectChange);
+      modelSelect.addEventListener("input", onModelSelectChange);
+    }
+
+    if (cycleBtn) {
+      cycleBtn.addEventListener("click", function (e) {
+        if (e && e.preventDefault) e.preventDefault();
+        return cycleModel(1);
+      });
+    }
+
+    if (config.elements.model) {
+      var syncFromInput = function () {
+        var val = config.elements.model.value.trim();
+        if (modelSelect && modelSelect.value !== val) {
+          var hasOpt = Array.from(modelSelect.options || []).some(function (o) { return o.value === val; });
+          if (hasOpt) {
+            modelSelect.value = val;
+          } else if (val) {
+            var opt = document.createElement("option");
+            opt.value = val;
+            opt.textContent = val + " (手动输入)";
+            modelSelect.appendChild(opt);
+            modelSelect.value = val;
+          } else {
+            modelSelect.value = "";
+          }
+        }
+      };
+      config.elements.model.addEventListener("input", syncFromInput);
+      config.elements.model.addEventListener("change", syncFromInput);
+    }
+
+    var onGlobalModelChange = function (evt) {
+      if (!evt || !evt.detail) return;
+      var newModel = evt.detail.model || "";
+      if (config.elements.model && config.elements.model.value !== newModel) {
+        config.elements.model.value = newModel;
+      }
+      if (modelSelect && modelSelect.value !== newModel) {
+        var hasOpt = Array.from(modelSelect.options || []).some(function (o) { return o.value === newModel; });
+        if (!hasOpt && newModel) {
+          var opt = document.createElement("option");
+          opt.value = newModel;
+          opt.textContent = newModel;
+          modelSelect.appendChild(opt);
+        }
+        modelSelect.value = newModel;
+      }
+      if (newModel) updateStatus("ready", "已就绪 · " + newModel);
+    };
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") window.addEventListener("org-museum-model-changed", onGlobalModelChange);
+    if (typeof document !== "undefined" && typeof document.addEventListener === "function") document.addEventListener("org-museum-model-changed", onGlobalModelChange);
+
     if (config.elements.provider) config.elements.provider.addEventListener("change", function () {
       if (listing) listing.abort();
       if (loading) loading.abort();
@@ -375,6 +532,15 @@
       config.elements.model.value = "";
       config.elements.key.value = "";
       if (datalist) datalist.replaceChildren();
+      if (modelSelect) {
+        modelSelect.replaceChildren();
+        var placeholderOpt = document.createElement("option");
+        placeholderOpt.value = "";
+        placeholderOpt.textContent = "(请先读取模型列表或手动输入)";
+        modelSelect.appendChild(placeholderOpt);
+        modelSelect.value = "";
+      }
+      try { localStorage.removeItem("org-museum-browser-models-list"); } catch (_) {}
       updateStatus("idle", "请读取此服务的模型列表。");
       save();
     });
@@ -413,16 +579,13 @@
         } else if (Array.isArray(data.data)) {
           models = data.data.map(function (m) { return m.id || m.name || m; });
         }
-        if (datalist) {
-          datalist.textContent = "";
-          models.forEach(function (m) {
-            var opt = document.createElement("option");
-            opt.value = m;
-            datalist.appendChild(opt);
-          });
-        }
         if (models.length) {
-          if (!config.elements.model.value) config.elements.model.value = models[0];
+          try {
+            localStorage.setItem("org-museum-browser-models-list", JSON.stringify(models));
+          } catch (_) {}
+          var chosen = (config.elements.model && models.includes(config.elements.model.value)) ? config.elements.model.value : models[0];
+          if (config.elements.model) config.elements.model.value = chosen;
+          populateModelOptions(models, chosen);
           save();
           updateStatus("ready", "已获取 " + models.length + " 个模型");
         } else {
