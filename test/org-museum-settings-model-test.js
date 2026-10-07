@@ -5,27 +5,40 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../resources/org-museum-theme.js'), 'utf8');
 function control(value = '') {
-  return { value, dataset: {}, disabled: false, hidden: true, listeners: {},
+  return { value, dataset: {}, disabled: false, hidden: true, listeners: {}, options: [],
     addEventListener(key, fn) { this.listeners[key] = fn; },
-    replaceChildren() {}, appendChild() {} };
+    replaceChildren(...items) { this.options = items; },
+    appendChild(c) { this.options.push(c); return c; } };
 }
 const config = control();
+const modelSelect = control();
+const cycleBtn = control();
 config.elements = Object.fromEntries(['provider', 'endpoint', 'model', 'key', 'system'].map(key => [key, control()]));
+config.elements.model_select = modelSelect;
 const load = control(), cancel = control(), models = control(), connection = control(), list = control();
 const status = { dataset: {} };
 const nodes = { 'form[data-browser-config]': config, '[data-browser-load]': load,
   '[data-browser-cancel-load]': cancel, '[data-browser-models]': models,
   '[data-browser-connection]': connection, '#museum-browser-model-list': list,
+  '[data-browser-model-select]': modelSelect,
+  '[data-browser-cycle-model]': cycleBtn,
   '.museum-settings-status-box': status };
 let requests = [], transport;
+let stored = {};
 const context = {
   AbortController, setTimeout, clearTimeout,
-  localStorage: { getItem() { return null; }, setItem() {} },
-  window: { addEventListener() {} }, document: { createElement() { return {}; } },
-  fetch(url, options) { requests.push({ url, options }); return transport(options); }
+  localStorage: {
+    getItem(k) { return stored[k] || null; },
+    setItem(k, v) { stored[k] = String(v); },
+    removeItem(k) { delete stored[k]; }
+  },
+  window: { addEventListener() {}, dispatchEvent() {} },
+  document: { createElement() { return control(); }, addEventListener() {}, dispatchEvent() {} },
+  fetch(url, options) { requests.push({ url, options }); return transport(options); },
+  CustomEvent: class CustomEvent { constructor(type, init) { this.type = type; this.detail = init && init.detail; } }
 };
 const begin = source.indexOf('  function bindGlobalAiSettings(menu) {');
-const end = source.indexOf('  function bindControls() {', begin);
+const end = source.indexOf('  function bindGlobalSearch() {', begin);
 vm.runInNewContext(source.slice(begin, end) + '\nthis.bind = bindGlobalAiSettings;', context);
 const menu = { querySelector(selector) { return nodes[selector]; } };
 context.bind(menu);
@@ -60,13 +73,43 @@ const event = { preventDefault() {} };
   assert.equal(load.disabled, false);
   assert.equal(status.dataset.state, 'error');
   assert.match(connection.textContent, /503/);
-  transport = async () => ({ ok: true, json: async () => ({ data: [{ id: 'test-only-model' }] }) });
+  
+  // Model listing with multiple models
+  transport = async () => ({ ok: true, json: async () => ({ data: [{ id: 'model-alpha' }, { id: 'model-beta' }] }) });
   await models.listeners.click(event);
   assert.equal(models.disabled, false);
-  assert.match(connection.textContent, /1 个模型/);
+  assert.match(connection.textContent, /2 个模型/);
+  assert.equal(config.elements.model.value, 'model-alpha');
+  assert.equal(modelSelect.value, 'model-alpha');
+
+  // Sequential switching via cycle button
+  await cycleBtn.listeners.click(event);
+  assert.equal(config.elements.model.value, 'model-beta');
+  assert.equal(modelSelect.value, 'model-beta');
+  assert.match(connection.textContent, /model-beta/);
+
+  // Wrap around cycle back to alpha
+  await cycleBtn.listeners.click(event);
+  assert.equal(config.elements.model.value, 'model-alpha');
+  assert.equal(modelSelect.value, 'model-alpha');
+
+  // Sequential selection via select dropdown change
+  modelSelect.value = 'model-beta';
+  modelSelect.listeners.change();
+  assert.equal(config.elements.model.value, 'model-beta');
+
+  // Sequential selection via select dropdown input
+  modelSelect.value = 'model-alpha';
+  modelSelect.listeners.input();
+  assert.equal(config.elements.model.value, 'model-alpha');
+
+  // Provider switch clears model and cache
   config.elements.provider.value = 'ollama';
   config.elements.provider.listeners.change();
   assert.equal(config.elements.endpoint.value, 'http://127.0.0.1:11434');
   assert.equal(config.elements.model.value, '');
-  console.log('PASS: shared settings validation, duplicate activation, cancellation, HTTP failure recovery, model listing and provider switch');
+  assert.equal(modelSelect.value, '');
+  assert.equal(stored['org-museum-browser-models-list'], undefined);
+
+  console.log('PASS: shared settings validation, duplicate activation, cancellation, HTTP failure recovery, model listing, sequential switching, select syncing and provider switch');
 })().catch(error => { console.error(error); process.exitCode = 1; });

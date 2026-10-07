@@ -6054,6 +6054,7 @@ Interactive calls run in an isolated background Emacs process."
                  (expand-file-name "resources/vendor/markdown-it.LICENSE" (org-museum--shared-root))
                  (expand-file-name "resources/org-museum-markdown.js" (org-museum--shared-root))
                  (expand-file-name "resources/org-museum-ai.js" (org-museum--shared-root))
+                 (expand-file-name "resources/org-museum-ai-browser.js" (org-museum--shared-root))
                  (expand-file-name "index.html" (org-museum--shared-root))
                  (expand-file-name "ai-center.html" (org-museum--shared-root))
                  (expand-file-name "ai-public.json" (org-museum--shared-root))
@@ -6320,7 +6321,17 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
             "            </div>\n"
             "            <div class=\"museum-ai-action-row\"><button type=\"submit\" data-browser-models>读取模型列表</button></div>\n"
             "            <div class=\"museum-settings-field\">\n"
-            "              <label>模型<input name=\"model\" list=\"museum-browser-model-list\" placeholder=\"选择已加载模型或输入模型 ID\" required></label>\n"
+            "              <label>选择模型\n"
+            "                <div class=\"museum-settings-model-row\">\n"
+            "                  <select name=\"model_select\" data-browser-model-select aria-label=\"选择模型\">\n"
+            "                    <option value=\"\">(请先读取模型列表或手动输入)</option>\n"
+            "                  </select>\n"
+            "                  <button type=\"button\" class=\"museum-settings-sub-btn\" data-browser-cycle-model title=\"顺序切换至下一个模型\" aria-label=\"顺序切换选择模型\">顺序切换</button>\n"
+            "                </div>\n"
+            "              </label>\n"
+            "            </div>\n"
+            "            <div class=\"museum-settings-field\">\n"
+            "              <label>模型 ID<input name=\"model\" list=\"museum-browser-model-list\" placeholder=\"选择已加载模型或输入模型 ID\" required></label>\n"
             "              <datalist id=\"museum-browser-model-list\"></datalist>\n"
             "            </div>\n"
             "            <div class=\"museum-ai-action-row\">\n"
@@ -6351,50 +6362,31 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
             "          </details>\n"
             "        </div>\n"))
           (settings-control
-           (if (memq kind '(home ai))
-               (concat
-                "    <details class=\"museum-theme-menu museum-settings-menu\"><summary aria-label=\"设置与外观\" title=\"设置与外观\">"
-                "<span class=\"museum-settings-icon\" aria-hidden=\"true\"></span>"
-                "<span class=\"museum-settings-label\">设置</span>"
-                "</summary>"
-                "    <div class=\"museum-settings-panel has-ai\">\n"
-                "      <div class=\"museum-settings-tabs\" role=\"tablist\" aria-label=\"设置类别\">\n"
-                "        <button type=\"button\" class=\"museum-settings-tab-btn is-active\" data-settings-tab=\"appearance\" role=\"tab\" aria-selected=\"true\" tabindex=\"0\">外观</button>\n"
-                "        <button type=\"button\" class=\"museum-settings-tab-btn\" data-settings-tab=\"ai\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\">AI 模型</button>\n"
-                "      </div>\n"
-                "      <div class=\"museum-settings-tab-panel\" data-settings-panel=\"appearance\">\n"
-                "        <div class=\"museum-settings-section\">\n"
-                "          <div class=\"museum-settings-section-title\">外观主题</div>\n"
-                "          <div class=\"museum-theme-segmented\" role=\"group\">\n"
-                "            <button type=\"button\" class=\"museum-theme-segment-btn\" data-theme-system aria-pressed=\"true\">跟随系统</button>\n"
-                "            <button type=\"button\" class=\"museum-theme-segment-btn museum-theme-toggle\" "
-                "data-theme-toggle aria-label=\"切换为深色主题\">\n"
-                "              <span aria-hidden=\"true\" data-theme-icon data-theme-icon-state=\"moon\"></span>\n"
-                "              <span data-theme-label>深色</span></button>\n"
-                "          </div>\n"
-                "        </div>\n"
-                "      </div>\n"
-                "      <div class=\"museum-settings-tab-panel\" data-settings-panel=\"ai\" hidden>\n"
-                settings-ai-section
-                "      </div>\n"
-                "    </div></details>\n")
-             (concat
-              "    <details class=\"museum-theme-menu museum-settings-menu\"><summary aria-label=\"设置与外观\" title=\"设置与外观\">"
-              "<span class=\"museum-settings-icon\" aria-hidden=\"true\"></span>"
-              "<span class=\"museum-settings-label\">设置</span>"
-              "</summary>"
-              "    <div class=\"museum-settings-panel\">\n"
-              "      <div class=\"museum-settings-section\">\n"
-              "        <div class=\"museum-settings-section-title\">外观主题</div>\n"
-              "        <div class=\"museum-theme-segmented\" role=\"group\">\n"
-              "          <button type=\"button\" class=\"museum-theme-segment-btn\" data-theme-system aria-pressed=\"true\">跟随系统</button>\n"
-              "          <button type=\"button\" class=\"museum-theme-segment-btn museum-theme-toggle\" "
-              "data-theme-toggle aria-label=\"切换为深色主题\">\n"
-              "            <span aria-hidden=\"true\" data-theme-icon data-theme-icon-state=\"moon\"></span>\n"
-              "            <span data-theme-label>深色</span></button>\n"
-              "        </div>\n"
-              "      </div>\n"
-              "    </div></details>\n"))))
+           (concat
+            "    <details class=\"museum-theme-menu museum-settings-menu\"><summary class=\"museum-nav-settings\" aria-label=\"设置与外观\" title=\"设置与外观\">"
+            "<span class=\"museum-settings-label\">设置</span>"
+            "</summary>"
+            "    <div class=\"museum-settings-panel has-ai\">\n"
+            "      <div class=\"museum-settings-tabs\" role=\"tablist\" aria-label=\"设置类别\">\n"
+            "        <button type=\"button\" class=\"museum-settings-tab-btn is-active\" data-settings-tab=\"appearance\" role=\"tab\" aria-selected=\"true\" tabindex=\"0\">外观</button>\n"
+            "        <button type=\"button\" class=\"museum-settings-tab-btn\" data-settings-tab=\"ai\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\">AI 模型</button>\n"
+            "      </div>\n"
+            "      <div class=\"museum-settings-tab-panel\" data-settings-panel=\"appearance\">\n"
+            "        <div class=\"museum-settings-section\">\n"
+            "          <div class=\"museum-settings-section-title\">外观主题</div>\n"
+            "          <div class=\"museum-theme-segmented\" role=\"group\">\n"
+            "            <button type=\"button\" class=\"museum-theme-segment-btn\" data-theme-system aria-pressed=\"true\">跟随系统</button>\n"
+            "            <button type=\"button\" class=\"museum-theme-segment-btn museum-theme-toggle\" "
+            "data-theme-toggle aria-label=\"切换为深色主题\">\n"
+            "              <span aria-hidden=\"true\" data-theme-icon data-theme-icon-state=\"moon\"></span>\n"
+            "              <span data-theme-label>深色</span></button>\n"
+            "          </div>\n"
+            "        </div>\n"
+            "      </div>\n"
+            "      <div class=\"museum-settings-tab-panel\" data-settings-panel=\"ai\" hidden>\n"
+            settings-ai-section
+            "      </div>\n"
+            "    </div></details>\n")))
     (format
      (concat
       "<header class=\"museum-topbar\" data-home-href=\"%s\">\n"
@@ -6546,12 +6538,17 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
      "    <div><p class=\"museum-index-kicker\">ORG MUSEUM / 索引</p>"
      "<h1>内容索引</h1><p>搜索、筛选与图表联动，逐步缩小笔记范围。</p></div>\n"
      "  </div>\n"
+     "  <div class=\"museum-index-search-wrap\">\n"
      "  <label class=\"museum-index-search\">"
      "<span class=\"sr-only\">搜索索引</span>"
      "<input id=\"org-museum-global-search\" type=\"search\" "
      "placeholder=\"搜索标题、章节、标签或主题…\" autocomplete=\"off\" "
-     "spellcheck=\"false\" aria-label=\"搜索索引\" aria-keyshortcuts=\"/\">"
+     "spellcheck=\"false\" aria-label=\"搜索索引\" aria-keyshortcuts=\"/\" "
+     "aria-autocomplete=\"list\" aria-controls=\"museum-index-suggest\" role=\"combobox\" aria-expanded=\"false\">"
+     "<button type=\"button\" class=\"museum-index-search-clear\" data-index-search-clear aria-label=\"清空搜索\" hidden>✕</button>"
      "<kbd aria-hidden=\"true\">/</kbd></label>\n"
+     "  <ul id=\"museum-index-suggest\" class=\"museum-index-suggest\" role=\"listbox\" aria-label=\"搜索建议\" hidden></ul>\n"
+     "  </div>\n"
      "  <section class=\"dashboard-metrics\" aria-label=\"当前结果概览\">"
      "<div><span>当前笔记</span><strong data-dashboard-metric=\"total\">—</strong></div>"
      "<div><span data-dashboard-metric-label=\"recent-created\">近 30 天新增</span><strong data-dashboard-metric=\"recent-created\">—</strong></div>"
@@ -8056,7 +8053,7 @@ function updateIdentitySection(detail){
   if(detail)identityHeading=detail;
   if(!identity)return;
   var section=identity.querySelector('[data-current-section]');
-  if(section)section.textContent=identityHeading?identityHeading.title:'文章开头';
+  if(section)section.textContent=identityHeading?(identityHeading.title||'').replace(/\s*#\s*$/,'').trim():'文章开头';
 }
 function updateArticleIdentity(){
   identityFrame=0;if(!identity||!articleTitle)return;
@@ -8290,6 +8287,11 @@ window.addEventListener('pageshow',startReadingSession);
            (org-museum--html-escape
             (org-museum--versioned-resource-href
              (expand-file-name "resources/org-museum-org-view.js"
+                               (org-museum--shared-root)) out-file) t))
+   (format "<script defer src=\"%s\"></script>\n"
+           (org-museum--html-escape
+            (org-museum--versioned-resource-href
+             (expand-file-name "resources/org-museum-ai-browser.js"
                                (org-museum--shared-root)) out-file) t))
    (format "<script defer src=\"%s\"></script>\n"
            (org-museum--html-escape
@@ -12062,7 +12064,7 @@ function initScrollSpy(){
   }
   function publishActive(target,source){
     if(!target)return;
-    var detail={id:target.id,title:target.textContent.trim(),
+    var detail={id:target.id,title:(target.textContent||'').replace(/\s*#\s*$/,'').trim(),
                 level:Number(target.tagName.slice(1))||0,source:source};
     window.orgMuseumActiveHeading=detail;
     if(activeId===detail.id)return;

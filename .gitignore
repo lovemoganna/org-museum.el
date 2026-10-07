@@ -1,6 +1,9 @@
 # Build and Export
 exports/
 dist/
+output/
+scratch/
+.playwright-cli/
 *.html
 !README.md
 !test.md

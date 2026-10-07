@@ -669,6 +669,32 @@ assert.equal(endInput.getAttribute('aria-invalid'), 'false');
 assert.equal(endInput.validationMessage, '');
 console.log('✓ Invalid range reported; corrected range applied');
 
+console.log('--- TEST 16: Category button in search results and cards is interactive ---');
+const catEnv = createMockEnvironment(initialPages);
+const firstResult = catEnv.resultList.children[0];
+const catBtn = firstResult.children.find(el => el.className === 'dashboard-result-meta')
+  .children.find(el => el.classList.contains('museum-entry-category'));
+assert(catBtn, 'Category button should be rendered in search result row');
+assert.equal(catBtn.dataset.categoryLink, 'Lisp');
+assert.equal(catBtn.getAttribute('aria-pressed'), 'false');
+// Click category button on row
+catBtn.click();
+assert.equal(catEnv.state.filters.dimensions.category.length, 1, 'Clicking category button filters by category');
+assert.equal(catEnv.state.filters.dimensions.category[0], 'Lisp');
+const activeCatChip = catEnv.summaryChips.children.find(c => c.dataset.chipKey === 'category');
+assert(activeCatChip, 'Category chip should be added');
+assert.equal(activeCatChip.textContent, '主题：Lisp ×');
+// In re-rendered results, it should have aria-pressed="true" and is-active
+const reloadedFirstResult = catEnv.resultList.children[0];
+const reloadedCatBtn = reloadedFirstResult.children.find(el => el.className === 'dashboard-result-meta')
+  .children.find(el => el.classList.contains('museum-entry-category'));
+assert.equal(reloadedCatBtn.getAttribute('aria-pressed'), 'true');
+assert(reloadedCatBtn.classList.contains('is-active'));
+// Click it again to deselect
+reloadedCatBtn.click();
+assert.equal(catEnv.state.filters.dimensions.category.length, 0, 'Re-clicking category button removes category filter');
+console.log('✓ Category button in search results is interactive and synchronizes with filters');
+
 console.log('\n========================================');
 console.log('ALL DASHBOARD INTEGRATION TESTS PASSED!');
 console.log('========================================');

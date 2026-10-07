@@ -32,7 +32,7 @@
     var trigger = one("[data-ai-toggle]");
     var panel = one("#museum-ai-panel");
     var toc = one("#org-museum-right-sidebar");
-    if (!trigger || !panel) return;
+    if (!panel) return;
     var articleNode = one(".article-container");
     var pageId = articleNode && articleNode.dataset.pageId;
     var noteTitle = (articleNode && (articleNode.dataset.pageTitle || one("h1", articleNode)?.textContent)) || document.title;
@@ -44,14 +44,14 @@
 
     var isMac = typeof navigator !== "undefined" && /(Mac|iPhone|iPod|iPad)/i.test(navigator.platform || "");
     var shortcutText = isMac ? "⌘I" : "Ctrl+I";
-    var shortcutEl = one("[data-ai-trigger-shortcut]", trigger);
+    var shortcutEl = trigger && one("[data-ai-trigger-shortcut]", trigger);
     if (shortcutEl) shortcutEl.textContent = shortcutText;
     var composerHint = one(".museum-ai-composer-hint", panel);
     if (composerHint) {
       composerHint.innerHTML = "<kbd>" + (isMac ? "⌘Enter" : "Ctrl+Enter") + "</kbd> 发送";
     }
 
-    var triggerDot = one("[data-ai-trigger-dot]", trigger);
+    var triggerDot = trigger && one("[data-ai-trigger-dot]", trigger);
     var statusDot = one("[data-ai-status-dot]", panel);
     var analyzeBtn = one("[data-ai-analyze]", panel);
     var analyzeLabel = one("[data-ai-analyze-label]", panel);
@@ -66,17 +66,7 @@
     var exploreChips = one("[data-ai-explore-chips]", panel);
     var newChatBtn = one("[data-copilot-new]", panel);
     var engineBadge = one("[data-ai-engine-badge]", panel);
-
     var modelSelect = one("[data-copilot-model-select]", panel);
-    var modelRefreshBtn = one("[data-copilot-model-refresh]", panel);
-    var configToggleBtn = one("[data-copilot-config-toggle]", panel);
-    var configPanel = one("[data-copilot-model-config]", panel);
-    var configForm = one("[data-copilot-config-form]", panel);
-    var configCancelBtn = one("[data-copilot-config-cancel]", panel);
-    var configStatus = one("[data-copilot-config-status]", panel);
-    var providerInput = one("[data-copilot-provider]", panel);
-    var endpointInput = one("[data-copilot-endpoint]", panel);
-    var keyInput = one("[data-copilot-key]", panel);
 
     var savedConfig = { provider: "compatible", endpoint: "http://127.0.0.1:1234/v1", model: "" };
     try {
@@ -89,31 +79,138 @@
       }
     } catch (_) {}
 
+    function getApiKey() {
+      if (savedConfig.key) return savedConfig.key;
+      var keyEl = document.querySelector('.museum-settings-menu [name="key"]');
+      return (keyEl && keyEl.value.trim()) || "";
+    }
+
+    function openGlobalAiSettings() {
+      var menu = document.querySelector(".museum-settings-menu");
+      if (menu) {
+        menu.open = true;
+        var aiTab = menu.querySelector('[data-settings-tab="ai"]');
+        if (aiTab) aiTab.click();
+        var input = menu.querySelector('[name="model"]') || menu.querySelector('[name="endpoint"]') || menu.querySelector("input");
+        if (input) input.focus();
+      }
+    }
+
+    function populateCopilotModels(models, currentVal) {
+      if (!modelSelect) return;
+      modelSelect.replaceChildren();
+      var list = Array.isArray(models) ? models.slice() : [];
+      if (typeof window.orgMuseumAiApi === "function" && !list.includes("emacs-backend")) {
+        list.unshift("emacs-backend");
+      }
+      if (!list.length) {
+        var placeholderOpt = document.createElement("option");
+        placeholderOpt.value = currentVal || "";
+        placeholderOpt.textContent = currentVal || "选择模型…";
+        modelSelect.appendChild(placeholderOpt);
+        return;
+      }
+      list.forEach(function (m) {
+        var opt = document.createElement("option");
+        opt.value = m;
+        opt.textContent = m === "emacs-backend" ? "Emacs 后端" : m;
+        modelSelect.appendChild(opt);
+      });
+      if (currentVal && !list.includes(currentVal)) {
+        var customOpt = document.createElement("option");
+        customOpt.value = currentVal;
+        customOpt.textContent = currentVal;
+        modelSelect.appendChild(customOpt);
+      }
+      modelSelect.value = currentVal || (list[0] || "");
+    }
+
+    function updateBadgeModel(modelName) {
+      if (engineBadge && !engineBadge.classList.contains("is-generating")) {
+        if (modelName) {
+          engineBadge.textContent = modelName;
+          engineBadge.title = "当前使用模型: " + modelName + " (点击打开全局设置)";
+        } else {
+          engineBadge.textContent = "未选模型";
+          engineBadge.title = "尚未选择 AI 模型 (点击打开全局设置)";
+        }
+      }
+      if (modelSelect) {
+        if (modelName) {
+          var hasOpt = Array.from(modelSelect.options).some(function (o) { return o.value === modelName; });
+          if (!hasOpt) {
+            var opt = document.createElement("option");
+            opt.value = modelName;
+            opt.textContent = modelName === "emacs-backend" ? "Emacs 后端" : modelName;
+            modelSelect.appendChild(opt);
+          }
+          modelSelect.value = modelName;
+        } else {
+          modelSelect.value = "";
+        }
+      }
+    }
+
+    var cachedModels = [];
+    try { cachedModels = JSON.parse(localStorage.getItem("org-museum-browser-models-list") || "[]"); } catch (_) {}
+    populateCopilotModels(cachedModels, savedConfig.model);
+
+    if (modelSelect) {
+      modelSelect.addEventListener("change", function () {
+        var chosenModel = modelSelect.value;
+        if (!chosenModel) return;
+        savedConfig.model = chosenModel;
+        try {
+          var persist = JSON.parse(localStorage.getItem("org-museum-browser-model") || "{}");
+          persist.model = chosenModel;
+          localStorage.setItem("org-museum-browser-model", JSON.stringify(persist));
+        } catch (_) {}
+        updateBadgeModel(chosenModel);
+        updateStateVisual("done", "模型就绪 · " + (chosenModel === "emacs-backend" ? "Emacs 后端" : chosenModel));
+        try {
+          var evt = new CustomEvent("org-museum-model-changed", { detail: Object.assign({}, savedConfig, { model: chosenModel }) });
+          if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") window.dispatchEvent(evt);
+          if (typeof document !== "undefined" && typeof document.dispatchEvent === "function") document.dispatchEvent(evt);
+        } catch (_) {}
+      });
+    }
+
+    if (engineBadge) {
+      engineBadge.addEventListener("click", function () {
+        openGlobalAiSettings();
+      });
+      engineBadge.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openGlobalAiSettings();
+        }
+      });
+    }
+
     var handleModelChanged = function (event) {
       if (event && event.detail && typeof event.detail === "object") {
-        if (event.detail.model) {
+        if (event.detail.model !== undefined) {
           savedConfig.model = event.detail.model;
-          updateBadgeModel(event.detail.model === "emacs-backend" ? "Emacs 后端" : event.detail.model);
-          if (modelSelect) {
-            var opts = modelSelect.options || modelSelect.children || [];
-            var exists = Array.from(opts).some(function (o) { return o.value === event.detail.model; });
-            if (!exists && event.detail.model) {
-              var opt = document.createElement("option");
-              opt.value = event.detail.model;
-              opt.textContent = event.detail.model;
-              modelSelect.appendChild(opt);
-            }
-            modelSelect.value = event.detail.model;
-          }
+          updateBadgeModel(event.detail.model === "emacs-backend" ? "Emacs 后端" : (event.detail.model || ""));
         }
         if (event.detail.provider) {
           savedConfig.provider = event.detail.provider;
-          if (providerInput) providerInput.value = event.detail.provider;
         }
         if (event.detail.endpoint) {
           savedConfig.endpoint = event.detail.endpoint;
-          if (endpointInput) endpointInput.value = event.detail.endpoint;
         }
+        if (event.detail.key !== undefined) {
+          savedConfig.key = event.detail.key;
+        }
+        if (event.detail.system !== undefined) {
+          savedConfig.system = event.detail.system;
+        }
+        try {
+          var latestList = JSON.parse(localStorage.getItem("org-museum-browser-models-list") || "[]");
+          if (latestList.length && modelSelect && modelSelect.options.length <= 1) {
+            populateCopilotModels(latestList, savedConfig.model);
+          }
+        } catch (_) {}
       }
     };
     if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
@@ -122,202 +219,113 @@
       document.addEventListener("org-museum-model-changed", handleModelChanged);
     }
 
-    var cachedModels = [];
-    try {
-      var cached = JSON.parse(localStorage.getItem("org-museum-browser-models-list") || "[]");
-      if (Array.isArray(cached)) cachedModels = cached;
-    } catch (_) {}
+    updateBadgeModel(savedConfig.model);
 
-    function updateBadgeModel(modelName) {
-      if (!engineBadge) return;
-      if (engineBadge.classList.contains("is-generating")) return;
-      if (modelName) {
-        engineBadge.textContent = modelName;
-        engineBadge.title = "当前使用模型: " + modelName;
-      } else {
-        engineBadge.textContent = "未选模型";
-        engineBadge.title = "尚未选择 AI 模型";
-      }
-    }
-
-    function populateModelSelect(models, currentModel) {
-      if (!modelSelect) return;
-      modelSelect.replaceChildren();
-      var foundCurrent = false;
-
-      var placeholder = document.createElement("option");
-      placeholder.value = "";
-      placeholder.disabled = true;
-      placeholder.textContent = models && models.length ? "请选择模型…" : "未发现模型 (点击 ⚙ 配置)";
-      if (!currentModel) placeholder.selected = true;
-      modelSelect.appendChild(placeholder);
-
-      if (models && models.length) {
-        models.forEach(function (m) {
-          var opt = document.createElement("option");
-          opt.value = m;
-          opt.textContent = m;
-          if (currentModel && m === currentModel) {
-            opt.selected = true;
-            foundCurrent = true;
-          }
-          modelSelect.appendChild(opt);
+    var fallbackBrowserAi = {
+      base: function (config) {
+        var url = new URL(config.endpoint);
+        if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
+          throw new Error("请输入不包含账号密码的 HTTP 或 HTTPS 服务地址。");
+        }
+        url.hash = ""; url.search = "";
+        var href = url.href.replace(/\/$/, "").replace(/\/(chat\/completions|models|api\/chat|api\/tags)$/, "");
+        if (config.provider === "ollama") {
+          href = href.replace(/\/v1$/, "");
+        } else if (!href.endsWith("/v1")) {
+          href += "/v1";
+        }
+        return href;
+      },
+      models: async function (config, signal) {
+        var isOllama = config.provider === "ollama";
+        var base = this.base(config);
+        var url = base + (isOllama ? "/api/tags" : "/models");
+        var headers = { "Content-Type": "application/json" };
+        if (config.key) headers.Authorization = "Bearer " + config.key;
+        var res = await fetch(url, { headers: headers, signal: signal, credentials: "omit" });
+        if (!res.ok) throw new Error("HTTP " + res.status + " " + res.statusText);
+        var data = await res.json();
+        return (isOllama ? data.models || [] : data.data || data.models || [])
+          .map(function (item) { return item.id || item.name || item.model; }).filter(Boolean);
+      },
+      chat: async function (config, messages, onChunk, signal) {
+        var isOllama = config.provider === "ollama";
+        var base = this.base(config);
+        var url = base + (isOllama ? "/api/chat" : "/chat/completions");
+        var headers = { "Content-Type": "application/json" };
+        if (config.key) headers.Authorization = "Bearer " + config.key;
+        var res = await fetch(url, {
+          method: "POST",
+          headers: headers,
+          credentials: "omit",
+          signal: signal,
+          body: JSON.stringify({ model: config.model, messages: messages, stream: true })
         });
-      }
-
-      if (currentModel && !foundCurrent && currentModel !== "emacs-backend") {
-        var customOpt = document.createElement("option");
-        customOpt.value = currentModel;
-        customOpt.textContent = currentModel + " (已配置)";
-        customOpt.selected = true;
-        modelSelect.appendChild(customOpt);
-        foundCurrent = true;
-      }
-
-      if (typeof window.orgMuseumAiApi === "function") {
-        var emacsOpt = document.createElement("option");
-        emacsOpt.value = "emacs-backend";
-        emacsOpt.textContent = "Emacs 本机后端";
-        if (currentModel === "emacs-backend") {
-          emacsOpt.selected = true;
-          foundCurrent = true;
+        if (!res.ok) {
+          var errText = "";
+          try { errText = await res.text(); } catch (_) {}
+          throw new Error("HTTP " + res.status + (errText ? ": " + errText.slice(0, 200) : ""));
         }
-        modelSelect.appendChild(emacsOpt);
-      }
-
-      updateBadgeModel(currentModel);
-    }
-
-    populateModelSelect(cachedModels, savedConfig.model);
-
-    if (providerInput) providerInput.value = savedConfig.provider || "compatible";
-    if (endpointInput) endpointInput.value = savedConfig.endpoint || (savedConfig.provider === "ollama" ? "http://127.0.0.1:11434" : "http://127.0.0.1:1234/v1");
-
-    if (modelSelect) {
-      modelSelect.addEventListener("change", function () {
-        var selectedVal = modelSelect.value;
-        if (!selectedVal) return;
-        savedConfig.model = selectedVal;
+        var answer = "";
+        if (!res.body || (res.headers.get("content-type") || "").includes("application/json")) {
+          var json = await res.json();
+          var choice = (json.choices || [])[0];
+          answer = isOllama ? (json.message && json.message.content) || "" : (choice && (choice.delta || choice.message || {}).content) || "";
+          if (answer) onChunk(answer);
+          return answer;
+        }
+        var reader = res.body.getReader(), decoder = new TextDecoder(), buffer = "";
         try {
-          localStorage.setItem("org-museum-browser-model", JSON.stringify(savedConfig));
-        } catch (_) {}
-        updateBadgeModel(selectedVal === "emacs-backend" ? "Emacs 后端" : selectedVal);
-        if (typeof CustomEvent === "function") {
-          try {
-            var evt = new CustomEvent("org-museum-model-changed", { detail: savedConfig });
-            if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") window.dispatchEvent(evt);
-            if (typeof document !== "undefined" && typeof document.dispatchEvent === "function") document.dispatchEvent(evt);
-          } catch (_) {}
-        }
-      });
-    }
-
-    if (configToggleBtn && configPanel) {
-      configToggleBtn.addEventListener("click", function () {
-        configPanel.hidden = !configPanel.hidden;
-        configToggleBtn.setAttribute("aria-expanded", String(!configPanel.hidden));
-        if (!configPanel.hidden) {
-          if (endpointInput && !endpointInput.value) {
-            endpointInput.value = (providerInput && providerInput.value === "ollama") ? "http://127.0.0.1:11434" : "http://127.0.0.1:1234/v1";
+          while (true) {
+            var r = await reader.read();
+            if (r.done) break;
+            buffer += decoder.decode(r.value || new Uint8Array(), { stream: true });
+            var end;
+            while ((end = buffer.indexOf("\n")) !== -1) {
+              var line = buffer.slice(0, end).replace(/\r$/, "");
+              buffer = buffer.slice(end + 1);
+              if (isOllama) {
+                if (line.trim()) {
+                  try {
+                    var parsedOllama = JSON.parse(line);
+                    if (parsedOllama.message && parsedOllama.message.content) {
+                      answer += parsedOllama.message.content;
+                      onChunk(answer);
+                    }
+                  } catch (_) {}
+                }
+              } else {
+                if (line.startsWith("data:")) {
+                  var dataStr = line.slice(5).trim();
+                  if (dataStr === "[DONE]") continue;
+                  try {
+                    var parsed = JSON.parse(dataStr);
+                    var delta = (parsed.choices && parsed.choices[0] && parsed.choices[0].delta && parsed.choices[0].delta.content) || "";
+                    if (delta) {
+                      answer += delta;
+                      onChunk(answer);
+                    }
+                  } catch (_) {}
+                }
+              }
+            }
           }
-          if (configStatus) configStatus.textContent = "";
+        } finally {
+          reader.releaseLock();
         }
-      });
-    }
-
-    if (configCancelBtn && configPanel) {
-      configCancelBtn.addEventListener("click", function () {
-        configPanel.hidden = true;
-        if (configToggleBtn) configToggleBtn.setAttribute("aria-expanded", "false");
-      });
-    }
-
-    if (providerInput && endpointInput) {
-      providerInput.addEventListener("change", function () {
-        endpointInput.value = providerInput.value === "ollama" ? "http://127.0.0.1:11434" : "http://127.0.0.1:1234/v1";
-      });
-    }
-
-    async function fetchAndPopulateModels(cfg, isManual) {
-      if (!window.orgMuseumBrowserAi || typeof window.orgMuseumBrowserAi.models !== "function") {
-        if (configStatus) configStatus.textContent = "模型连接组件未就绪。";
-        return;
+        if (!answer.trim()) throw new Error("模型没有返回正文，请检查所选模型的聊天能力。");
+        return answer;
       }
-      if (modelRefreshBtn) modelRefreshBtn.classList.add("is-spinning");
-      if (configStatus) configStatus.textContent = "正在读取模型列表…";
-      try {
-        var fetchedList = await window.orgMuseumBrowserAi.models(cfg);
-        if (modelRefreshBtn) modelRefreshBtn.classList.remove("is-spinning");
-        if (Array.isArray(fetchedList)) {
-          cachedModels = fetchedList;
-          try {
-            localStorage.setItem("org-museum-browser-models-list", JSON.stringify(fetchedList));
-          } catch (_) {}
-          var activeModel = cfg.model;
-          if (!activeModel || !fetchedList.includes(activeModel)) {
-            activeModel = fetchedList[0] || "";
-            cfg.model = activeModel;
-            savedConfig.model = activeModel;
-            try {
-              localStorage.setItem("org-museum-browser-model", JSON.stringify(savedConfig));
-            } catch (_) {}
-          }
-          populateModelSelect(fetchedList, activeModel);
-          if (configStatus) {
-            configStatus.textContent = fetchedList.length ? "已连接 · " + fetchedList.length + " 个可用模型" : "服务已连接，但暂无模型。";
-            configStatus.className = "museum-ai-config-status is-success";
-          }
-          if (isManual && configPanel && fetchedList.length > 0) {
-            setTimeout(function () { configPanel.hidden = true; }, 1200);
-          }
-        }
-      } catch (err) {
-        if (modelRefreshBtn) modelRefreshBtn.classList.remove("is-spinning");
-        var errMsg = (err && (err.message || err.toString())) || "";
-        if (err.name === "TypeError" || errMsg === "Failed to fetch" || errMsg.includes("NetworkError")) {
-          errMsg = "无法连接服务 (" + cfg.endpoint + ")：请确认本地服务已启动且端口一致。";
-        }
-        if (configStatus) {
-          configStatus.textContent = "读取模型失败：" + errMsg;
-          configStatus.className = "museum-ai-config-status is-error";
-        }
-        if (configPanel && configPanel.hidden) {
-          configPanel.hidden = false;
-        }
+    };
+
+    function getBrowserAi() {
+      if (window.orgMuseumBrowserAi && typeof window.orgMuseumBrowserAi.models === "function") {
+        return window.orgMuseumBrowserAi;
       }
+      return fallbackBrowserAi;
     }
 
-    if (modelRefreshBtn) {
-      modelRefreshBtn.addEventListener("click", function () {
-        var cfg = {
-          provider: (providerInput && providerInput.value) || savedConfig.provider || "compatible",
-          endpoint: (endpointInput && endpointInput.value.trim()) || savedConfig.endpoint || "http://127.0.0.1:1234/v1",
-          key: (keyInput && keyInput.value.trim()) || "",
-          model: (modelSelect && modelSelect.value) || savedConfig.model || ""
-        };
-        fetchAndPopulateModels(cfg, false);
-      });
-    }
 
-    if (configForm) {
-      configForm.addEventListener("submit", function (e) {
-        e.preventDefault();
-        var cfg = {
-          provider: (providerInput && providerInput.value) || "compatible",
-          endpoint: (endpointInput && endpointInput.value.trim()) || "http://127.0.0.1:1234/v1",
-          key: (keyInput && keyInput.value.trim()) || "",
-          model: savedConfig.model || ""
-        };
-        savedConfig.provider = cfg.provider;
-        savedConfig.endpoint = cfg.endpoint;
-        try {
-          var toSave = Object.assign({}, savedConfig);
-          delete toSave.key;
-          localStorage.setItem("org-museum-browser-model", JSON.stringify(toSave));
-        } catch (_) {}
-        fetchAndPopulateModels(cfg, true);
-      });
-    }
 
     var messages = [];
     var storageKey = "org-museum-copilot-" + (pageId || "current");
@@ -332,6 +340,13 @@
       } catch (_) {}
     }
 
+    function triggerAnalysis() {
+      if (chatInput) {
+        chatInput.value = "请对当前笔记进行结构化深度分析，提炼核心论点、论证逻辑与可复用结论。";
+        sendCurrentMessage();
+      }
+    }
+
     var defaultPrompts = [
       "提炼这篇笔记的核心要点",
       "梳理本文论证逻辑与依据",
@@ -339,8 +354,28 @@
       "指出潜在疑问与补充视角"
     ];
 
-    if (exploreChips) {
+    function setupExploreChips() {
+      if (!exploreChips) return;
       exploreChips.replaceChildren();
+
+      var analyzeChip = document.createElement("button");
+      analyzeChip.type = "button";
+      analyzeChip.className = "museum-ai-chip museum-ai-chip-analyze";
+      analyzeChip.setAttribute("data-ai-analyze", "");
+      analyzeChip.title = "生成或刷新当前笔记结构化分析";
+      var analyzeIcon = document.createElement("span");
+      analyzeIcon.className = "museum-ai-btn-icon";
+      analyzeIcon.setAttribute("aria-hidden", "true");
+      var analyzeLabelEl = document.createElement("span");
+      analyzeLabelEl.setAttribute("data-ai-analyze-label", "");
+      analyzeLabelEl.textContent = "重新分析笔记";
+      analyzeChip.appendChild(analyzeIcon);
+      analyzeChip.appendChild(analyzeLabelEl);
+      analyzeChip.addEventListener("click", triggerAnalysis);
+      exploreChips.appendChild(analyzeChip);
+      analyzeBtn = analyzeChip;
+      analyzeLabel = analyzeLabelEl;
+
       defaultPrompts.forEach(function (prompt) {
         var chip = document.createElement("button");
         chip.type = "button";
@@ -355,6 +390,8 @@
         exploreChips.appendChild(chip);
       });
     }
+
+    setupExploreChips();
 
     function renderChat() {
       if (!chatTurns) return;
@@ -376,6 +413,7 @@
       messages.forEach(function (msg) {
         var wrap = document.createElement("div");
         wrap.className = "museum-ai-message " + (msg.role === "user" ? "is-user" : "is-assistant");
+        if (msg.isStreaming) wrap.classList.add("is-streaming");
 
         var head = document.createElement("div");
         head.className = "museum-ai-message-header";
@@ -401,15 +439,59 @@
 
         var bubble = document.createElement("div");
         bubble.className = "museum-ai-message-bubble";
+        if (msg.isStreaming) {
+          bubble.classList.add("is-streaming");
+          bubble.setAttribute("data-copilot-streaming-bubble", "");
+        }
+
         if (msg.isStreaming && !msg.content) {
-          bubble.innerHTML = '<span class="museum-ai-spinner" aria-hidden="true"></span> 思考中…';
+          bubble.innerHTML = '<div class="museum-ai-thinking"><span class="museum-ai-spinner" aria-hidden="true"></span> <span>正在思考与整理回答…</span></div>';
         } else {
-          markdown(bubble, msg.content, msg.isStreaming);
+          markdown(bubble, msg.content, false);
+          if (msg.isStreaming) {
+            var cursor = document.createElement("span");
+            cursor.className = "museum-ai-streaming-cursor";
+            cursor.setAttribute("aria-hidden", "true");
+            var lastChild = bubble.lastElementChild;
+            if (lastChild && (lastChild.tagName === "P" || lastChild.tagName === "LI")) {
+              lastChild.appendChild(cursor);
+            } else {
+              bubble.appendChild(cursor);
+            }
+          }
         }
         wrap.appendChild(bubble);
         chatTurns.appendChild(wrap);
       });
       chatTurns.scrollTop = chatTurns.scrollHeight;
+    }
+
+    function updateStreamingBubble(text) {
+      if (!chatTurns) return;
+      var streamingBubble = chatTurns.querySelector("[data-copilot-streaming-bubble]");
+      if (!streamingBubble) {
+        renderChat();
+        return;
+      }
+      if (!text) {
+        streamingBubble.innerHTML = '<div class="museum-ai-thinking"><span class="museum-ai-spinner" aria-hidden="true"></span> <span>正在思考与整理回答…</span></div>';
+      } else {
+        markdown(streamingBubble, text, false);
+        var cursor = document.createElement("span");
+        cursor.className = "museum-ai-streaming-cursor";
+        cursor.setAttribute("aria-hidden", "true");
+        var lastChild = streamingBubble.lastElementChild;
+        if (lastChild && (lastChild.tagName === "P" || lastChild.tagName === "LI")) {
+          lastChild.appendChild(cursor);
+        } else {
+          streamingBubble.appendChild(cursor);
+        }
+      }
+      var threshold = 120;
+      var isNearBottom = chatTurns.scrollHeight - chatTurns.scrollTop - chatTurns.clientHeight <= threshold;
+      if (isNearBottom) {
+        chatTurns.scrollTop = chatTurns.scrollHeight;
+      }
     }
 
     var activeAbortController = null;
@@ -440,15 +522,15 @@
       renderChat();
       setGenerating(true);
 
-      var activeModel = (modelSelect && modelSelect.value) || savedConfig.model;
+      var activeModel = savedConfig.model;
       if (!activeModel) {
         setTimeout(function () {
-          assistantMsg.content = "尚未选择 AI 模型。\n\n请在上方模型选择框中选择模型，或点击 ⚙ 配置模型服务地址（如 Ollama `http://127.0.0.1:11434` 或 LM Studio `http://127.0.0.1:1234/v1`）。";
+          assistantMsg.content = "尚未配置 AI 模型。\n\n请点击右上角「设置」按钮配置本地模型服务与模型。";
           assistantMsg.isStreaming = false;
           setGenerating(false);
           persistMessages();
           renderChat();
-          if (configPanel) configPanel.hidden = false;
+          openGlobalAiSettings();
         }, 200);
         return;
       }
@@ -457,10 +539,11 @@
       var systemPrompt = (savedConfig && savedConfig.system ? savedConfig.system : "你是一个深度阅读与知识复盘助手。") +
         "\n\n【当前阅读笔记】\n标题：" + noteTitle + "\n内容：\n" + articleText;
 
-      if (activeModel !== "emacs-backend" && window.orgMuseumBrowserAi && savedConfig.endpoint) {
+      var aiClient = getBrowserAi();
+      if (activeModel !== "emacs-backend" && aiClient && savedConfig.endpoint) {
         var inferenceConfig = Object.assign({}, savedConfig, {
           model: activeModel,
-          key: (keyInput && keyInput.value.trim()) || ""
+          key: getApiKey()
         });
         var chatHistory = [{ role: "system", content: systemPrompt }];
         messages.slice(0, -1).forEach(function (m) {
@@ -468,9 +551,9 @@
         });
         var controller = new AbortController();
         activeAbortController = controller;
-        window.orgMuseumBrowserAi.chat(inferenceConfig, chatHistory, function (chunk) {
+        aiClient.chat(inferenceConfig, chatHistory, function (chunk) {
           assistantMsg.content = chunk;
-          renderChat();
+          updateStreamingBubble(chunk);
         }, controller.signal).then(function (finalText) {
           assistantMsg.content = finalText;
           assistantMsg.isStreaming = false;
@@ -484,8 +567,7 @@
           } else {
             var msg = err.message || "";
             if (err.name === "TypeError" || msg === "Failed to fetch" || msg.includes("NetworkError")) {
-              msg = "无法连接到模型服务 (" + inferenceConfig.endpoint + ")。\n\n请确认：\n1. 本地模型服务（如 LM Studio 或 Ollama）已启动；\n2. 若使用 Ollama（默认端口 11434），请点击上方 ⚙ 切换为 Ollama；\n3. 若使用 LM Studio，请在 LM Studio 中启动 Local Server 并开启 CORS。";
-              if (configPanel) configPanel.hidden = false;
+              msg = "无法连接到模型服务 (" + inferenceConfig.endpoint + ")。\n\n请确认：\n1. 本地模型服务（如 LM Studio 或 Ollama）已启动；\n2. 点击右上角「设置」检查服务类型与端口设置；\n3. 若使用 LM Studio，请在 LM Studio 中启动 Local Server 并开启 CORS。";
             }
             assistantMsg.content = (assistantMsg.content || "") + "\n\n*(生成错误：" + msg + ")*";
           }
@@ -511,12 +593,12 @@
         });
       } else {
         setTimeout(function () {
-          assistantMsg.content = "当前尚未连接模型服务。\n\n请在上方模型选择框中选择模型，或点击 ⚙ 填入模型服务地址（如 Ollama `http://127.0.0.1:11434` 或 LM Studio `http://127.0.0.1:1234/v1`）并读取模型列表。";
+          assistantMsg.content = "当前尚未连接模型服务。\n\n请点击右上角「设置」按钮配置本地模型服务地址（如 Ollama `http://127.0.0.1:11434` 或 LM Studio `http://127.0.0.1:1234/v1`）并选择模型。";
           assistantMsg.isStreaming = false;
           setGenerating(false);
           persistMessages();
           renderChat();
-          if (configPanel) configPanel.hidden = false;
+          openGlobalAiSettings();
         }, 300);
       }
     }
@@ -572,14 +654,14 @@
           analyzeBtn.disabled = true;
           analyzeBtn.classList.add("is-loading");
         }
-        trigger.setAttribute("title", "AI 分析进行中… (" + shortcutText + ")");
+        if (trigger) trigger.setAttribute("title", "AI 分析进行中… (" + shortcutText + ")");
       } else {
         if (analyzeBtn) {
           analyzeBtn.disabled = false;
           analyzeBtn.classList.remove("is-loading");
         }
         var tip = state === "done" ? "AI 讨论与分析 (已就绪 - " + shortcutText + ")" : "打开 AI Copilot 侧边栏 (" + shortcutText + ")";
-        trigger.setAttribute("title", tip);
+        if (trigger) trigger.setAttribute("title", tip);
       }
     }
 
@@ -601,7 +683,7 @@
       document.body.classList.toggle("museum-ai-open", open);
       panel.inert = !open;
       panel.setAttribute("aria-hidden", String(!open));
-      trigger.setAttribute("aria-expanded", String(open));
+      if (trigger) trigger.setAttribute("aria-expanded", String(open));
       if (userAction) {
         try { localStorage.setItem("copilot_sidebar_open", String(open)); } catch (_) {}
       }
@@ -617,31 +699,21 @@
           // can be rejected by the browser while the input is still hidden.
           setTimeout(focusInput, 220);
         }
+      } else if (chatInput && document.activeElement === chatInput) {
+        chatInput.blur();
       }
     }
-    trigger.addEventListener("click", function () { setOpen(!document.body.classList.contains("museum-ai-open"), true); });
+    if (trigger) trigger.addEventListener("click", function () { setOpen(!document.body.classList.contains("museum-ai-open"), true); });
 
     document.addEventListener("keydown", function (event) {
       if ((event.ctrlKey || event.metaKey) && event.key && event.key.toLowerCase() === "i") {
-        var activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : "";
-        if (activeTag === "input" || activeTag === "textarea" || (document.activeElement && document.activeElement.isContentEditable)) {
-          return;
-        }
         event.preventDefault();
         setOpen(!document.body.classList.contains("museum-ai-open"), true);
         return;
       }
       if (event.key === "Escape" && document.body.classList.contains("museum-ai-open")) {
-        if (configPanel && !configPanel.hidden) {
-          configPanel.hidden = true;
-          if (configToggleBtn) {
-            configToggleBtn.setAttribute("aria-expanded", "false");
-            configToggleBtn.focus();
-          }
-        } else {
-          setOpen(false, true);
-          trigger.focus();
-        }
+        setOpen(false, true);
+        if (trigger) trigger.focus();
       }
     });
 
@@ -651,7 +723,7 @@
             document.body.classList.contains("museum-ai-open")) setOpen(false, true);
       });
     });
-    one("[data-ai-close]", panel).addEventListener("click", function () { setOpen(false, true); trigger.focus(); });
+    one("[data-ai-close]", panel).addEventListener("click", function () { setOpen(false, true); if (trigger) trigger.focus(); });
     function fillPublic() {
       var source = one(".org-museum-experience");
       var target = one("[data-ai-experiences]", panel);
@@ -669,11 +741,11 @@
         return;
       }
       if (typeof window.orgMuseumAiApi !== "function") {
-        var activeM = (modelSelect && modelSelect.value) || savedConfig.model;
+        var activeM = savedConfig.model;
         if (activeM) {
           updateStateVisual("done", "模型就绪 · " + (activeM === "emacs-backend" ? "Emacs 后端" : activeM));
         } else {
-          updateStateVisual("idle", "请选择模型");
+          updateStateVisual("idle", "未配置模型");
         }
         return;
       }
@@ -683,7 +755,8 @@
         var label = data.analysis ? "已分析" : data.status === "dirty" ? "等待分析" :
           data.status === "failed" ? "分析失败，可重试" : (data.status === "running" || data.status === "queued") ? "分析中…" : "尚未分析";
         updateStateVisual(state, label);
-        markdown(one("[data-ai-summary]", panel), data.analysis ? data.analysis.summary : "暂无分析结果。");
+        var summaryEl = one("[data-ai-summary]", panel);
+        if (summaryEl) markdown(summaryEl, data.analysis ? data.analysis.summary : "暂无分析结果。");
       }).catch(function (error) {
         updateStateVisual("failed", error.message);
       });
@@ -699,67 +772,11 @@
       }).catch(function () {});
     }
 
-    if (analyzeBtn) {
-      analyzeBtn.addEventListener("click", function () {
-        var activeM = (modelSelect && modelSelect.value) || savedConfig.model;
-        if (typeof window.orgMuseumAiApi === "function" && activeM === "emacs-backend") {
-          updateStateVisual("running", "已提交分析，正在等待结果…");
-          api("action", { action: "analyze", pageId: pageId }).then(function (res) {
-            if (res && res.status && res.status !== "running" && res.status !== "queued") {
-              load();
-            } else {
-              setTimeout(load, 1200);
-            }
-          }).catch(function (error) {
-            updateStateVisual("failed", error.message);
-          });
-        } else if (window.orgMuseumBrowserAi && activeM && activeM !== "emacs-backend" && savedConfig.endpoint) {
-          updateStateVisual("running", "正在分析笔记…");
-          var summaryBox = one("[data-ai-summary]", panel);
-          var analyzePrompt = "请对以下笔记进行结构化深度分析，提炼核心论点、论证逻辑与可复用结论：\n\n【标题】" + noteTitle + "\n\n【正文】\n" + (articleNode ? (articleNode.innerText || articleNode.textContent) : "").slice(0, 16000);
-          markdown(summaryBox, "正在进行笔记结构化分析…", true);
-          var drawer = one("[data-ai-analysis-drawer]", panel);
-          if (drawer) drawer.open = true;
-          var inferenceCfg = Object.assign({}, savedConfig, {
-            model: activeM,
-            key: (keyInput && keyInput.value.trim()) || ""
-          });
-          window.orgMuseumBrowserAi.chat(inferenceCfg, [
-            { role: "system", content: "你是一个知识库深度分析与逻辑复盘专家。请条理清晰地梳理笔记核心结论。" },
-            { role: "user", content: analyzePrompt }
-          ], function (chunk) {
-            markdown(summaryBox, chunk, true);
-          }).then(function (finalSummary) {
-            markdown(summaryBox, finalSummary, false);
-            updateStateVisual("done", "分析已完成");
-          }).catch(function (err) {
-            var errMsg = err.message || "";
-            if (err.name === "TypeError" || errMsg === "Failed to fetch") {
-              errMsg = "无法连接服务 (" + inferenceCfg.endpoint + ")，请启动本地模型服务或检查端口。";
-            }
-            updateStateVisual("failed", "分析失败: " + errMsg);
-          });
-        } else if (typeof window.orgMuseumAiApi === "function") {
-          updateStateVisual("running", "已提交分析，正在等待结果…");
-          api("action", { action: "analyze", pageId: pageId }).then(function (res) {
-            if (res && res.status && res.status !== "running" && res.status !== "queued") {
-              load();
-            } else {
-              setTimeout(load, 1200);
-            }
-          }).catch(function (error) {
-            updateStateVisual("failed", error.message);
-          });
-        } else {
-          updateStateVisual("failed", "请先选择或配置 AI 模型");
-          if (configPanel) configPanel.hidden = false;
-        }
-      });
-    }
+
     renderChat();
     var savedOpen = null;
     try { savedOpen = localStorage.getItem("copilot_sidebar_open"); } catch (_) {}
-    var shouldOpen = savedOpen !== null ? (savedOpen === "true") : (typeof window !== "undefined" && window.innerWidth >= 1280);
+    var shouldOpen = savedOpen === "true";
     setOpen(shouldOpen, false);
     if (toc) {
       var tocButtons = all("[data-toc-toggle]");
@@ -1222,6 +1239,45 @@
       });
       return control;
     }
+    var userScrolledUp = false;
+    window.addEventListener("scroll", function () {
+      var scrollY = window.scrollY || document.documentElement.scrollTop;
+      var viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+      var totalHeight = document.documentElement.scrollHeight || document.body.scrollHeight;
+      userScrolledUp = (scrollY + viewportHeight) < (totalHeight - 160);
+    }, { passive: true });
+
+    function scrollStreamingIntoView(turnCard, answerNode) {
+      if (userScrolledUp) return;
+      var target = answerNode || turnCard;
+      if (!target) return;
+      var rect = target.getBoundingClientRect();
+      var viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+      if (rect.bottom > viewportHeight - 60 || rect.top < 80) {
+        target.scrollIntoView({ block: "end", behavior: "smooth" });
+      }
+    }
+
+    function updateStreamingAnswer(node, text, isStreaming) {
+      if (!node) return;
+      if (!text) {
+        node.innerHTML = '<div class="museum-ai-thinking"><span class="museum-ai-spinner" aria-hidden="true"></span> <span>正在分析与整理回答…</span></div>';
+        return;
+      }
+      markdown(node, text, false);
+      if (isStreaming) {
+        var cursor = document.createElement("span");
+        cursor.className = "museum-ai-streaming-cursor";
+        cursor.setAttribute("aria-hidden", "true");
+        var last = node.lastElementChild;
+        if (last && (last.tagName === "P" || last.tagName === "LI" || last.tagName === "DIV")) {
+          last.appendChild(cursor);
+        } else {
+          node.appendChild(cursor);
+        }
+      }
+    }
+
     function renderTurn(turn, index, total, saved, wasOpen, sources, sessionCreatedAt) {
       var card = document.createElement("details"); card.className = "museum-ai-turn";
       card.id = "ai-turn-" + turn.id; card.dataset.turnId = turn.id;
@@ -1253,8 +1309,11 @@
       var aiBlock = document.createElement("section"); aiBlock.className = "museum-ai-speaker museum-ai-assistant";
       var aiLabel = document.createElement("strong"); aiLabel.textContent = "AI 的回答";
       var answer = document.createElement("div"); answer.className = "museum-ai-answer";
-      markdown(answer, turn.answer || (turn.status === "streaming" ? "正在思考…" : "暂无回答。"),
-        turn.status === "streaming");
+      if (turn.status === "streaming") {
+        updateStreamingAnswer(answer, turn.answer, true);
+      } else {
+        markdown(answer, turn.answer || "暂无回答。", false);
+      }
       aiBlock.append(aiLabel, answer); content.appendChild(aiBlock);
       var cited = sources.filter(function (source) {
         return (turn.answer || "").includes("【" + source.pageId + "】");
@@ -1291,7 +1350,7 @@
     function runMessage(payload) {
       if (busy || !sessionId) return;
       if (pendingReference) payload.captureId = pendingReference.id;
-      busy = true; put(status, "正在继续探索…");
+      busy = true; userScrolledUp = false; put(status, "正在继续探索…");
       api("session-message", Object.assign({sessionId: sessionId}, payload)).then(function (data) {
         busy = false; pendingReference = null; renderReference(); render(data);
       }).catch(function (error) { busy = false; errorMessage(error); });
@@ -1566,7 +1625,15 @@
         var saved = savedByTurn.get(turn.id);
         var current = turns.children[index];
         var captureVersion = saved ? saved.id + ":" + (saved.updatedAt || "") : "";
-        if (!current || current.dataset.turnId !== turn.id ||
+        if (current && current.dataset.turnId === turn.id && turn.status === "streaming") {
+          current.dataset.answerLength = String((turn.answer || "").length);
+          current.dataset.status = turn.status;
+          var answerEl = current.querySelector(".museum-ai-answer");
+          if (answerEl) updateStreamingAnswer(answerEl, turn.answer, true);
+          var metaEl = current.querySelector("summary small");
+          if (metaEl) metaEl.textContent = readableTime(turn.createdAt || (index === 0 ? data.createdAt : null)) + " · 生成中";
+          scrollStreamingIntoView(current, answerEl);
+        } else if (!current || current.dataset.turnId !== turn.id ||
             current.dataset.answerLength !== String((turn.answer || "").length) ||
             current.dataset.status !== turn.status ||
             current.dataset.captureId !== captureVersion ||
@@ -1575,6 +1642,9 @@
           var updated = renderTurn(turn, index, allTurns.length,
             saved, wasOpen, data.sources || [], data.createdAt);
           if (current) current.replaceWith(updated); else turns.appendChild(updated);
+          if (turn.status === "streaming") {
+            scrollStreamingIntoView(updated, updated.querySelector(".museum-ai-answer"));
+          }
         }
         if (index === 0 || turn.kind === "analysis") {
           var group = document.createElement("strong"); group.className = "museum-ai-nav-group";
@@ -1615,10 +1685,37 @@
       followup.disabled = stale.length > 0 || data.status === "batching" || data.status === "streaming" || data.status === "recommending";
       one("[data-ai-message-form] button", root).disabled = followup.disabled;
     }
+    var currentSessionStatus = "";
     function refreshSession() {
       if (!sessionId || document.visibilityState !== "visible") return;
-      api("session?sessionId=" + encodeURIComponent(sessionId)).then(render).catch(errorMessage);
+      api("session?sessionId=" + encodeURIComponent(sessionId)).then(function (data) {
+        if (data) currentSessionStatus = data.status || "";
+        render(data);
+      }).catch(errorMessage);
     }
+    window.addEventListener("org-museum-ai-stream", function (event) {
+      var detail = event.detail;
+      if (!detail || detail.sessionId !== sessionId) return;
+      currentSessionStatus = detail.status || "";
+      var turnCard = document.getElementById("ai-turn-" + detail.turnId);
+      if (!turnCard) {
+        refreshSession();
+        return;
+      }
+      turnCard.open = true;
+      var answerNode = turnCard.querySelector(".museum-ai-answer");
+      if (answerNode) {
+        updateStreamingAnswer(answerNode, detail.text, detail.status === "streaming");
+        scrollStreamingIntoView(turnCard, answerNode);
+      }
+      var metaNode = turnCard.querySelector("summary small");
+      if (metaNode && detail.status === "streaming") {
+        metaNode.textContent = readableTime(detail.createdAt || null) + " · 生成中";
+      }
+      if (detail.status !== "streaming") {
+        refreshSession();
+      }
+    });
     function resumeList() {
       api("sessions").then(function (data) {
         resume.replaceChildren();
@@ -1670,8 +1767,8 @@
     one("[data-ai-start]", root).addEventListener("click", function () {
       if (busy) return;
       if (!chosen.size) { put(status, "请先选择至少一篇笔记。"); return; }
-      busy = true; put(status, "正在开始分析…");
-      api("session-start", {pageIds:Array.from(chosen), batch:true}).then(function (data) {
+      busy = true; userScrolledUp = false; put(status, "正在开始分析…");
+      api("session-start", {pageIds:Array.from(chosen)}).then(function (data) {
         busy = false; sessionId = data.id; revision = -1; render(data); resumeList();
       }).catch(function (error) { busy = false; errorMessage(error); });
     });
@@ -1681,8 +1778,14 @@
       if (!message) return;
       runMessage({message:message}); followup.value = "";
     });
-    var timer = setInterval(refreshSession, 700);
-    window.addEventListener("pagehide", function () { clearInterval(timer); }, {once:true});
+    var pollTimer = null;
+    function schedulePoll() {
+      refreshSession();
+      var delay = (currentSessionStatus === "streaming" || currentSessionStatus === "batching") ? 250 : 700;
+      pollTimer = setTimeout(schedulePoll, delay);
+    }
+    pollTimer = setTimeout(schedulePoll, 700);
+    window.addEventListener("pagehide", function () { if (pollTimer) clearTimeout(pollTimer); }, {once:true});
   }
 
   function start() {
