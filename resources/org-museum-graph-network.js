@@ -62,7 +62,7 @@
     var presentation = {};
     try { presentation = JSON.parse(localStorage.getItem('org-museum-graph-presentation') || '{}'); } catch (_error) {}
     var layoutMode = layouts.modes.includes(params.get('layout')) ? params.get('layout') :
-      layouts.modes.includes(presentation.mode) ? presentation.mode : 'force';
+      layouts.modes.includes(presentation.mode) ? presentation.mode : 'semantic';
     var layoutOptions = {spacing: Math.max(.7, Math.min(2, Number(presentation.spacing) || 1)),
       orientation: presentation.orientation === 'horizontal' ? 'horizontal' : 'vertical'};
     var frozen = presentation.frozen === true;
@@ -73,6 +73,7 @@
     var autoFitPending = true;
     var nodeSelection, edgeSelection, activeNodes = [], activeLinks = [];
     var hoveredEdgeId = '';
+    var hoveredNodeId = '';
     var edgeRoutes = new Map();
     var nodeLabelBoxes = [];
     var lastSnapshot = '';
@@ -105,15 +106,16 @@
     controls.appendChild(explore);
     var settings = document.createElement('details');
     settings.className = 'graph-layout-settings';
-    settings.innerHTML = '<summary>布局设置</summary><div class="graph-layout-panel">' +
-      '<label>拓扑布局<select data-layout-mode aria-label="选择拓扑布局"></select></label>' +
-      '<p data-layout-hint></p><label>节点间距 <output data-layout-spacing-value></output>' +
+    settings.innerHTML = '<summary>布局微调</summary><div class="graph-layout-panel">' +
+      '<div class="graph-layout-panel-head"><strong data-layout-name>拓扑语义层级流</strong>' +
+      '<p data-layout-hint></p></div>' +
+      '<label>节点间距 <output data-layout-spacing-value></output>' +
       '<input type="range" data-layout-spacing min="0.7" max="2" step="0.1" aria-label="节点间距"></label>' +
       '<label>层级方向<select data-layout-orientation><option value="vertical">从上到下</option>' +
       '<option value="horizontal">从左到右</option></select></label>' +
       '<label class="graph-layout-check"><input type="checkbox" data-layout-freeze>固定布局，停止自动移动</label>' +
       '<button type="button" data-layout-reset>重置拖拽位置</button>' +
-      '<small>拖拽可固定单个节点；设置仅影响图谱展示。</small></div>';
+      '<small>拖拽可固定单个节点；微调仅影响当前图谱视图。</small></div>';
     controls.insertBefore(settings, document.getElementById('btn-layout'));
     var layoutSelect = settings.querySelector('[data-layout-mode]');
     var layoutMenu = document.getElementById('graph-layout-options');
@@ -123,10 +125,13 @@
     var layoutCategoryNames = { hierarchical: '层级结构', network: '网状结构', radial: '辐射结构', grid: '网格结构' };
     var activeLayoutCategory = '*';
 
-    layouts.modes.forEach(function (mode) {
-      var option = document.createElement('option'); option.value = mode; option.textContent = layouts.labels[mode];
-      layoutSelect.appendChild(option);
-    });
+    if (layoutSelect) {
+      layouts.modes.forEach(function (mode) {
+        var option = document.createElement('option'); option.value = mode; option.textContent = layouts.labels[mode];
+        layoutSelect.appendChild(option);
+      });
+      layoutSelect.addEventListener('change', function () { applyLayout(layoutSelect.value); });
+    }
 
     function renderCommandBarLayoutMenu() {
       if (!layoutMenu) return;
@@ -187,8 +192,10 @@
     if (layoutSearch) layoutSearch.addEventListener('input', renderCommandBarLayoutMenu);
 
     function syncLayoutSettings() {
-      layoutSelect.value = layoutMode;
-      settings.querySelector('summary').textContent = '调优 · ' + (layouts.labels[layoutMode] || layoutMode);
+      if (layoutSelect) layoutSelect.value = layoutMode;
+      var nameEl = settings.querySelector('[data-layout-name]');
+      if (nameEl) nameEl.textContent = layouts.labels[layoutMode] || layoutMode;
+      settings.querySelector('summary').textContent = '布局微调';
       settings.querySelector('[data-layout-hint]').textContent = layouts.hints[layoutMode] || '';
       settings.querySelector('[data-layout-spacing]').value = layoutOptions.spacing;
       settings.querySelector('[data-layout-spacing-value]').textContent = Number(layoutOptions.spacing).toFixed(1) + '×';
@@ -206,10 +213,11 @@
       rememberPositions(); layoutMode = mode;
       positions = layouts.positions(visibleNodes(), graph.links, mode, canvas.clientWidth || 900,
         canvas.clientHeight || 700, layoutOptions);
+      positions.forEach(function (pos) { delete pos.fx; delete pos.fy; });
+      if (simulation) activeNodes.forEach(function (n) { n.fx = null; n.fy = null; });
       autoFitPending = true; syncLayoutSettings(); savePresentation();
       render(); fit(); writeUrl(false); announce('已使用' + (layouts.labels[mode] || mode) + '布局');
     }
-    layoutSelect.addEventListener('change', function () { applyLayout(layoutSelect.value); });
     settings.querySelector('[data-layout-spacing]').addEventListener('input', function (event) {
       settings.querySelector('[data-layout-spacing-value]').textContent = Number(event.target.value).toFixed(1) + '×';
     });
@@ -517,19 +525,20 @@
     }
     function applyEdgeFocus() {
       if (!edgeSelection) return;
-      var focus = selectedEdgeId || hoveredEdgeId || selectedNodeId;
+      var activeNodeId = hoveredNodeId || selectedNodeId;
+      var focus = selectedEdgeId || hoveredEdgeId || activeNodeId;
       edgeSelection
         .classed('is-selected', function (edge) { return edge.id === selectedEdgeId; })
         .classed('is-hovered', function (edge) { return edge.id === hoveredEdgeId; })
         .classed('is-incident', function (edge) {
-          return !selectedEdgeId && !hoveredEdgeId && !!selectedNodeId &&
-            (edgeSource(edge) === selectedNodeId || edgeTarget(edge) === selectedNodeId);
+          return !selectedEdgeId && !hoveredEdgeId && !!activeNodeId &&
+            (edgeSource(edge) === activeNodeId || edgeTarget(edge) === activeNodeId);
         })
         .classed('is-muted', function (edge) {
           if (!focus) return false;
           if (edge.id === selectedEdgeId || edge.id === hoveredEdgeId) return false;
-          return !!selectedEdgeId || !!hoveredEdgeId || !selectedNodeId ||
-            (edgeSource(edge) !== selectedNodeId && edgeTarget(edge) !== selectedNodeId);
+          return !!selectedEdgeId || !!hoveredEdgeId || !activeNodeId ||
+            (edgeSource(edge) !== activeNodeId && edgeTarget(edge) !== activeNodeId);
         });
       edgeSelection.select('.graph-network-edge-line')
         .attr('marker-end', function (edge) {
@@ -559,10 +568,13 @@
               var edge = graph.links.find(function (e) { return e.id === activeId; });
               return edge && edgeSource(edge) !== node.id && edgeTarget(edge) !== node.id;
             }
-            return !!selectedNodeId && node.id !== selectedNodeId && !graph.links.some(function (edge) {
-              return (edgeSource(edge) === selectedNodeId && edgeTarget(edge) === node.id) ||
-                (edgeTarget(edge) === selectedNodeId && edgeSource(edge) === node.id);
-            });
+            if (activeNodeId) {
+              return node.id !== activeNodeId && !graph.links.some(function (edge) {
+                return (edgeSource(edge) === activeNodeId && edgeTarget(edge) === node.id) ||
+                  (edgeTarget(edge) === activeNodeId && edgeSource(edge) === node.id);
+              });
+            }
+            return false;
           });
       }
     }
@@ -590,7 +602,8 @@
         function priority(edge) {
           if (edge.id === selectedEdgeId) return 0;
           if (edge.id === hoveredEdgeId) return 1;
-          if (selectedNodeId && (edgeSource(edge) === selectedNodeId || edgeTarget(edge) === selectedNodeId)) return 2;
+          var activeNode = hoveredNodeId || selectedNodeId;
+          if (activeNode && (edgeSource(edge) === activeNode || edgeTarget(edge) === activeNode)) return 2;
           return 3;
         }
         return priority(a) - priority(b) || a.id.localeCompare(b.id);
@@ -733,7 +746,10 @@
           if (event.key === 'Enter') location.href = node.url;
           if (event.key === ' ') {event.preventDefault(); showNode(node);}
         })
-        .on('mouseenter', function (event, node) {
+        .on('mouseenter focus', function (event, node) {
+          hoveredNodeId = node.id;
+          applyEdgeFocus();
+          drawEdges();
           var tt = document.getElementById('graph-tooltip');
           if (!tt) return;
           var tTitle = document.getElementById('tt-title');
@@ -751,7 +767,10 @@
           tt.style.left = Math.min(window.innerWidth - 260, Math.max(10, event.clientX + 14)) + 'px';
           tt.style.top = Math.min(window.innerHeight - 80, Math.max(10, event.clientY + 14)) + 'px';
         })
-        .on('mouseleave', function () {
+        .on('mouseleave blur', function () {
+          hoveredNodeId = '';
+          applyEdgeFocus();
+          drawEdges();
           var tt = document.getElementById('graph-tooltip');
           if (tt) tt.classList.remove('is-visible');
         });
