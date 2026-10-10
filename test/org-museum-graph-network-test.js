@@ -17,10 +17,16 @@ test('every topology positions the same real graph without changing it', () => {
   for (const mode of layout.modes) {
     const positions = layout.positions(graph.nodes, graph.links, mode, 1100, 750);
     assert.equal(positions.size, graph.nodes.length);
+    let rootCount = 0;
     for (const node of graph.nodes) {
       const point = positions.get(node.id);
       assert(Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z));
+      assert(Number.isFinite(point.depth), `${mode}: finite depth for ${node.id}`);
+      assert(Number.isFinite(point.rank), `${mode}: finite rank for ${node.id}`);
+      assert.equal(typeof point.isRoot, 'boolean', `${mode}: boolean isRoot for ${node.id}`);
+      if (point.isRoot) rootCount++;
     }
+    assert(rootCount > 0, `${mode}: at least one root identified`);
     signatures.add(graph.nodes.map(node => {
       const point = positions.get(node.id);
       return `${Math.round(point.x)},${Math.round(point.y)},${Math.round(point.z)}`;

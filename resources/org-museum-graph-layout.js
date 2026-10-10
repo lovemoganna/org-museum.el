@@ -169,7 +169,7 @@
 
       if (mode === 'hierarchy') {
         var levels = layers(group, graph.outgoing), y = 0;
-        levels.forEach(function (row) {
+        levels.forEach(function (row, rIdx) {
           var sizes = row.map(function (cluster) { return cluster.length > 1 ? Math.max(step * 1.5, cluster.length * step / Math.PI) : step; });
           var total = sizes.reduce(function (a, b) { return a + b + step * .3; }, 0), x = -total / 2;
           var rowHeight = Math.max.apply(null, sizes);
@@ -178,7 +178,8 @@
             cluster.forEach(function (node, j) {
               var angle = j * Math.PI * 2 / cluster.length - (cluster.length === 2 ? 0 : Math.PI / 2);
               local.set(node, {x: center + (cluster.length > 1 ? Math.cos(angle) * orbit : 0),
-                y: y + rowHeight / 2 + (cluster.length > 1 ? Math.sin(angle) * orbit : 0), z: 0});
+                y: y + rowHeight / 2 + (cluster.length > 1 ? Math.sin(angle) * orbit : 0), z: 0,
+                depth: rIdx, rank: i * 10 + j, isRoot: rIdx === 0});
             }); x += sizes[i] + step * .3;
           }); y += rowHeight + step * .4;
         });
@@ -296,13 +297,16 @@
             local.set(nodeId, {
               x: isHorizontal ? depthPos : cross,
               y: isHorizontal ? cross : depthPos,
-              z: lIdx * 12
+              z: lIdx * 12,
+              depth: lIdx,
+              rank: nIdx,
+              isRoot: lIdx === 0
             });
           });
         });
       } else if (mode === 'concentric' || mode === 'dandelion' || mode === 'starburst' || mode === 'spoke') {
         var hub = groupOrdered[0];
-        local.set(hub.id, { x: 0, y: 0, z: 0 });
+        local.set(hub.id, { x: 0, y: 0, z: 0, depth: 0, rank: 0, isRoot: true });
         var rest = groupOrdered.slice(1);
         if (mode === 'starburst') {
           var primary = rest.filter(function (n) { return (graph.adjacent.get(hub.id) || new Set()).has(n.id); });
@@ -310,14 +314,14 @@
           var pR = Math.max(step * 0.8, primary.length * step * 0.22);
           primary.forEach(function (n, i) {
             var angle = i * Math.PI * 2 / Math.max(1, primary.length) - Math.PI / 2;
-            local.set(n.id, { x: Math.cos(angle) * pR, y: Math.sin(angle) * pR, z: 10 });
+            local.set(n.id, { x: Math.cos(angle) * pR, y: Math.sin(angle) * pR, z: 10, depth: 1, rank: i, isRoot: false });
           });
           secondary.forEach(function (n, i) {
             var parent = primary.find(function (p) { return (graph.adjacent.get(p.id) || new Set()).has(n.id); }) || primary[i % Math.max(1, primary.length)];
             var pPos = parent ? local.get(parent.id) : { x: 0, y: 0 };
             var angle = Math.atan2(pPos.y, pPos.x) + (i % 3 - 1) * 0.35;
             var dist = pR + step * 0.6 + Math.floor(i / Math.max(1, primary.length)) * step * 0.4;
-            local.set(n.id, { x: Math.cos(angle) * dist, y: Math.sin(angle) * dist, z: 20 });
+            local.set(n.id, { x: Math.cos(angle) * dist, y: Math.sin(angle) * dist, z: 20, depth: 2, rank: i, isRoot: false });
           });
         } else if (mode === 'dandelion') {
           var cats = Array.from(new Set(rest.map(function (n) { return n.group || '其他'; }))).sort();
@@ -331,7 +335,7 @@
               var inRing = i % 3;
               var spread = (inRing - 1) * Math.min(0.25, sectorSize * 0.28);
               var r = step * 0.85 + ringIdx * step * 0.55;
-              local.set(n.id, { x: Math.cos(centerAngle + spread) * r, y: Math.sin(centerAngle + spread) * r, z: ringIdx * 15 });
+              local.set(n.id, { x: Math.cos(centerAngle + spread) * r, y: Math.sin(centerAngle + spread) * r, z: ringIdx * 15, depth: ringIdx + 1, rank: i, isRoot: false });
             });
           });
         } else if (mode === 'spoke') {
@@ -341,7 +345,7 @@
             var bStep = Math.floor(i / branchCount);
             var angle = bIdx * Math.PI * 2 / branchCount - Math.PI / 2;
             var r = step * 0.75 + bStep * step * 0.65;
-            local.set(n.id, { x: Math.cos(angle) * r, y: Math.sin(angle) * r, z: bStep * 12 });
+            local.set(n.id, { x: Math.cos(angle) * r, y: Math.sin(angle) * r, z: bStep * 12, depth: bStep + 1, rank: i, isRoot: false });
           });
         } else {
           // concentric
@@ -352,7 +356,7 @@
             var inRingCount = Math.min(8, rest.length - ringIdx * 8);
             var angle = inRing * Math.PI * 2 / inRingCount - Math.PI / 2;
             var r = ringR + ringIdx * step * 0.6;
-            local.set(n.id, { x: Math.cos(angle) * r, y: Math.sin(angle) * r, z: ringIdx * 20 });
+            local.set(n.id, { x: Math.cos(angle) * r, y: Math.sin(angle) * r, z: ringIdx * 20, depth: ringIdx + 1, rank: i, isRoot: false });
           });
         }
       } else if (mode === 'clusteredForce' || mode === 'groupedCircular') {
@@ -404,21 +408,25 @@
             Math.max(step * 0.32, Math.sqrt(subList.length) * step * 0.22);
           subList.forEach(function (n, i) {
             var angle = i * Math.PI * 2 / subList.length - Math.PI / 2;
+            var isPrimaryHub = n.id === groupOrdered[0].id;
             local.set(n.id, { x: gx + (subList.length === 1 ? 0 : Math.cos(angle) * subR),
-              y: gy + (subList.length === 1 ? 0 : Math.sin(angle) * subR), z: gIdx * 10 });
+              y: gy + (subList.length === 1 ? 0 : Math.sin(angle) * subR), z: gIdx * 10,
+              depth: isPrimaryHub ? 0 : (gIdx === 0 ? 1 : 2), rank: i, isRoot: isPrimaryHub });
           });
         });
       } else if (mode === 'grid') {
         var columns = Math.max(1, Math.ceil(Math.sqrt(group.length * Math.max(.6, width / height))));
         groupOrdered.forEach(function (node, i) {
-          local.set(node.id, { x: (i % columns) * step * 1.15, y: Math.floor(i / columns) * step * 0.72, z: (i % columns) * 18 });
+          local.set(node.id, { x: (i % columns) * step * 1.15, y: Math.floor(i / columns) * step * 0.72, z: (i % columns) * 18,
+            depth: Math.floor(i / columns), rank: i % columns, isRoot: i === 0 });
         });
       } else if (mode === 'organic' || mode === 'force') {
         var orbit = Math.max(step * .65, step * group.length / (Math.PI * 2));
         groupOrdered.forEach(function (node, i) {
           var angle = i * 2.39996;
           var r = Math.sqrt(i) * step * 0.5 + 40;
-          local.set(node.id, { x: Math.cos(angle) * r, y: Math.sin(angle) * r, z: Math.sin(angle * 2) * 20 });
+          local.set(node.id, { x: Math.cos(angle) * r, y: Math.sin(angle) * r, z: Math.sin(angle * 2) * 20,
+            depth: i === 0 ? 0 : Math.ceil(Math.sqrt(i)), rank: i, isRoot: i === 0 });
         });
       } else {
         // ring / default single orbit fallback
@@ -427,7 +435,8 @@
           var angle = i * Math.PI * 2 / group.length - Math.PI / 2;
           local.set(node, { x: group.length === 1 ? 0 : Math.cos(angle) * orbit,
             y: group.length === 1 ? 0 : Math.sin(angle) * orbit,
-            z: group.length > 2 ? Math.sin(angle * 2) * orbit * .18 : 0 });
+            z: group.length > 2 ? Math.sin(angle * 2) * orbit * .18 : 0,
+            depth: i === 0 ? 0 : 1, rank: i, isRoot: i === 0 });
         });
       }
 
@@ -463,7 +472,10 @@
         result.set(node, {
           x: x + point.x - box.minX + step / 2,
           y: y + point.y - box.minY + step * .375,
-          z: point.z, cx: cx, cy: cy
+          z: point.z, cx: cx, cy: cy,
+          depth: point.depth != null ? point.depth : 0,
+          rank: point.rank != null ? point.rank : 0,
+          isRoot: !!point.isRoot
         });
       });
       x += box.width + gap; rowHeight = Math.max(rowHeight, box.height);

@@ -10116,8 +10116,36 @@ button.museum-entry-category[aria-pressed="true"] {
 }
 
 /* 3. Edge Styling & Directional Links */
+:root {
+  --graph-edge-trunk: 2.6px;
+  --graph-edge-branch: 1.8px;
+  --graph-edge-leaf: 1.2px;
+  --graph-edge-cross: 1.4px;
+}
 .graph-page.is-network-runtime .graph-network-edge { cursor: pointer; }
 .graph-page.is-network-runtime .graph-network-edge:focus { outline: none; }
+.graph-page.is-network-runtime .graph-network-edge.is-trunk {
+  --graph-edge-width: var(--graph-edge-trunk, 2.6px);
+}
+.graph-page.is-network-runtime .graph-network-edge.is-branch {
+  --graph-edge-width: var(--graph-edge-branch, 1.8px);
+}
+.graph-page.is-network-runtime .graph-network-edge.is-leaf {
+  --graph-edge-width: var(--graph-edge-leaf, 1.2px);
+}
+.graph-page.is-network-runtime .graph-network-edge.is-cross {
+  --graph-edge-width: var(--graph-edge-cross, 1.4px);
+}
+.graph-page.is-network-runtime .graph-network-edge-casing {
+  fill: none;
+  stroke: var(--museum-paper, #ffffff);
+  stroke-width: calc(var(--graph-edge-width, 1.8px) + 3px);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-opacity: 0.96;
+  pointer-events: none;
+  transition: stroke-width 120ms ease, opacity 120ms ease;
+}
 .graph-page.is-network-runtime .graph-network-edge-line {
   color: var(--museum-border-strong, var(--museum-border));
   fill: none; stroke: currentColor; stroke-opacity: .75;
@@ -10133,13 +10161,43 @@ button.museum-entry-category[aria-pressed="true"] {
   color: var(--museum-accent);
   stroke: currentColor; stroke-opacity: 1; stroke-width: calc(var(--graph-edge-width, 1.8px) + 1.2px);
 }
+.graph-page.is-network-runtime .graph-network-edge.is-selected .graph-network-edge-casing,
+.graph-page.is-network-runtime .graph-network-edge.is-hovered .graph-network-edge-casing,
+.graph-page.is-network-runtime .graph-network-edge:hover .graph-network-edge-casing {
+  stroke-width: calc(var(--graph-edge-width, 1.8px) + 4.2px);
+}
 .graph-page.is-network-runtime .graph-network-edge.is-incident .graph-network-edge-line {
   color: var(--museum-ink); stroke: currentColor; stroke-opacity: .95; stroke-width: calc(var(--graph-edge-width, 1.8px) + 0.5px);
 }
+.graph-page.is-network-runtime .graph-network-edge.is-focus-l1 .graph-network-edge-line {
+  stroke-opacity: 1;
+}
+.graph-page.is-network-runtime .graph-network-edge.is-focus-l2 .graph-network-edge-line {
+  stroke-opacity: 0.75;
+}
+.graph-page.is-network-runtime .graph-network-edge.is-focus-l3 .graph-network-edge-line {
+  stroke-opacity: 0.45;
+}
 .graph-page.is-network-runtime .graph-network-edge.is-muted .graph-network-edge-line { stroke-opacity: .12; }
+.graph-page.is-network-runtime .graph-network-edge.is-muted .graph-network-edge-casing { opacity: 0.2; }
 .graph-page.is-network-runtime .graph-network-edge.is-muted .graph-network-edge-label,
 .graph-page.is-network-runtime .graph-network-edge.is-muted .graph-network-edge-badge { opacity: .18; }
 .graph-page.is-network-runtime .graph-network-edge-hit { fill: none; stroke: transparent; stroke-width: 22px; pointer-events: stroke; }
+
+/* Dynamic Flow Dash Animation for active/hovered/incident links */
+@keyframes graph-flow-dash {
+  to {
+    stroke-dashoffset: -20px;
+  }
+}
+.graph-page.is-network-runtime .graph-network-edge.is-flowing .graph-network-edge-line {
+  stroke-dasharray: 6 4;
+  animation: graph-flow-dash 0.85s linear infinite;
+}
+
+.graph-page.is-network-runtime .graph-network-node.is-focus-l2 { opacity: 0.82; }
+.graph-page.is-network-runtime .graph-network-node.is-focus-l3 { opacity: 0.55; }
+.graph-page.is-network-runtime .graph-network-node.is-context { opacity: 0.12; }
 
 /* 4. Capsule Badge Pills for Edge Relationships (from DuckDB Editor) */
 .graph-page.is-network-runtime .graph-network-edge-badge {

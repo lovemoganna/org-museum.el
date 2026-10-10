@@ -69,3 +69,37 @@ test('a route avoids a node between its endpoints when there is room', () => {
   assert(edges.labelCandidates(route).some(candidate =>
     Math.hypot(candidate.x - midpoint.x, candidate.y - midpoint.y) >= 12));
 });
+
+test('layout-adaptive routing selects cubic S-curves for hierarchy and straight rays for radial/grid', () => {
+  const nodes = [{id: 'root'}, {id: 'child'}];
+  const relations = [{id: 'e1', source: 'root', target: 'child'}];
+  const points = new Map([['root', {x: 100, y: 100}], ['child', {x: 100, y: 300}]]);
+  const radii = new Map([['root', 14], ['child', 10]]);
+
+  // Hierarchical layouts use Cubic S-curve
+  for (const hMode of ['treeVertical', 'treeHorizontal', 'dagre', 'semantic']) {
+    const route = edges.routes(nodes, relations, points, radii, null, hMode).get('e1');
+    assert.equal(route.curveType, 'cubic', `${hMode} should use cubic curve`);
+    assert(route.path.startsWith('M') && route.path.includes('C'), `${hMode} path should contain cubic command C`);
+    assert(route.c1 && route.c2, `${hMode} route should provide control points c1 and c2`);
+    // Endpoint clipping: start >= 14+4 = 18 >= 15; end >= 10+6 = 16 >= 15
+    const startDist = Math.hypot(route.start.x - 100, route.start.y - 100);
+    const endDist = Math.hypot(route.end.x - 100, route.end.y - 300);
+    assert(startDist >= 15, `start distance ${startDist} >= 15`);
+    assert(endDist >= 16, `end distance ${endDist} >= 16 (targetRadius + 6)`);
+  }
+
+  // Radial and grid layouts use straight rays
+  for (const rMode of ['concentric', 'starburst', 'dandelion', 'spoke', 'grid']) {
+    const route = edges.routes(nodes, relations, points, radii, null, rMode).get('e1');
+    assert.equal(route.curveType, 'linear', `${rMode} should use linear ray`);
+    assert(route.path.startsWith('M') && route.path.includes('L'), `${rMode} path should contain linear command L`);
+  }
+
+  // Force and organic networks use quadratic bezier
+  for (const fMode of ['organic', 'force', 'clusteredForce']) {
+    const route = edges.routes(nodes, relations, points, radii, null, fMode).get('e1');
+    assert.equal(route.curveType, 'quad', `${fMode} should use quad bezier`);
+    assert(route.path.startsWith('M') && route.path.includes('Q'), `${fMode} path should contain quadratic command Q`);
+  }
+});

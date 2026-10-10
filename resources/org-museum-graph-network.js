@@ -548,22 +548,119 @@
       placeLabels();
       drawEdges();
     }
+    function getAdjacentMap() {
+      var map = new Map();
+      activeLinks.forEach(function (e) {
+        var s = edgeSource(e), t = edgeTarget(e);
+        if (!map.has(s)) map.set(s, new Set());
+        if (!map.has(t)) map.set(t, new Set());
+        map.get(s).add(t);
+        map.get(t).add(s);
+      });
+      return map;
+    }
+    function edgeTier(edge) {
+      var sNode = activeNodes.find(function (n) { return n.id === edgeSource(edge); }) || nodeById(edgeSource(edge));
+      var tNode = activeNodes.find(function (n) { return n.id === edgeTarget(edge); }) || nodeById(edgeTarget(edge));
+      if (!sNode || !tNode) return 'branch';
+      var sDepth = sNode.depth != null ? sNode.depth : 0;
+      var tDepth = tNode.depth != null ? tNode.depth : 0;
+      var sRoot = !!sNode.isRoot || sDepth === 0;
+      var tRoot = !!tNode.isRoot || tDepth === 0;
+      if (sRoot || tRoot) {
+        return 'trunk';
+      }
+      var sDeg = sNode.degree != null ? sNode.degree : 0;
+      var tDeg = tNode.degree != null ? tNode.degree : 0;
+      if (sDeg === 1 || tDeg === 1) {
+        return 'leaf';
+      }
+      if (Math.abs(sDepth - tDepth) === 1) {
+        return 'branch';
+      }
+      return 'cross';
+    }
     function applyEdgeFocus() {
       if (!edgeSelection) return;
       var activeNodeId = hoveredNodeId || selectedNodeId;
-      var focus = selectedEdgeId || hoveredEdgeId || activeNodeId;
+      var activeEdgeId = selectedEdgeId || hoveredEdgeId;
+      var focus = activeEdgeId || activeNodeId;
+      var adjacent = getAdjacentMap();
+
+      var nodeDistances = new Map();
+      if (activeEdgeId) {
+        var activeEdge = graph.links.find(function (e) { return e.id === activeEdgeId; });
+        if (activeEdge) {
+          var s = edgeSource(activeEdge), t = edgeTarget(activeEdge);
+          nodeDistances.set(s, 0);
+          nodeDistances.set(t, 0);
+          var q = [s, t];
+          while (q.length) {
+            var curr = q.shift();
+            var d = nodeDistances.get(curr);
+            (adjacent.get(curr) || new Set()).forEach(function (nbr) {
+              if (!nodeDistances.has(nbr)) {
+                nodeDistances.set(nbr, d + 1);
+                q.push(nbr);
+              }
+            });
+          }
+        }
+      } else if (activeNodeId) {
+        nodeDistances.set(activeNodeId, 0);
+        var q = [activeNodeId];
+        while (q.length) {
+          var curr = q.shift();
+          var d = nodeDistances.get(curr);
+          (adjacent.get(curr) || new Set()).forEach(function (nbr) {
+            if (!nodeDistances.has(nbr)) {
+              nodeDistances.set(nbr, d + 1);
+              q.push(nbr);
+            }
+          });
+        }
+      }
+
+      function getEdgeHop(edge) {
+        if (activeEdgeId && edge.id === activeEdgeId) return 0;
+        var s = edgeSource(edge), t = edgeTarget(edge);
+        var ds = nodeDistances.has(s) ? nodeDistances.get(s) : Infinity;
+        var dt = nodeDistances.has(t) ? nodeDistances.get(t) : Infinity;
+        if (!Number.isFinite(ds) || !Number.isFinite(dt)) return Infinity;
+        return Math.max(ds, dt);
+      }
+
       edgeSelection
         .classed('is-selected', function (edge) { return edge.id === selectedEdgeId; })
         .classed('is-hovered', function (edge) { return edge.id === hoveredEdgeId; })
         .classed('is-incident', function (edge) {
-          return !selectedEdgeId && !hoveredEdgeId && !!activeNodeId &&
-            (edgeSource(edge) === activeNodeId || edgeTarget(edge) === activeNodeId);
+          return !activeEdgeId && !!activeNodeId && getEdgeHop(edge) === 1;
+        })
+        .classed('is-focus-l1', function (edge) {
+          if (!focus) return false;
+          var hop = getEdgeHop(edge);
+          return hop <= 1 && hop <= focusDepth;
+        })
+        .classed('is-focus-l2', function (edge) {
+          if (!focus) return false;
+          var hop = getEdgeHop(edge);
+          return hop === 2 && hop <= focusDepth;
+        })
+        .classed('is-focus-l3', function (edge) {
+          if (!focus) return false;
+          var hop = getEdgeHop(edge);
+          return hop >= 3 && hop <= focusDepth;
+        })
+        .classed('is-flowing', function (edge) {
+          if (!focus) return false;
+          return edge.id === selectedEdgeId || edge.id === hoveredEdgeId ||
+            (!!activeNodeId && getEdgeHop(edge) === 1);
         })
         .classed('is-muted', function (edge) {
           if (!focus) return false;
           if (edge.id === selectedEdgeId || edge.id === hoveredEdgeId) return false;
-          return !!selectedEdgeId || !!hoveredEdgeId || !activeNodeId ||
-            (edgeSource(edge) !== activeNodeId && edgeTarget(edge) !== activeNodeId);
+          var hop = getEdgeHop(edge);
+          return hop > focusDepth || !Number.isFinite(hop);
         });
       edgeSelection.select('.graph-network-edge-line')
         .attr('marker-end', function (edge) {
@@ -583,24 +680,34 @@
           .classed('is-selected', function (node) { return node.id === selectedNodeId; })
           .classed('is-hovered', function (node) { return node.id === hoveredNodeId; })
           .classed('is-endpoint', function (node) {
-            if (!selectedEdgeId && !hoveredEdgeId) return false;
-            var activeId = selectedEdgeId || hoveredEdgeId;
-            var edge = graph.links.find(function (e) { return e.id === activeId; });
+            if (!activeEdgeId) return false;
+            var edge = graph.links.find(function (e) { return e.id === activeEdgeId; });
             return edge && (edgeSource(edge) === node.id || edgeTarget(edge) === node.id);
           })
+          .classed('is-focus-l1', function (node) {
+            if (!focus) return false;
+            var d = nodeDistances.get(node.id);
+            return d === 1 && d <= focusDepth;
+          })
+          .classed('is-focus-l2', function (node) {
+            if (!focus) return false;
+            var d = nodeDistances.get(node.id);
+            return d === 2 && d <= focusDepth;
+          })
+          .classed('is-focus-l3', function (node) {
+            if (!focus) return false;
+            var d = nodeDistances.get(node.id);
+            return d >= 3 && d <= focusDepth;
+          })
           .classed('is-context', function (node) {
-            if (selectedEdgeId || hoveredEdgeId) {
-              var activeId = selectedEdgeId || hoveredEdgeId;
-              var edge = graph.links.find(function (e) { return e.id === activeId; });
-              return edge && edgeSource(edge) !== node.id && edgeTarget(edge) !== node.id;
+            if (!focus) return false;
+            if (node.id === activeNodeId) return false;
+            if (activeEdgeId) {
+              var edge = graph.links.find(function (e) { return e.id === activeEdgeId; });
+              if (edge && (edgeSource(edge) === node.id || edgeTarget(edge) === node.id)) return false;
             }
-            if (activeNodeId) {
-              return node.id !== activeNodeId && !graph.links.some(function (edge) {
-                return (edgeSource(edge) === activeNodeId && edgeTarget(edge) === node.id) ||
-                  (edgeTarget(edge) === activeNodeId && edgeSource(edge) === node.id);
-              });
-            }
-            return false;
+            var d = nodeDistances.get(node.id);
+            return d == null || d > focusDepth;
           });
       }
     }
@@ -703,7 +810,7 @@
           y: transform.applyY(projection.y)} : projection);
         radii.set(node.id, radius(node) * scale);
       });
-      edgeRoutes = edgeMath.routes(activeNodes, activeLinks, points, radii, edgeRoutes);
+      edgeRoutes = edgeMath.routes(activeNodes, activeLinks, points, radii, edgeRoutes, layoutMode);
       edgeSelection.selectAll('path').attr('d', function (edge) {
         var route = edgeRoutes.get(edge.id); return route ? route.path : null;
       });
@@ -737,6 +844,7 @@
       edgeSelection = edgeLayer.selectAll('g.graph-network-edge').data(activeLinks, function (edge) { return edge.id; })
         .join(function (enter) {
           var item = enter.append('g').attr('class', 'graph-network-edge').attr('role', 'button').attr('tabindex', 0);
+          item.append('path').attr('class', 'graph-network-edge-casing');
           item.append('path').attr('class', 'graph-network-edge-line');
           item.append('path').attr('class', 'graph-network-edge-hit');
           item.append('rect').attr('class', 'graph-network-edge-badge')
@@ -744,9 +852,17 @@
           item.append('text').attr('class', 'graph-network-edge-label');
           return item;
         });
+      edgeSelection
+        .classed('is-trunk', function (edge) { return (edge.tier = edgeTier(edge)) === 'trunk'; })
+        .classed('is-branch', function (edge) { return (edge.tier = edgeTier(edge)) === 'branch'; })
+        .classed('is-leaf', function (edge) { return (edge.tier = edgeTier(edge)) === 'leaf'; })
+        .classed('is-cross', function (edge) { return (edge.tier = edgeTier(edge)) === 'cross'; });
       edgeSelection.select('.graph-network-edge-line')
         .style('--graph-edge-width', function (edge) {
-          return Math.max(1.5, Math.min(2.8, 1.8 + .5 * (Math.sqrt(Math.max(.2, edge.weight || 1)) - 1))) + 'px';
+          var tier = edge.tier || edgeTier(edge);
+          var base = tier === 'trunk' ? 2.6 : tier === 'branch' ? 1.8 : tier === 'leaf' ? 1.2 : 1.4;
+          var weightMod = .4 * (Math.sqrt(Math.max(.2, edge.weight || 1)) - 1);
+          return Math.max(1.0, Math.min(3.6, base + weightMod)) + 'px';
         })
         .attr('stroke-dasharray', function (edge) {
           return edge.style === 'dashed' ? '7 5' : edge.style === 'dotted' ? '2 5' : null;
@@ -770,8 +886,41 @@
           (nodeById(flow.to) || {}).name + (edge.direction === 'both' ? ' 双向，' : '，') + (edge.label || edge.type);
       })
         .on('click', function (event, edge) { event.stopPropagation(); showEdge(edge); })
-        .on('mouseenter focus', function (_event, edge) { hoveredEdgeId = edge.id; applyEdgeFocus(); drawEdges(); })
-        .on('mouseleave blur', function () { hoveredEdgeId = ''; applyEdgeFocus(); drawEdges(); })
+        .on('mouseenter focus', function (event, edge) {
+          hoveredEdgeId = edge.id;
+          applyEdgeFocus();
+          drawEdges();
+          var tt = document.getElementById('graph-tooltip');
+          if (!tt) return;
+          var tTitle = document.getElementById('tt-title');
+          var tMeta = document.getElementById('tt-meta');
+          var flow = edgeMath.flow(edge);
+          var fromNode = nodeById(flow.from) || { name: flow.from };
+          var toNode = nodeById(flow.to) || { name: flow.to };
+          var arrowSymbol = edge.direction === 'both' ? ' ⇄ ' : edge.direction === 'reverse' ? ' ⬅ ' : ' ➔ ';
+          if (tTitle) tTitle.textContent = fromNode.name + arrowSymbol + toNode.name;
+          var tierNames = { trunk: '主干 (Trunk)', branch: '分支 (Branch)', leaf: '叶缘 (Leaf)', cross: '跨支交叉 (Cross)' };
+          var tierName = tierNames[edge.tier || edgeTier(edge)] || (edge.tier || edgeTier(edge));
+          var weightStr = edge.weight != null ? ' (Weight: ' + edge.weight + ')' : '';
+          if (tMeta) tMeta.textContent = (edge.label || edge.type || '关联') + weightStr + ' · ' + tierName;
+          var pos = (event && event.clientX != null) ? event : { clientX: 200, clientY: 200 };
+          tt.style.left = Math.min(window.innerWidth - 260, Math.max(10, pos.clientX + 14)) + 'px';
+          tt.style.top = Math.min(window.innerHeight - 80, Math.max(10, pos.clientY + 14)) + 'px';
+          tt.classList.add('is-visible');
+        })
+        .on('mousemove', function (event) {
+          var tt = document.getElementById('graph-tooltip');
+          if (!tt || !tt.classList.contains('is-visible')) return;
+          tt.style.left = Math.min(window.innerWidth - 260, Math.max(10, event.clientX + 14)) + 'px';
+          tt.style.top = Math.min(window.innerHeight - 80, Math.max(10, event.clientY + 14)) + 'px';
+        })
+        .on('mouseleave blur', function () {
+          hoveredEdgeId = '';
+          applyEdgeFocus();
+          drawEdges();
+          var tt = document.getElementById('graph-tooltip');
+          if (tt) tt.classList.remove('is-visible');
+        })
         .on('keydown', function (event, edge) { if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault(); showEdge(edge);
         }});

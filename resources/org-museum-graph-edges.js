@@ -26,22 +26,73 @@
   }
   function point(route, t) {
     var u = 1 - t;
+    if (route.curveType === 'cubic' && route.c1 && route.c2) {
+      return {
+        x: u * u * u * route.start.x + 3 * u * u * t * route.c1.x + 3 * u * t * t * route.c2.x + t * t * t * route.end.x,
+        y: u * u * u * route.start.y + 3 * u * u * t * route.c1.y + 3 * u * t * t * route.c2.y + t * t * t * route.end.y
+      };
+    }
+    if (route.curveType === 'linear') {
+      return {
+        x: u * route.start.x + t * route.end.x,
+        y: u * route.start.y + t * route.end.y
+      };
+    }
     return {x: u * u * route.start.x + 2 * u * t * route.control.x + t * t * route.end.x,
       y: u * u * route.start.y + 2 * u * t * route.control.y + t * t * route.end.y};
   }
-  function geometry(edge, source, target, sourceRadius, targetRadius, lane) {
+  function geometry(edge, source, target, sourceRadius, targetRadius, lane, layoutMode) {
     var dx = target.x - source.x, dy = target.y - source.y;
     var distance = Math.max(1, Math.hypot(dx, dy));
     var ux = dx / distance, uy = dy / distance;
-    var from = Math.min(distance * .42, sourceRadius + 4);
-    var to = Math.min(distance * .42, targetRadius + 4);
+    var minDistance = 15;
+    var from = Math.max(sourceRadius + 4, minDistance);
+    var to = Math.max(targetRadius + 6, minDistance);
+    if (from + to >= distance && distance > 2) {
+      var scale = (distance * 0.85) / (from + to);
+      from = Math.max(2, from * scale);
+      to = Math.max(2, to * scale);
+    }
     var start = {x: source.x + ux * from, y: source.y + uy * from};
     var end = {x: target.x - ux * to, y: target.y - uy * to};
     var canonical = id(edge.source) < id(edge.target) ? 1 : -1;
     var control = {x: (start.x + end.x) / 2 - uy * lane * canonical,
       y: (start.y + end.y) / 2 + ux * lane * canonical};
+
+    var isHierarchical = layoutMode === 'treeVertical' || layoutMode === 'treeHorizontal' ||
+      layoutMode === 'dagre' || layoutMode === 'semantic' || layoutMode === 'hierarchy';
+    var isRadial = layoutMode === 'concentric' || layoutMode === 'starburst' ||
+      layoutMode === 'dandelion' || layoutMode === 'spoke' || layoutMode === 'grid';
+
+    if (isHierarchical && lane === 0) {
+      var isHorizontal = layoutMode === 'treeHorizontal' || (layoutMode !== 'treeVertical' && layoutMode !== 'dagre' && Math.abs(dx) > Math.abs(dy));
+      var c1, c2;
+      if (isHorizontal) {
+        var midX = (start.x + end.x) / 2;
+        c1 = {x: midX, y: start.y};
+        c2 = {x: midX, y: end.y};
+      } else {
+        var midY = (start.y + end.y) / 2;
+        c1 = {x: start.x, y: midY};
+        c2 = {x: end.x, y: midY};
+      }
+      return {id: edge.id, sourceId: id(edge.source), targetId: id(edge.target),
+        lane: lane, start: start, control: control, c1: c1, c2: c2, end: end,
+        curveType: 'cubic',
+        path: 'M' + start.x + ',' + start.y + 'C' + c1.x + ',' + c1.y + ' ' +
+          c2.x + ',' + c2.y + ' ' + end.x + ',' + end.y};
+    }
+
+    if (isRadial && lane === 0) {
+      return {id: edge.id, sourceId: id(edge.source), targetId: id(edge.target),
+        lane: lane, start: start, control: control, end: end,
+        curveType: 'linear',
+        path: 'M' + start.x + ',' + start.y + 'L' + end.x + ',' + end.y};
+    }
+
     return {id: edge.id, sourceId: id(edge.source), targetId: id(edge.target),
       lane: lane, start: start, control: control, end: end,
+      curveType: 'quad',
       path: 'M' + start.x + ',' + start.y + 'Q' + control.x + ',' + control.y +
         ' ' + end.x + ',' + end.y};
   }
@@ -85,7 +136,7 @@
     });
     return cost;
   }
-  function routes(nodes, edges, points, radii, previous) {
+  function routes(nodes, edges, points, radii, previous, layoutMode) {
     var groups = new Map(), result = new Map(), accepted = [];
     edges.forEach(function (edge) {
       var pair = [id(edge.source), id(edge.target)].sort().join('\u0000');
@@ -132,7 +183,7 @@
         var candidates = group.map(function (edge, index) {
           var s = id(edge.source), t = id(edge.target);
           return geometry(edge, points.get(s), points.get(t), radii.get(s) || 10,
-            radii.get(t) || 10, lanes[index]);
+            radii.get(t) || 10, lanes[index], layoutMode);
         });
         var cost = candidates.reduce(function (sum, route) {
           var former = previous && previous.get(route.id);
@@ -149,8 +200,17 @@
     var candidates = [];
     [.5, .35, .65].forEach(function (t) {
       var p = point(route, t), u = 1 - t;
-      var dx = u * (route.control.x - route.start.x) + t * (route.end.x - route.control.x);
-      var dy = u * (route.control.y - route.start.y) + t * (route.end.y - route.control.y);
+      var dx, dy;
+      if (route.curveType === 'cubic' && route.c1 && route.c2) {
+        dx = 3 * u * u * (route.c1.x - route.start.x) + 6 * u * t * (route.c2.x - route.c1.x) + 3 * t * t * (route.end.x - route.c2.x);
+        dy = 3 * u * u * (route.c1.y - route.start.y) + 6 * u * t * (route.c2.y - route.c1.y) + 3 * t * t * (route.end.y - route.c2.y);
+      } else if (route.curveType === 'linear') {
+        dx = route.end.x - route.start.x;
+        dy = route.end.y - route.start.y;
+      } else {
+        dx = u * (route.control.x - route.start.x) + t * (route.end.x - route.control.x);
+        dy = u * (route.control.y - route.start.y) + t * (route.end.y - route.control.y);
+      }
       var length = Math.max(1, Math.hypot(dx, dy));
       [1, -1].forEach(function (side) {
         [13, 20, 28].forEach(function (offset) {
