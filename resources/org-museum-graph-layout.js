@@ -286,8 +286,8 @@
           }
         }
 
-        var colStep = (isHorizontal ? step * 1.3 : step * 0.95);
-        var rowStep = (isHorizontal ? step * 0.72 : step * 1.15);
+        var colStep = (isHorizontal ? step * 1.55 : step * 1.05);
+        var rowStep = (isHorizontal ? step * 0.8 : step * 1.25);
         layerGroups.forEach(function (grp, lIdx) {
           var grpHeight = (grp.length - 1) * rowStep;
           grp.forEach(function (nodeId, nIdx) {

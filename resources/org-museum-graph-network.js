@@ -475,40 +475,40 @@
     }
     function placeLabels() {
       if (!nodeSelection) return;
-      var width = canvas.clientWidth || 900, height = canvas.clientHeight || 700;
       var transform = d3.zoomTransform(svg.node());
-      var entries = [], circles = [];
+      var scale = dimension === '2d' ? transform.k : (camera.zoom || 1);
       nodeLabelBoxes = [];
+
       nodeSelection.each(function (node) {
-        var p = project(node), scale = dimension === '3d' ? Math.max(.55, Math.min(1.55, p.scale)) : zoomScale;
-        var x = dimension === '2d' ? p.x * transform.k + transform.x : p.x;
-        var y = dimension === '2d' ? p.y * transform.k + transform.y : p.y;
-        var text = d3.select(this).select('.graph-node-title').style('display', null)
-          .style('font-size', 11 / Math.max(.18, scale) + 'px').text(shortName(node.name));
-        var r = radius(node) * scale, size = text.node().getBBox();
-        entries.push({node:node, text:text, x:x, y:y, r:r, scale:scale, width:size.width * scale});
-        circles.push({x:x-r-3, y:y-r-3, width:r*2+6, height:r*2+6});
-      });
-      entries.sort(function (a, b) {
-        return Number(b.node.id === selectedNodeId) - Number(a.node.id === selectedNodeId) ||
-          (b.node.degree || 0) - (a.node.degree || 0) || String(a.node.id).localeCompare(String(b.node.id));
-      });
-      entries.forEach(function (entry) {
-        var w = entry.width, x = entry.x, y = entry.y, r = entry.r;
-        var choices = [{x:x+r+7,y:y-9,width:w,height:14}, {x:x-r-7-w,y:y-9,width:w,height:14},
-          {x:x-w/2,y:y+r+8,width:w,height:14}, {x:x-w/2,y:y-r-22,width:w,height:14}];
-        var box = choices.find(function (candidate) {
-          return candidate.x >= 5 && candidate.y >= 5 && candidate.x + w <= width - 5 && candidate.y + 14 <= height - 5 &&
-            !circles.some(function (circle) { return intersects(candidate,circle,2); }) &&
-            !nodeLabelBoxes.some(function (label) { return intersects(candidate,label,3); });
-        });
-        if (!box && entry.node.id === selectedNodeId) {
-          box = choices[0]; box.x = Math.max(5, Math.min(width - w - 5, box.x)); box.y = Math.max(5, Math.min(height - 19, box.y));
+        var text = d3.select(this).select('.graph-node-title');
+        var r = radius(node);
+        var isKey = node.id === selectedNodeId || node.id === hoveredNodeId;
+
+        // DuckDB Editor auto-filter: at very far zoom-out, only show higher degree or highlighted nodes
+        var show = isKey;
+        if (!show) {
+          if (scale < 0.35) {
+            show = (node.degree || 0) > 2;
+          } else if (scale < 0.65) {
+            show = (node.degree || 0) > 0;
+          } else {
+            show = true;
+          }
         }
-        entry.text.style('display', box ? null : 'none');
-        if (box) {
-          entry.text.attr('text-anchor','start').attr('x',(box.x-x)/entry.scale).attr('y',(box.y+11-y)/entry.scale);
-          nodeLabelBoxes.push(box);
+
+        text.style('display', show ? null : 'none');
+        if (show) {
+          text.attr('x', r + 8).attr('y', 0);
+          var p = project(node);
+          var x = dimension === '2d' ? p.x * transform.k + transform.x : p.x;
+          var y = dimension === '2d' ? p.y * transform.k + transform.y : p.y;
+          var labelLen = shortName(node.name).length;
+          nodeLabelBoxes.push({
+            x: x + (r + 8) * (dimension === '2d' ? transform.k : 1),
+            y: y - 8 * (dimension === '2d' ? transform.k : 1),
+            width: labelLen * 11 * (dimension === '2d' ? transform.k : 1),
+            height: 16 * (dimension === '2d' ? transform.k : 1)
+          });
         }
       });
     }
@@ -556,6 +556,7 @@
       if (nodeSelection) {
         nodeSelection
           .classed('is-selected', function (node) { return node.id === selectedNodeId; })
+          .classed('is-hovered', function (node) { return node.id === hoveredNodeId; })
           .classed('is-endpoint', function (node) {
             if (!selectedEdgeId && !hoveredEdgeId) return false;
             var activeId = selectedEdgeId || hoveredEdgeId;
@@ -613,6 +614,19 @@
           .select('.graph-network-edge-label');
         var element = label.node(), route = edgeRoutes.get(edge.id);
         if (!element || !route) { label.style('display', 'none'); return; }
+
+        var isFocusedEdge = edge.id === selectedEdgeId || edge.id === hoveredEdgeId;
+        var activeNode = hoveredNodeId || selectedNodeId;
+        var isConnectedToFocus = activeNode && (edgeSource(edge) === activeNode || edgeTarget(edge) === activeNode);
+        var isCustomSemantic = edge.type && edge.type !== '显式链接' && edge.type !== 'related';
+
+        // Auto edge label display: default only show high-value semantic relationships;
+        // Show all edge types when hovering/selecting the edge or incident node
+        if (!isFocusedEdge && !isConnectedToFocus && !isCustomSemantic) {
+          label.style('display', 'none');
+          return;
+        }
+
         label.style('display', null);
         var textWidth = element.getComputedTextLength ? element.getComputedTextLength() : (edge.label || edge.type || '').length * 10;
         var boxWidth = textWidth + 8, boxHeight = 17;
@@ -723,14 +737,21 @@
         .join(function (enter) {
           var item = enter.append('g').attr('class', 'graph-network-node').attr('role', 'button').attr('tabindex', 0);
           item.append('circle').attr('class', 'graph-node-hit-target').attr('r', 25);
+          item.append('circle').attr('class', 'graph-node-halo');
           item.append('circle').attr('class', 'graph-node-dot');
-          item.append('text').attr('class', 'graph-node-title').attr('x', 21).attr('y', 4);
+          item.append('text').attr('class', 'graph-node-title')
+            .attr('text-anchor', 'start')
+            .attr('dominant-baseline', 'central');
           item.append('title');
           return item;
         });
+      nodeSelection.select('.graph-node-halo').attr('r', function (node) { return radius(node) + 6; });
       nodeSelection.select('.graph-node-dot').attr('r', radius)
         .style('--graph-node-color', color);
-      nodeSelection.select('.graph-node-title').text(function (node) { return shortName(node.name); });
+      nodeSelection.select('.graph-node-title')
+        .attr('x', function (node) { return radius(node) + 8; })
+        .attr('y', 0)
+        .text(function (node) { return shortName(node.name); });
       nodeSelection.select('title').text(function (node) { return node.name; });
       nodeSelection.attr('aria-label', function (node) { return node.name + '，' + node.degree + ' 条关系'; })
         .classed('is-selected', function (node) { return node.id === selectedNodeId; })
