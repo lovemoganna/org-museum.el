@@ -129,7 +129,8 @@
     if (!viewName(url, root)) return null;
     var clean = new URL(url.pathname, root);
     ["q", "category", "tag", "status", "project", "type", "from", "to", "sort",
-      "focus", "view", "source", "target", "mode"].forEach(function (name) {
+      "focus", "view", "source", "target", "mode", "time", "relation",
+      "dimension", "layout", "grain"].forEach(function (name) {
       if (url.searchParams.has(name)) clean.searchParams.set(name, url.searchParams.get(name));
     });
     clean.hash = url.hash;

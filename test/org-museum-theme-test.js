@@ -161,9 +161,11 @@ for(const rootUrl of ['https://example.test/wiki/','file:///C:/notes/dist/']){
   const unsafe=themeFixture(rootUrl+'pages/a.html?museum-from='+encodeURIComponent(from),null,true,'../index.html');
   assert.equal(unsafe.returnLink.href,'');
  }
- const graph=themeFixture(rootUrl+'graph.html?focus=a&view=triage&token=secret',null,true,'index.html');
+ const graph=themeFixture(rootUrl+'graph.html?focus=a&view=triage&time=30&relation=supports&dimension=3d&layout=radial&token=secret',null,true,'index.html');
  const graphArticle=new URL(graph.window.orgMuseumThemeUrl('pages/a.html'));
- assert.equal(graphArticle.searchParams.get('museum-from'),'graph.html?focus=a&view=triage');
+ assert.equal(graphArticle.searchParams.get('museum-from'),'graph.html?focus=a&view=triage&time=30&relation=supports&dimension=3d&layout=radial');
+ const graphReader=themeFixture(graphArticle.href,null,true,'../index.html');
+ for(const [name,value] of Object.entries({time:'30',relation:'supports',dimension:'3d',layout:'radial'}))assert.equal(new URL(graphReader.returnLink.href).searchParams.get(name),value);
 }
 for(const [query,stored,expected] of [['',null,'light'],['','dark','dark'],['','light','light'],['?org-museum-theme=light','dark','light'],['?org-museum-theme=invalid','dark','dark']]){
  const f=themeFixture('https://example.test/index.html'+query,stored);assert.equal(f.document.documentElement.dataset.theme,expected);f.button.click();assert.notEqual(f.document.documentElement.dataset.theme,expected);

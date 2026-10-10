@@ -5148,7 +5148,7 @@ body {
   display: flex;
   align-items: center;
   position: relative;
-  height: 38px;
+  height: var(--museum-touch-target, 44px);
   padding: 0 10px 0 12px;
   gap: 8px;
   box-sizing: border-box;
@@ -9950,8 +9950,12 @@ button.museum-entry-category[aria-pressed="true"] {
 .graph-page .graph-layout-panel {
   position: absolute; z-index: 20; top: calc(100% + 7px); right: 0;
   display: grid; gap: 10px;
-  width: min(390px,calc(100vw - 32px)); max-height: min(590px,75vh);
-  padding: 14px; border: 1px solid var(--museum-border-soft); border-radius: 8px;
+  grid-template-columns: minmax(0, 1fr);
+  width: min(390px,calc(100vw - 32px)); max-height: min(560px,60vh);
+  box-sizing: border-box;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 14px; border: 1px solid var(--museum-border-soft); border-radius: var(--museum-radius-panel);
   background: var(--museum-paper); box-shadow: 0 14px 36px var(--panel-shadow);
 }
 .graph-page .graph-layout-panel-head { display: grid; gap: 2px; }
@@ -10202,7 +10206,7 @@ button.museum-entry-category[aria-pressed="true"] {
   .graph-page .graph-view-controls { grid-column: 1 / -1; }
   .graph-page .graph-layout-menu { grid-column: 1 / -1; }
   .graph-page .graph-layout-menu > summary { max-width: none; width: 100%; box-sizing: border-box; justify-content: center; }
-  .graph-page #graph-layout-options { left: 0; right: auto; grid-template-columns: 1fr; width: calc(100vw - 32px); }
+  .graph-page #graph-layout-options { grid-template-columns: minmax(0, 1fr); }
   .graph-page .museum-graph-workspace { grid-template-rows: 470px auto; }
 }
 
@@ -10490,19 +10494,8 @@ button.museum-entry-category[aria-pressed="true"] {
   background: var(--museum-hover);
 }
 .graph-page.is-network-runtime .graph-layout-panel {
-  position: absolute;
   z-index: 50;
-  top: calc(100% + 6px);
-  right: 0;
-  display: grid;
-  gap: 10px;
-  width: min(390px, calc(100vw - 32px));
-  max-height: min(560px, 75vh);
-  padding: 14px;
-  border: 1px solid var(--museum-border-soft);
-  border-radius: var(--museum-radius-panel, 8px);
   background: var(--museum-surface-raised, var(--museum-paper));
-  box-shadow: 0 14px 36px var(--panel-shadow);
 }
 
 .graph-page.is-network-runtime .graph-counts {
@@ -10686,18 +10679,10 @@ button.museum-entry-category[aria-pressed="true"] {
   background: var(--museum-hover);
 }
 .graph-page.is-network-runtime .graph-layout-settings .graph-layout-panel {
-  position: absolute;
-  z-index: 50;
-  bottom: calc(100% + 6px);
+  top: calc(100% + 6px);
   left: 0;
-  display: grid;
-  gap: 10px;
+  right: auto;
   width: min(320px, calc(100vw - 32px));
-  padding: 14px;
-  border: 1px solid var(--museum-border-soft);
-  border-radius: var(--museum-radius-panel, 8px);
-  background: var(--museum-surface-raised, var(--museum-paper));
-  box-shadow: 0 12px 30px var(--panel-shadow);
 }
 
 .graph-page.is-network-runtime .graph-commandbar #btn-layout {
@@ -11281,7 +11266,7 @@ button.museum-entry-category[aria-pressed="true"] {
   border-color: var(--museum-border);
   background: var(--museum-hover);
 }
-.museum-theme-menu:not(.museum-settings-menu) > div, .graph-layout-panel {
+.museum-theme-menu:not(.museum-settings-menu) > div {
   position: absolute;
   z-index: 120;
   right: 0;
@@ -12192,7 +12177,7 @@ mark.org-search-match.is-active {
   :root { --topbar-height: 108px; }
   :root:has(.org-museum-home) { --topbar-height: 58px; }
   .museum-topbar, .org-museum-home .museum-topbar { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; }
-  .museum-topbar .museum-search-line { display: grid; width: 100%; box-sizing: border-box; grid-column: 1 / -1; grid-row: 2; }
+  .museum-topbar .museum-search-line { display: flex; width: 100%; box-sizing: border-box; grid-column: 1 / -1; grid-row: 2; }
   .museum-topbar .museum-top-links { grid-column: 2; grid-row: 1; }
   .museum-ai-center-shell { padding-top: calc(var(--topbar-height) + 24px); }
 }
@@ -12233,7 +12218,10 @@ mark.org-search-match.is-active {
 }
 @media (max-width: 600px) {
   .graph-page.is-network-runtime .graph-commandbar #btn-layout { flex: 0 1 auto; min-width: 118px; }
-  .graph-layout-panel { right: auto; left: 0; width: min(270px, calc(100vw - 70px)); }
+  .graph-page .graph-layout-panel,
+  .graph-page.is-network-runtime .graph-layout-settings .graph-layout-panel {
+    right: auto; left: 0; width: min(390px, calc(100vw - 42px));
+  }
   .museum-org-source { padding: 12px; font-size: 12px; }
   .museum-article-view-toolbar button { min-height: 44px; }
   .museum-ai-quick-chat > summary span { display: block; margin: 4px 0 0; }

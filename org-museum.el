@@ -1655,6 +1655,15 @@ changes the content hash and therefore keeps its new timestamp."
                 (org-museum--asset-href asset out-file) t))
          (name (org-museum--html-escape
                 (or description (org-museum-asset-filename asset))))
+         (attribute-name (org-museum--html-escape
+                          (or description (org-museum-asset-filename asset)) t))
+         (caption (if (and description (not (string-empty-p description)))
+                      (format "<figcaption>%s</figcaption>" name) ""))
+         (dimensions (if (and (numberp (org-museum-asset-width asset))
+                              (numberp (org-museum-asset-height asset)))
+                         (format "width=\"%d\" height=\"%d\" "
+                                 (org-museum-asset-width asset)
+                                 (org-museum-asset-height asset)) ""))
          (kind (org-museum-asset-kind asset))
          (mime (org-museum--html-escape (org-museum-asset-mime asset) t))
          (download-name (org-museum--html-escape
@@ -1671,18 +1680,18 @@ changes the content hash and therefore keeps its new timestamp."
         ('image
          (format (concat "<figure class=\"museum-asset museum-asset-image\" "
                          "data-asset-id=\"%s\"><img src=\"%s\" alt=\"%s\" "
-                         "loading=\"lazy\" decoding=\"async\" data-lightbox></figure>")
-                 (org-museum-asset-id asset) href name))
-        ('video
-         (format (concat "<figure class=\"museum-asset museum-asset-video\" "
-                         "data-asset-id=\"%s\"><video controls preload=\"none\">"
-                         "<source src=\"%s\" type=\"%s\">%s</video></figure>")
-                 (org-museum-asset-id asset) href mime name))
-        ('audio
-         (format (concat "<figure class=\"museum-asset museum-asset-audio\" "
-                         "data-asset-id=\"%s\"><audio controls preload=\"none\">"
-                         "<source src=\"%s\" type=\"%s\">%s</audio></figure>")
-                 (org-museum-asset-id asset) href mime name))
+                         "%sloading=\"lazy\" decoding=\"async\" data-lightbox>%s</figure>")
+                 (org-museum-asset-id asset) href attribute-name dimensions caption))
+        ((or 'video 'audio)
+         (let ((tag (symbol-name kind)))
+           (format (concat "<figure class=\"museum-asset museum-asset-%s\" "
+                           "data-asset-id=\"%s\"><%s controls preload=\"none\" aria-label=\"%s\"%s>"
+                           "<source src=\"%s\" type=\"%s\">%s</%s>"
+                           "<figcaption class=\"museum-asset-caption\"><span>%s</span>"
+                           "<a href=\"%s\">%s</a></figcaption></figure>")
+                   tag (org-museum-asset-id asset) tag attribute-name
+                   (if (eq kind 'video) " playsinline" "") href mime name tag
+                   name href (if (eq kind 'video) "打开视频源文件" "打开音频源文件"))))
         ('pdf
          (format (concat "<div class=\"museum-asset museum-asset-pdf\">%s"
                          "<a class=\"museum-asset-preview\" href=\"%s\" "
@@ -1715,6 +1724,46 @@ changes the content hash and therefore keeps its new timestamp."
   "Resolve and replace asset links in BUFFER for SOURCE-FILE and OUT-FILE."
   (with-current-buffer buffer
     (let ((page-id (org-museum--page-id-for-file source-file)) replacements)
+      ;; Older saved results can contain our generated HTML instead of an Org
+      ;; link. Recover only images whose original file proves the recorded hash.
+      (org-element-map (org-element-parse-buffer) 'export-snippet
+        (lambda (snippet)
+          (let ((html (org-element-property :value snippet)))
+            (when (and (org-museum--asset-link-exported-p snippet)
+                       (equal (org-element-property :back-end snippet) "html")
+                       (string-match-p "museum-asset-image" html)
+                       (string-match-p "<img[^>]*\\bsrc=\"" html)
+                       (string-match "data-asset-id=\"\\([[:xdigit:]]\\{64\\}\\)\"" html))
+              (let* ((hash (downcase (match-string 1 html)))
+                     (original
+                      (seq-find
+                       (lambda (file)
+                         (and (file-regular-p file)
+                              (not (file-symlink-p file))
+                              (member (downcase (or (file-name-extension file) ""))
+                                      '("png" "jpg" "jpeg" "gif" "webp" "svg" "avif"))
+                              (equal hash (org-museum--file-content-hash file))))
+                       (directory-files (file-name-directory source-file) t "^[^.].*")))
+                     (asset (and original
+                                 (org-museum--asset-register-local
+                                  original (file-name-nondirectory original) page-id
+                                  (file-name-nondirectory original) t))))
+                (unless asset
+                  (signal 'org-museum-asset-error
+                          (list (format "%s: original image for embedded asset %s is missing"
+                                        source-file hash))))
+                (push (list (org-element-property :begin snippet)
+                            (org-element-property :end snippet)
+                            (concat "@@html:"
+                                    (progn
+                                      (string-match "\\(<img[^>]*\\bsrc=\\)\"[^\"]*\"" html)
+                                      (replace-match
+                                       (concat (match-string 1 html) "\""
+                                               (org-museum--html-escape
+                                                (org-museum--asset-href asset out-file) t)
+                                               "\"") t t html))
+                                    "@@"))
+                      replacements))))))
       (org-element-map (org-element-parse-buffer) 'link
         (lambda (link)
           (when (org-museum--asset-link-exported-p link)
@@ -2366,17 +2415,17 @@ headline options used by supported bundled Org versions."
                          (path-key (mapconcat #'identity path "\0"))
                          (occurrence
                           (1+ (gethash path-key occurrences 0)))
-                         (id (or custom
-                                 (concat "section-"
+                         (legacy (concat "section-"
                                          (substring
                                           (secure-hash
                                            'sha1
                                            (format "%s\0%s\0%d"
                                                    (org-museum-page-id page)
                                                    path-key occurrence))
-                                          0 12)))))
+                                          0 12)))
+                         (id (or custom legacy)))
                     (puthash path-key occurrence occurrences)
-                    (push (list :id id :title title :level (1+ level)
+                    (push (list :id id :legacy-id legacy :title title :level (1+ level)
                                 :path (mapconcat #'identity path " / ")
                                 :occurrence occurrence)
                           inventory))))))))
@@ -2386,6 +2435,7 @@ headline options used by supported bundled Org versions."
   "Return public heading metadata parsed from PAGE's exportable Org source."
   (mapcar (lambda (heading)
             `((id . ,(plist-get heading :id))
+              (legacy-id . ,(plist-get heading :legacy-id))
               (title . ,(plist-get heading :title))
               (level . ,(plist-get heading :level))))
           (org-museum--source-heading-inventory page)))
@@ -2401,12 +2451,19 @@ Org outline-container IDs follow the stable heading ID."
       (while (and headings
                   (re-search-forward
                    "<h[2-4][^>]*\\bid=\"\\([^\"]+\\)\"" nil t))
-        (let* ((old-id (match-string-no-properties 1))
+        (let* ((heading-start (match-beginning 0))
+               (old-id (match-string-no-properties 1))
                (heading (pop headings))
-               (stable-id (alist-get 'id heading)))
+               (stable-id (alist-get 'id heading))
+               (legacy-id (alist-get 'legacy-id heading)))
           (unless (equal old-id stable-id)
             (replace-match stable-id t t nil 1)
-            (push (cons old-id stable-id) rewrites))))
+            (push (cons old-id stable-id) rewrites))
+          (when (and legacy-id (not (equal legacy-id stable-id)))
+            (save-excursion
+              (goto-char heading-start)
+              (insert (format "<span id=\"%s\" class=\"museum-heading-alias\"></span>"
+                              (org-museum--html-escape legacy-id t)))))))
       (dolist (rewrite rewrites)
         (let ((old-id (car rewrite))
               (stable-id (cdr rewrite)))
@@ -3291,18 +3348,24 @@ user Org settings remain untouched."
          (when (file-exists-p tmp) (delete-file tmp)))))))
 
 (defun org-museum--strip-drawers ()
-  "Remove all property drawers and orphaned :END: markers from current buffer."
+  "Remove private drawers, preserving only public CUSTOM_ID anchors."
   (save-excursion
     (goto-char (point-min))
     (let ((case-fold-search t))
-      (while (re-search-forward "^[ \t]*:[A-Z]+:[ \t]*$" nil t)
-        (let ((beg (line-beginning-position)))
-          (when (re-search-forward "^[ \t]*:END:[ \t]*$" nil t)
-            (delete-region beg (min (point-max) (1+ (line-end-position)))))))
-      (goto-char (point-min))
-      (while (re-search-forward "^[ \t]*:END:[ \t]*$" nil t)
-        (delete-region (line-beginning-position)
-                       (min (point-max) (1+ (line-end-position))))))))
+      (while (re-search-forward "^[ \t]*:\\([A-Z]+\\):[ \t]*$" nil t)
+        (let ((beg (line-beginning-position))
+              (name (upcase (match-string-no-properties 1))))
+          (if (equal name "END")
+              (delete-region beg (min (point-max) (1+ (line-end-position))))
+            (when (re-search-forward "^[ \t]*:END:[ \t]*$" nil t)
+              (let* ((end (min (point-max) (1+ (line-end-position))))
+                     (drawer (buffer-substring-no-properties beg end))
+                     (custom (and (equal name "PROPERTIES")
+                                  (string-match "^[ \t]*:CUSTOM_ID:[ \t]+\\(.+\\)$" drawer)
+                                  (string-trim (match-string 1 drawer)))))
+                (delete-region beg end)
+                (when custom
+                  (insert ":PROPERTIES:\n:CUSTOM_ID: " custom "\n:END:\n"))))))))))
 
 ;; ============================================================
 ;; §12  POST-PROCESSING  [Fix-05]

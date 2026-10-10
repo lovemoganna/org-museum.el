@@ -1,0 +1,80 @@
+async (page) => {
+  // Open a real exported index.html before running this with Playwright CLI run-code.
+  const base = new URL('.', page.url()).href;
+  const results = [];
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const article = await page.locator('#org-museum-sidebar a[href*="pages/"]').first().getAttribute('href');
+  for (const file of ['index.html', 'graph.html', 'timeline.html', 'related.html', 'ai-center.html', article]) {
+    for (const theme of ['light', 'dark']) {
+      const url = new URL(file, base);
+      url.searchParams.set('org-museum-theme', theme);
+      await page.goto(url.href);
+      for (const width of [1440, 1024, 768, 390, 320]) {
+        await page.setViewportSize({width, height: 900});
+        const state = await page.evaluate(() => {
+          const search = document.querySelector('.museum-search-line');
+          const input = search && search.querySelector('input');
+          const outer = search && search.getBoundingClientRect();
+          const inner = input && input.getBoundingClientRect();
+          return {
+            overflow: document.documentElement.scrollWidth > innerWidth + 1,
+            searchContained: !inner || (inner.top >= outer.top - 1 && inner.bottom <= outer.bottom + 1),
+            theme: document.documentElement.dataset.theme
+          };
+        });
+        if (state.overflow || !state.searchContained || state.theme !== theme) {
+          throw Error(JSON.stringify({file, theme, width, state}));
+        }
+        results.push({file, theme, width, status: 'PASS'});
+      }
+    }
+  }
+  await page.goto(new URL('graph.html', base).href);
+  await page.setViewportSize({width: 320, height: 900});
+  const menu = page.locator('.graph-layout-menu');
+  await menu.locator('summary').click();
+  const geometry = await menu.locator('.graph-layout-panel').evaluate(e => {
+    const r = e.getBoundingClientRect();
+    return {left: r.left, right: r.right, viewport: innerWidth,
+      width: e.clientWidth, contentWidth: e.scrollWidth, overflow: getComputedStyle(e).overflow};
+  });
+  if (geometry.left < 0 || geometry.right > geometry.viewport ||
+      geometry.contentWidth > geometry.width + 1 || geometry.overflow !== 'auto') {
+    throw Error('Layout menu escapes its scrolling boundary: ' + JSON.stringify(geometry));
+  }
+  const chosen = menu.locator('#graph-layout-options button').last();
+  const layout = await chosen.getAttribute('data-layout');
+  await chosen.scrollIntoViewIfNeeded();
+  await chosen.click();
+  if (new URL(page.url()).searchParams.get('layout') !== layout) throw Error('Layout action did not update graph state');
+  await page.goto(new URL('index.html', base).href);
+  const drawer = page.locator('[data-drawer-toggle]').first();
+  await drawer.click();
+  if (await page.locator('#org-museum-sidebar').getAttribute('aria-hidden') === 'true') throw Error('Bookshelf did not open');
+  await page.keyboard.press('Escape');
+  if (await page.locator('#org-museum-sidebar').getAttribute('aria-hidden') !== 'true') throw Error('Bookshelf did not close');
+  const search = page.locator('#org-museum-global-search');
+  await search.fill('museum-audit-no-such-note-918273');
+  if (await page.locator('.museum-search-result').count()) throw Error('Empty search still displays results');
+  await search.fill('');
+  if (!(await page.locator('.museum-search-result').count())) throw Error('Clearing search did not restore real results');
+  const settings = page.locator('.museum-settings-menu');
+  await settings.locator('summary').first().click();
+  await settings.locator('[data-settings-tab="ai"]').click();
+  if (await settings.locator('[data-settings-tab="ai"]').getAttribute('aria-selected') !== 'true') throw Error('AI settings tab did not activate');
+  await page.keyboard.press('Escape');
+  if (await settings.getAttribute('open') !== null) throw Error('Settings did not close with Escape');
+  await page.goto(new URL(article, base).href);
+  const syntax = page.locator('[data-article-syntax]');
+  await syntax.click();
+  if (await syntax.getAttribute('aria-pressed') !== 'true' || !(await page.locator('.museum-org-view').isVisible())) throw Error('Org view did not open');
+  await syntax.click();
+  if (await syntax.getAttribute('aria-pressed') !== 'false') throw Error('Reading view did not recover');
+  await page.locator('[data-ai-toggle]').click();
+  if (await page.locator('#museum-ai-panel').getAttribute('aria-hidden') === 'true') throw Error('AI drawer did not open');
+  await page.locator('[data-ai-close]').click();
+  if (await page.locator('#museum-ai-panel').getAttribute('aria-hidden') !== 'true') throw Error('AI drawer did not close');
+  if (errors.length) throw Error('Page runtime errors: ' + errors.join('; '));
+  return {matrix: results, menu: geometry, interactions: 'layout / bookshelf / Escape / empty search / settings tabs / Org view / AI drawer PASS'};
+}

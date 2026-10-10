@@ -1975,7 +1975,8 @@
                   "{\"nodes\":[],\"links\":[],\"meta\":{}}"
                   "resources/org-museum.css" nil)))
       (should-not (string-match-p "https?://" script))
-      (should-not (string-match-p "https?://" graph)))))
+      ;; Local model endpoint values are settings, not external asset requests.
+      (should-not (string-match-p "\\(?:src\\|href\\)=\"https?://" graph)))))
 
 (ert-deftest org-museum-graph-emits-one-valid-local-d3-script-tag ()
   (let ((graph (org-museum--build-graph-html
