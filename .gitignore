@@ -40,3 +40,7 @@ Doc/*
 Pages/*
 pages/
 Archive/*
+
+# Python
+__pycache__/
+*.pyc
