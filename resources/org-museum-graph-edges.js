@@ -41,13 +41,16 @@
     return {x: u * u * route.start.x + 2 * u * t * route.control.x + t * t * route.end.x,
       y: u * u * route.start.y + 2 * u * t * route.control.y + t * t * route.end.y};
   }
-  function geometry(edge, source, target, sourceRadius, targetRadius, lane, layoutMode) {
+  function geometry(edge, source, target, sourceRadius, targetRadius, lane, layoutMode, routingMode) {
     var dx = target.x - source.x, dy = target.y - source.y;
     var distance = Math.max(1, Math.hypot(dx, dy));
     var ux = dx / distance, uy = dy / distance;
     var minDistance = 15;
-    var from = Math.max(sourceRadius + 4, minDistance);
-    var to = Math.max(targetRadius + 6, minDistance);
+    var relationFlow = flow(edge);
+    var fromOffset = relationFlow.atStart ? 6 : 4;
+    var toOffset = relationFlow.atEnd ? 6 : 4;
+    var from = Math.max(sourceRadius + fromOffset, minDistance);
+    var to = Math.max(targetRadius + toOffset, minDistance);
     if (from + to >= distance && distance > 2) {
       var scale = (distance * 0.85) / (from + to);
       from = Math.max(2, from * scale);
@@ -58,6 +61,33 @@
     var canonical = id(edge.source) < id(edge.target) ? 1 : -1;
     var control = {x: (start.x + end.x) / 2 - uy * lane * canonical,
       y: (start.y + end.y) / 2 + ux * lane * canonical};
+
+    // Explicit routingMode preference
+    if (routingMode === 'straight' && lane === 0) {
+      return {id: edge.id, sourceId: id(edge.source), targetId: id(edge.target),
+        lane: lane, start: start, control: control, end: end,
+        curveType: 'linear',
+        path: 'M' + start.x + ',' + start.y + 'L' + end.x + ',' + end.y};
+    }
+
+    if (routingMode === 'stepped' && lane === 0) {
+      var isHorizontalStepped = layoutMode === 'treeHorizontal' || (layoutMode !== 'treeVertical' && layoutMode !== 'dagre' && Math.abs(dx) > Math.abs(dy));
+      var c1Step, c2Step;
+      if (isHorizontalStepped) {
+        var midXStep = (start.x + end.x) / 2;
+        c1Step = {x: midXStep, y: start.y};
+        c2Step = {x: midXStep, y: end.y};
+      } else {
+        var midYStep = (start.y + end.y) / 2;
+        c1Step = {x: start.x, y: midYStep};
+        c2Step = {x: end.x, y: midYStep};
+      }
+      return {id: edge.id, sourceId: id(edge.source), targetId: id(edge.target),
+        lane: lane, start: start, control: control, c1: c1Step, c2: c2Step, end: end,
+        curveType: 'cubic',
+        path: 'M' + start.x + ',' + start.y + 'C' + c1Step.x + ',' + c1Step.y + ' ' +
+          c2Step.x + ',' + c2Step.y + ' ' + end.x + ',' + end.y};
+    }
 
     var isHierarchical = layoutMode === 'treeVertical' || layoutMode === 'treeHorizontal' ||
       layoutMode === 'dagre' || layoutMode === 'semantic' || layoutMode === 'hierarchy';
@@ -84,10 +114,28 @@
     }
 
     if (isRadial && lane === 0) {
+      var sId = id(edge.source), tId = id(edge.target);
+      var isRootLink = sId === 'root' || tId === 'root' ||
+        Math.hypot(source.x, source.y) < 32 || Math.hypot(target.x, target.y) < 32;
+      var distToOrigin = Math.abs(source.x * target.y - source.y * target.x) / distance;
+      if (isRootLink || layoutMode === 'grid' || distToOrigin > 55) {
+        return {id: edge.id, sourceId: id(edge.source), targetId: id(edge.target),
+          lane: lane, start: start, control: control, end: end,
+          curveType: 'linear',
+          path: 'M' + start.x + ',' + start.y + 'L' + end.x + ',' + end.y};
+      }
+      // Cross-branch edge piercing through center root: bow outward around origin
+      var mx = (start.x + end.x) / 2, my = (start.y + end.y) / 2;
+      var mDist = Math.hypot(mx, my);
+      var outX = mDist >= 5 ? mx / mDist : -uy;
+      var outY = mDist >= 5 ? my / mDist : ux;
+      var bow = Math.max(55, distance * 0.24);
+      var curvedControl = {x: mx + outX * bow, y: my + outY * bow};
       return {id: edge.id, sourceId: id(edge.source), targetId: id(edge.target),
-        lane: lane, start: start, control: control, end: end,
-        curveType: 'linear',
-        path: 'M' + start.x + ',' + start.y + 'L' + end.x + ',' + end.y};
+        lane: lane, start: start, control: curvedControl, end: end,
+        curveType: 'quad',
+        path: 'M' + start.x + ',' + start.y + 'Q' + curvedControl.x + ',' + curvedControl.y +
+          ' ' + end.x + ',' + end.y};
     }
 
     return {id: edge.id, sourceId: id(edge.source), targetId: id(edge.target),
@@ -136,7 +184,7 @@
     });
     return cost;
   }
-  function routes(nodes, edges, points, radii, previous, layoutMode) {
+  function routes(nodes, edges, points, radii, previous, layoutMode, routingMode) {
     var groups = new Map(), result = new Map(), accepted = [];
     edges.forEach(function (edge) {
       var pair = [id(edge.source), id(edge.target)].sort().join('\u0000');
@@ -152,7 +200,8 @@
       var a = points.get(sourceId), b = points.get(targetId);
       if (!a || !b) return;
       var distance = Math.hypot(b.x - a.x, b.y - a.y);
-      var base = Math.min(22, Math.max(12, distance * .2));
+      var detour = Math.min(24, Math.max(16, distance * .12));
+      var parallelBase = Math.min(9, Math.max(6, distance * .045));
       var near = [];
       edges.forEach(function (edge) {
         var s = id(edge.source), t = id(edge.target);
@@ -172,18 +221,19 @@
         exterior = toward > 0 ? -1 : 1;
       }
       var options;
-      if (group.length === 1) options = [[0], [base], [-base], [base * 1.8], [-base * 1.8]];
+      if (group.length === 1) options = [[0], [detour], [-detour], [detour * 1.5], [-detour * 1.5]];
+      else if (group.length === 2) options = [[-parallelBase, parallelBase], [parallelBase, -parallelBase]];
       else if (exterior) options = [exterior, -exterior].map(function (sign) {
-        return group.map(function (_edge, index) { return sign * base * (index + 1); });
-      }).concat([group.map(function (_edge, index) { return (index % 2 ? 1 : -1) * base; })]);
-      else options = [group.map(function (_edge, index) { return (index - (group.length - 1) / 2) * base * 2; }),
-        group.map(function (_edge, index) { return base * (index + 1); })];
+        return group.map(function (_edge, index) { return sign * parallelBase * (index + 1); });
+      }).concat([group.map(function (_edge, index) { return (index % 2 ? 1 : -1) * parallelBase; })]);
+      else options = [group.map(function (_edge, index) { return (index - (group.length - 1) / 2) * parallelBase * 1.5; }),
+        group.map(function (_edge, index) { return parallelBase * (index + 1); })];
       var best = null, bestCost = Infinity;
       options.forEach(function (lanes, optionIndex) {
         var candidates = group.map(function (edge, index) {
           var s = id(edge.source), t = id(edge.target);
           return geometry(edge, points.get(s), points.get(t), radii.get(s) || 10,
-            radii.get(t) || 10, lanes[index], layoutMode);
+            radii.get(t) || 10, lanes[index], layoutMode, routingMode);
         });
         var cost = candidates.reduce(function (sum, route) {
           var former = previous && previous.get(route.id);
@@ -222,5 +272,5 @@
     return candidates;
   }
   return {flow: flow, incoming: incoming, outgoing: outgoing,
-    point: point, routes: routes, labelCandidates: labelCandidates};
+    point: point, routes: routes, labelCandidates: labelCandidates, geometry: geometry};
 });

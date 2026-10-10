@@ -305,9 +305,10 @@
           });
         });
       } else if (mode === 'concentric' || mode === 'dandelion' || mode === 'starburst' || mode === 'spoke') {
-        var hub = groupOrdered[0];
+        var focusedNodeId = options.focusedNodeId || null;
+        var hub = (focusedNodeId && groupNodeObjs.find(function (n) { return n.id === focusedNodeId; })) || groupOrdered[0];
         local.set(hub.id, { x: 0, y: 0, z: 0, depth: 0, rank: 0, isRoot: true });
-        var rest = groupOrdered.slice(1);
+        var rest = groupOrdered.filter(function (n) { return n.id !== hub.id; });
         if (mode === 'starburst') {
           var primary = rest.filter(function (n) { return (graph.adjacent.get(hub.id) || new Set()).has(n.id); });
           var secondary = rest.filter(function (n) { return primary.indexOf(n) < 0; });
@@ -339,24 +340,120 @@
             });
           });
         } else if (mode === 'spoke') {
-          var branchCount = Math.max(1, Math.min(rest.length, 6));
-          rest.forEach(function (n, i) {
-            var bIdx = i % branchCount;
-            var bStep = Math.floor(i / branchCount);
-            var angle = bIdx * Math.PI * 2 / branchCount - Math.PI / 2;
-            var r = step * 0.75 + bStep * step * 0.65;
-            local.set(n.id, { x: Math.cos(angle) * r, y: Math.sin(angle) * r, z: bStep * 12, depth: bStep + 1, rank: i, isRoot: false });
+          // Stable center-rooted tree spoke layout (from DuckDB Editor Pro)
+          var visitedSpoke = new Set([hub.id]);
+          var depthById = new Map([[hub.id, 0]]);
+          var childrenById = new Map();
+          var queue = [hub.id];
+          while (queue.length) {
+            var current = queue.shift();
+            var d = depthById.get(current) || 0;
+            if (d >= 8) continue;
+            var children = Array.from(graph.adjacent.get(current) || [])
+              .filter(function (id) { return group.indexOf(id) >= 0 && !visitedSpoke.has(id); })
+              .sort(function (a, b) { return groupDegree(b) - groupDegree(a) || String(a).localeCompare(String(b)); });
+            childrenById.set(current, children);
+            children.forEach(function (ch) {
+              visitedSpoke.add(ch);
+              depthById.set(ch, d + 1);
+              queue.push(ch);
+            });
+          }
+
+          var branches = childrenById.get(hub.id) || [];
+          var branchCount = Math.max(branches.length, 1);
+          var baseAngle = -Math.PI / 2;
+          var branchStep = (Math.PI * 2) / branchCount;
+          var branchDistance = Math.max(step * 0.95, branchCount * 26);
+
+          branches.forEach(function (branchId, branchIndex) {
+            var angle = baseAngle + branchIndex * branchStep;
+            var branchRing = Math.floor(branchIndex / 16);
+            var branchRadius = branchDistance + branchRing * 48;
+            local.set(branchId, {
+              x: Math.cos(angle) * branchRadius,
+              y: Math.sin(angle) * branchRadius,
+              z: 10,
+              depth: 1,
+              rank: branchIndex,
+              isRoot: false
+            });
+
+            function walkSpoke(parentId, depth) {
+              if (depth >= 8) return;
+              var subChildren = childrenById.get(parentId) || [];
+              var spread = Math.min(0.82, Math.max(0.28, (subChildren.length - 1) * 0.18));
+              var radius = branchDistance + (depth - 1) * step * 0.78;
+              subChildren.forEach(function (childId, index) {
+                var childAngle = angle + (subChildren.length === 1 ? 0 : -spread / 2 + index * (spread / Math.max(1, subChildren.length - 1)));
+                var crossOffset = (index - (subChildren.length - 1) / 2) * 58;
+                local.set(childId, {
+                  x: Math.cos(angle) * radius + Math.cos(childAngle + Math.PI / 2) * crossOffset,
+                  y: Math.sin(angle) * radius + Math.sin(childAngle + Math.PI / 2) * crossOffset,
+                  z: depth * 12,
+                  depth: depth,
+                  rank: index,
+                  isRoot: false
+                });
+                walkSpoke(childId, depth + 1);
+              });
+            }
+            walkSpoke(branchId, 2);
+          });
+
+          // Disconnected nodes placed in satellite orbit cluster
+          var disconnected = rest.filter(function (node) { return !visitedSpoke.has(node.id); });
+          var satelliteRadius = branchDistance + Math.max(step * 1.6, 260);
+          disconnected.forEach(function (node, index) {
+            var angle = baseAngle + ((index + 0.5) / Math.max(disconnected.length, 1)) * Math.PI * 2;
+            var ring = Math.floor(index / 10);
+            local.set(node.id, {
+              x: Math.cos(angle) * (satelliteRadius + ring * 52),
+              y: Math.sin(angle) * (satelliteRadius + ring * 52),
+              z: 25,
+              depth: 3,
+              rank: index,
+              isRoot: false
+            });
           });
         } else {
-          // concentric
-          var ringR = Math.max(step * 0.8, step * rest.length / (Math.PI * 2));
-          rest.forEach(function (n, i) {
-            var ringIdx = Math.floor(i / 8);
-            var inRing = i % 8;
-            var inRingCount = Math.min(8, rest.length - ringIdx * 8);
-            var angle = inRing * Math.PI * 2 / inRingCount - Math.PI / 2;
-            var r = ringR + ringIdx * step * 0.6;
-            local.set(n.id, { x: Math.cos(angle) * r, y: Math.sin(angle) * r, z: ringIdx * 20, depth: ringIdx + 1, rank: i, isRoot: false });
+          // concentric: Topological Distance Rings from root hub (from DuckDB Editor Pro)
+          var visitedConc = new Set([hub.id]);
+          var depthByConc = new Map([[hub.id, 0]]);
+          var queueConc = [hub.id];
+          while (queueConc.length) {
+            var curr = queueConc.shift();
+            var dConc = depthByConc.get(curr) || 0;
+            Array.from(graph.adjacent.get(curr) || []).forEach(function (nbr) {
+              if (group.indexOf(nbr) >= 0 && !visitedConc.has(nbr)) {
+                visitedConc.add(nbr);
+                depthByConc.set(nbr, dConc + 1);
+                queueConc.push(nbr);
+              }
+            });
+          }
+          var byDepth = new Map();
+          rest.forEach(function (node) {
+            var dVal = visitedConc.has(node.id) ? depthByConc.get(node.id) : 99;
+            if (!byDepth.has(dVal)) byDepth.set(dVal, []);
+            byDepth.get(dVal).push(node);
+          });
+
+          var sortedDepths = Array.from(byDepth.keys()).filter(function (d) { return d > 0; }).sort(function (a, b) { return a - b; });
+          sortedDepths.forEach(function (d, ringIdx) {
+            var ringNodes = byDepth.get(d);
+            var r = step * 0.9 + ringIdx * step * 0.72;
+            ringNodes.forEach(function (node, idx) {
+              var angle = idx * Math.PI * 2 / Math.max(1, ringNodes.length) - Math.PI / 2;
+              local.set(node.id, {
+                x: Math.cos(angle) * r,
+                y: Math.sin(angle) * r,
+                z: (ringIdx + 1) * 15,
+                depth: d === 99 ? 3 : d,
+                rank: idx,
+                isRoot: false
+              });
+            });
           });
         }
       } else if (mode === 'clusteredForce' || mode === 'groupedCircular') {
@@ -504,8 +601,60 @@
     return result;
   }
 
+  function lineage(nodeId, links) {
+    var upstreamNodes = new Set(), downstreamNodes = new Set();
+    var upstreamEdges = new Set(), downstreamEdges = new Set();
+    if (!nodeId) return { upstreamNodes: upstreamNodes, downstreamNodes: downstreamNodes,
+      upstreamEdges: upstreamEdges, downstreamEdges: downstreamEdges };
+    upstreamNodes.add(nodeId); downstreamNodes.add(nodeId);
+
+    var upQueue = [nodeId], upVisited = new Set([nodeId]);
+    while (upQueue.length) {
+      var curr = upQueue.shift();
+      (links || []).forEach(function (edge) {
+        var s = id(edge.source), t = id(edge.target);
+        var rev = edge.direction === 'reverse';
+        var bi = edge.direction === 'both' || edge.bidirectional;
+        var from = rev ? t : s, to = rev ? s : t;
+        if (to === curr && !upVisited.has(from)) {
+          upVisited.add(from); upstreamNodes.add(from);
+          upstreamEdges.add(edge.id); upQueue.push(from);
+        } else if (bi && from === curr && !upVisited.has(to)) {
+          upVisited.add(to); upstreamNodes.add(to);
+          upstreamEdges.add(edge.id); upQueue.push(to);
+        }
+      });
+    }
+
+    var downQueue = [nodeId], downVisited = new Set([nodeId]);
+    while (downQueue.length) {
+      var currD = downQueue.shift();
+      (links || []).forEach(function (edge) {
+        var s = id(edge.source), t = id(edge.target);
+        var rev = edge.direction === 'reverse';
+        var bi = edge.direction === 'both' || edge.bidirectional;
+        var from = rev ? t : s, to = rev ? s : t;
+        if (from === currD && !downVisited.has(to)) {
+          downVisited.add(to); downstreamNodes.add(to);
+          downstreamEdges.add(edge.id); downQueue.push(to);
+        } else if (bi && to === currD && !downVisited.has(from)) {
+          downVisited.add(from); downstreamNodes.add(from);
+          downstreamEdges.add(edge.id); downQueue.push(from);
+        }
+      });
+    }
+
+    return {
+      upstreamNodes: upstreamNodes,
+      downstreamNodes: downstreamNodes,
+      upstreamEdges: upstreamEdges,
+      downstreamEdges: downstreamEdges
+    };
+  }
+
   return {
     modes: modes, labels: labels, hints: hints, categories: categories, next: next, positions: positions,
+    lineage: lineage,
     components: function (nodes, links) { return topology(nodes, links).components; }
   };
 });

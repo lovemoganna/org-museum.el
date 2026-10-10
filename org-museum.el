@@ -8903,36 +8903,375 @@ function renderDetail(){
   });
   updateMode(mode,false);
 }
-function renderIndex(){
-  detail.hidden=true;index.hidden=false;empty.hidden=(data.edges||[]).length>0;
-  var list=document.getElementById('related-index-list');list.textContent='';
-  (data.edges||[]).forEach(function(edge,position){
-    var from=pages.get(edge.source),to=pages.get(edge.target);if(!from||!to)return;
-    var link=element('a','related-index-row');
-    link.href=themed('related.html?source='+encodeURIComponent(from.id)+'&target='+encodeURIComponent(to.id)+'&mode=summary');
-    link.dataset.search=[from.title,to.title,from.categoryLabel,to.categoryLabel].join(' ').toLowerCase();
-    link.appendChild(element('span','related-index-number',String(position+1).padStart(2,'0')));
-    link.appendChild(element('strong','',from.title));
-    link.appendChild(element('span','related-index-arrow',edge.bidirectional?'↔':'→'));
-    link.appendChild(element('strong','',to.title));
-    link.appendChild(element('small','',edge.bidirectional?'双向显式链接':'显式链接'));
-    link.addEventListener('click',function(e){
-      e.preventDefault();
-      source=from;target=to;mode='summary';
-      setUrl(mode);
-      renderDetail();
+var currentGroupMode='category';
+var currentCategoryFilter='all';
+var currentSearchQuery='';
+
+function createRelatedCard(info){
+  var from=info.from,to=info.to;
+  var link=element('a','related-index-row');
+  link.href=themed('related.html?source='+encodeURIComponent(from.id)+'&target='+encodeURIComponent(to.id)+'&mode=summary');
+  link.dataset.search=info.searchTerms;
+  link.dataset.sourceCat=info.catFrom;
+  link.dataset.targetCat=info.catTo;
+
+  var cardHeader=element('div','related-index-card-header');
+  cardHeader.appendChild(element('span','related-index-number','#'+String(info.position+1).padStart(2,'0')));
+  cardHeader.appendChild(element('small','',info.isBidirectional?'双向显式链接':'显式链接'));
+  link.appendChild(cardHeader);
+
+  var pair=element('div','related-index-pair');
+  var left=element('div','related-index-node');
+  left.appendChild(element('span','related-index-cat',info.catFrom));
+  left.appendChild(element('strong','related-index-name',from.title));
+  pair.appendChild(left);
+
+  var bridge=element('div','related-index-bridge-sign');
+  bridge.appendChild(element('span','related-index-arrow',info.isBidirectional?'↔':'→'));
+  pair.appendChild(bridge);
+
+  var right=element('div','related-index-node');
+  right.appendChild(element('span','related-index-cat',info.catTo));
+  right.appendChild(element('strong','related-index-name',to.title));
+  pair.appendChild(right);
+
+  link.appendChild(pair);
+
+  var footer=element('div','related-index-card-footer');
+  footer.appendChild(element('span','related-index-cta','进入对读 →'));
+  link.appendChild(footer);
+
+  link.addEventListener('click',function(e){
+    e.preventDefault();
+    source=from;target=to;mode='summary';
+    setUrl(mode);
+    renderDetail();
+  });
+  return link;
+}
+
+function applyFilters(){
+  var query=(currentSearchQuery||'').trim().toLowerCase();
+  var cat=currentCategoryFilter;
+  var visibleTotal=0;
+  var list=document.getElementById('related-index-list');
+  var noMatchBox=document.getElementById('related-no-match');
+  var searchClear=document.getElementById('related-search-clear');
+  var matchedStatus=document.getElementById('related-matched-status');
+  if(!list)return;
+
+  var sections=list.querySelectorAll('.related-group-section');
+  if(sections.length){
+    sections.forEach(function(section){
+      var cards=Array.from(section.querySelectorAll('.related-index-row'));
+      var sectionVisible=0;
+      cards.forEach(function(card){
+        var matchesSearch=!query||card.dataset.search.includes(query);
+        var matchesCat=cat==='all'||card.dataset.sourceCat===cat||card.dataset.targetCat===cat;
+        var show=matchesSearch&&matchesCat;
+        card.hidden=!show;
+        if(show){sectionVisible++;visibleTotal++;}
+      });
+      section.hidden=sectionVisible===0;
+      var badge=section.querySelector('.related-group-badge');
+      if(badge)badge.textContent=sectionVisible+' 组关联';
     });
-    list.appendChild(link);
+  } else {
+    var cards=Array.from(list.querySelectorAll('.related-index-row'));
+    cards.forEach(function(card){
+      var matchesSearch=!query||card.dataset.search.includes(query);
+      var matchesCat=cat==='all'||card.dataset.sourceCat===cat||card.dataset.targetCat===cat;
+      var show=matchesSearch&&matchesCat;
+      card.hidden=!show;
+      if(show)visibleTotal++;
+    });
+  }
+
+  if(noMatchBox)noMatchBox.hidden=visibleTotal>0||(data.edges||'').length===0;
+  if(searchClear)searchClear.hidden=!query;
+
+  if(matchedStatus){
+    var total=(data.edges||[]).length;
+    if(query||cat!=='all'){
+      matchedStatus.textContent='匹配 '+visibleTotal+' 组关联（共 '+total+' 组）';
+    } else {
+      var catSet=new Set();
+      (data.edges||[]).forEach(function(e){
+        var f=pages.get(e.source),t=pages.get(e.target);
+        if(f)catSet.add(f.categoryLabel||f.category||'未分类');
+        if(t)catSet.add(t.categoryLabel||t.category||'未分类');
+      });
+      matchedStatus.textContent='共 '+total+' 组显式关联 · 覆盖 '+catSet.size+' 个主题分类';
+    }
+  }
+}
+
+function renderIndex(){
+  detail.hidden=true;
+  index.hidden=false;
+  var edges=data.edges||[];
+  empty.hidden=edges.length>0;
+  var toolbar=document.getElementById('related-shelf-toolbar');
+  if(toolbar)toolbar.hidden=edges.length===0;
+  if(edges.length===0)return;
+
+  var edgeInfos=[];
+  edges.forEach(function(edge,position){
+    var from=pages.get(edge.source),to=pages.get(edge.target);
+    if(!from||!to)return;
+    var catFrom=from.categoryLabel||from.category||'未分类';
+    var catTo=to.categoryLabel||to.category||'未分类';
+    var searchTerms=[
+      from.title,to.title,catFrom,catTo,
+      (from.tags||[]).join(' '), (to.tags||[]).join(' '),
+      from.description||'', to.description||''
+    ].join(' ').toLowerCase();
+    edgeInfos.push({
+      edge:edge,
+      position:position,
+      from:from,
+      to:to,
+      catFrom:catFrom,
+      catTo:catTo,
+      isSameCat:catFrom===catTo,
+      isBidirectional:!!edge.bidirectional,
+      searchTerms:searchTerms
+    });
   });
-  if(search)search.addEventListener('input',function(){
-    var query=search.value.trim().toLowerCase();
-    list.querySelectorAll('.related-index-row').forEach(function(row){row.hidden=!!query&&!row.dataset.search.includes(query);});
+
+  var pillsContainer=document.getElementById('related-category-pills');
+  if(pillsContainer){
+    pillsContainer.textContent='';
+    var catMap=new Map();
+    edgeInfos.forEach(function(info){
+      catMap.set(info.catFrom,(catMap.get(info.catFrom)||0)+1);
+      if(info.catTo!==info.catFrom){
+        catMap.set(info.catTo,(catMap.get(info.catTo)||0)+1);
+      }
+    });
+
+    var allPill=element('button','related-pill','全部');
+    allPill.type='button';
+    allPill.dataset.category='all';
+    allPill.appendChild(element('span','related-pill-count',String(edgeInfos.length)));
+    allPill.classList.toggle('is-active',currentCategoryFilter==='all');
+    allPill.setAttribute('aria-pressed',currentCategoryFilter==='all'?'true':'false');
+    allPill.addEventListener('click',function(){
+      currentCategoryFilter='all';
+      pillsContainer.querySelectorAll('.related-pill').forEach(function(btn){
+        var active=btn.dataset.category==='all';
+        btn.classList.toggle('is-active',active);
+        btn.setAttribute('aria-pressed',active?'true':'false');
+      });
+      applyFilters();
+    });
+    pillsContainer.appendChild(allPill);
+
+    Array.from(catMap.entries()).sort(function(a,b){
+      return b[1]-a[1]||a[0].localeCompare(b[0]);
+    }).forEach(function(pair){
+      var pill=element('button','related-pill',pair[0]);
+      pill.type='button';
+      pill.dataset.category=pair[0];
+      pill.appendChild(element('span','related-pill-count',String(pair[1])));
+      pill.classList.toggle('is-active',currentCategoryFilter===pair[0]);
+      pill.setAttribute('aria-pressed',currentCategoryFilter===pair[0]?'true':'false');
+      pill.addEventListener('click',function(){
+        currentCategoryFilter=pair[0];
+        pillsContainer.querySelectorAll('.related-pill').forEach(function(btn){
+          var active=btn.dataset.category===pair[0];
+          btn.classList.toggle('is-active',active);
+          btn.setAttribute('aria-pressed',active?'true':'false');
+        });
+        applyFilters();
+      });
+      pillsContainer.appendChild(pill);
+    });
+  }
+
+  document.querySelectorAll('[data-group-mode]').forEach(function(btn){
+    var active=btn.dataset.groupMode===currentGroupMode;
+    btn.classList.toggle('is-active',active);
+    btn.setAttribute('aria-pressed',active?'true':'false');
+    btn.onclick=function(){
+      currentGroupMode=btn.dataset.groupMode;
+      renderIndex();
+    };
   });
+
+  var list=document.getElementById('related-index-list');
+  list.textContent='';
+
+  if(currentGroupMode==='category'){
+    var groupsMap=new Map();
+    edgeInfos.forEach(function(info){
+      var groupKey=info.isSameCat?info.catFrom:'__cross__';
+      var groupTitle=info.isSameCat?info.catFrom:'跨主题关联';
+      var groupDesc=info.isSameCat?'同主题显式对读':'跨领域显式链接';
+      if(!groupsMap.has(groupKey)){
+        groupsMap.set(groupKey,{key:groupKey,title:groupTitle,desc:groupDesc,items:[]});
+      }
+      groupsMap.get(groupKey).items.push(info);
+    });
+
+    var groupList=Array.from(groupsMap.values()).sort(function(a,b){
+      if(a.key==='__cross__')return 1;
+      if(b.key==='__cross__')return -1;
+      return b.items.length-a.items.length||a.title.localeCompare(b.title);
+    });
+
+    groupList.forEach(function(group){
+      var section=element('section','related-group-section');
+      section.dataset.groupKey=group.key;
+
+      var header=element('div','related-group-header');
+      var left=element('div','related-group-header-left');
+      left.appendChild(element('span','related-group-indicator',''));
+      left.appendChild(element('h2','related-group-title',group.title));
+      left.appendChild(element('span','related-group-badge',group.items.length+' 组关联'));
+      header.appendChild(left);
+      if(group.desc){
+        header.appendChild(element('span','related-group-desc',group.desc));
+      }
+      section.appendChild(header);
+
+      var grid=element('div','related-group-grid');
+      group.items.forEach(function(info){
+        grid.appendChild(createRelatedCard(info));
+      });
+      section.appendChild(grid);
+      list.appendChild(section);
+    });
+  } else if(currentGroupMode==='note'){
+    var noteGroupsMap=new Map();
+    edgeInfos.forEach(function(info){
+      var key=info.from.id;
+      if(!noteGroupsMap.has(key)){
+        noteGroupsMap.set(key,{key:key,title:info.from.title,desc:(info.catFrom)+' · 起始笔记关联',items:[]});
+      }
+      noteGroupsMap.get(key).items.push(info);
+    });
+
+    Array.from(noteGroupsMap.values()).sort(function(a,b){
+      return b.items.length-a.items.length||a.title.localeCompare(b.title);
+    }).forEach(function(group){
+      var section=element('section','related-group-section');
+      section.dataset.groupKey=group.key;
+
+      var header=element('div','related-group-header');
+      var left=element('div','related-group-header-left');
+      left.appendChild(element('span','related-group-indicator',''));
+      left.appendChild(element('h2','related-group-title',group.title));
+      left.appendChild(element('span','related-group-badge',group.items.length+' 组关联'));
+      header.appendChild(left);
+      if(group.desc){
+        header.appendChild(element('span','related-group-desc',group.desc));
+      }
+      section.appendChild(header);
+
+      var grid=element('div','related-group-grid');
+      group.items.forEach(function(info){
+        grid.appendChild(createRelatedCard(info));
+      });
+      section.appendChild(grid);
+      list.appendChild(section);
+    });
+  } else {
+    var grid=element('div','related-group-grid');
+    edgeInfos.forEach(function(info){
+      grid.appendChild(createRelatedCard(info));
+    });
+    list.appendChild(grid);
+  }
+
+  var shelfSearch=document.getElementById('related-shelf-search');
+  var searchClear=document.getElementById('related-search-clear');
+  var resetFiltersBtn=document.getElementById('related-reset-filters');
+
+  if(shelfSearch&&!shelfSearch.dataset.bound){
+    shelfSearch.dataset.bound='true';
+    shelfSearch.addEventListener('input',function(){
+      currentSearchQuery=this.value;
+      if(search&&search.value!==this.value)search.value=this.value;
+      applyFilters();
+    });
+  }
+  if(searchClear&&!searchClear.dataset.bound){
+    searchClear.dataset.bound='true';
+    searchClear.addEventListener('click',function(){
+      currentSearchQuery='';
+      if(shelfSearch)shelfSearch.value='';
+      if(search)search.value='';
+      applyFilters();
+    });
+  }
+  if(resetFiltersBtn&&!resetFiltersBtn.dataset.bound){
+    resetFiltersBtn.dataset.bound='true';
+    resetFiltersBtn.addEventListener('click',function(){
+      currentSearchQuery='';
+      currentCategoryFilter='all';
+      if(shelfSearch)shelfSearch.value='';
+      if(search)search.value='';
+      if(pillsContainer){
+        pillsContainer.querySelectorAll('.related-pill').forEach(function(btn){
+          var active=btn.dataset.category==='all';
+          btn.classList.toggle('is-active',active);
+          btn.setAttribute('aria-pressed',active?'true':'false');
+        });
+      }
+      applyFilters();
+    });
+  }
+  if(search&&!search.dataset.boundRelated){
+    search.dataset.boundRelated='true';
+    search.addEventListener('input',function(){
+      currentSearchQuery=this.value;
+      if(shelfSearch&&shelfSearch.value!==this.value)shelfSearch.value=this.value;
+      applyFilters();
+    });
+  }
+
+  applyFilters();
 }
 document.addEventListener('click',function(event){
   var link=event.target.closest('a[href]');if(!link||link.href.startsWith('javascript:'))return;
   var raw=link.getAttribute('href')||'';if(raw.startsWith('#'))return;
   link.href=themed(raw);
+});
+window.addEventListener('keydown',function(event){
+  var tag=(event.target&&event.target.tagName)||'';
+  if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||(event.target&&event.target.isContentEditable))return;
+  if(event.ctrlKey||event.metaKey||event.altKey)return;
+  var isDetail=!detail.hidden;
+  if(isDetail){
+    if(event.key==='s'||event.key==='S'){
+      event.preventDefault();
+      updateMode(mode==='summary'?'full':'summary',true);
+    }else if(event.key==='y'||event.key==='Y'){
+      event.preventDefault();
+      var syncBtn=document.querySelector('[data-related-sync]');
+      if(syncBtn)syncBtn.click();
+    }else if(event.key==='x'||event.key==='X'){
+      var swapBtn=document.getElementById('related-swap');
+      if(swapBtn&&!swapBtn.hidden){
+        event.preventDefault();
+        swapBtn.click();
+      }
+    }else if(event.key==='Escape'){
+      event.preventDefault();
+      var backBtn=document.getElementById('related-back-shelf');
+      if(backBtn)backBtn.click();
+    }
+  }else{
+    if(event.key==='/'||event.key==='f'||event.key==='F'){
+      var shelfInput=document.getElementById('related-shelf-search');
+      if(shelfInput){
+        event.preventDefault();
+        shelfInput.focus();
+        shelfInput.select();
+      }
+    }
+  }
 });
 window.addEventListener('popstate',function(){
   var p=new URLSearchParams(location.search);
@@ -8966,9 +9305,32 @@ if(relationValid())renderDetail();else renderIndex();
      (org-museum--generate-sidebar-html out-file)
      "<main id=\"main-content\" class=\"museum-related-shell\" tabindex=\"-1\">\n"
      "  <section id=\"related-index\" class=\"related-index\">\n"
-     "    <header><p>关系书架</p><h1>显式 Org 关联阅读</h1>"
-     "<span>只展示笔记中真实存在的出链与入链。</span></header>\n"
+     "    <header class=\"related-index-hero\"><p class=\"related-hero-kicker\">关系书架</p><h1>显式 Org 关联阅读</h1>"
+     "<span class=\"related-hero-subtitle\">只展示笔记中真实存在的出链与入链。</span></header>\n"
+     "    <div id=\"related-shelf-toolbar\" class=\"related-shelf-toolbar\">\n"
+     "      <div class=\"related-search-row\">\n"
+     "        <label class=\"related-search-label\">\n"
+     "          <span class=\"sr-only\">检索关联阅读</span>\n"
+     "          <input type=\"search\" id=\"related-shelf-search\" class=\"related-shelf-search-input\" placeholder=\"快速检索关联对、笔记标题、分类或标签…\" autocomplete=\"off\" spellcheck=\"false\" aria-label=\"检索关联阅读\">\n"
+     "          <button type=\"button\" class=\"related-search-clear\" id=\"related-search-clear\" aria-label=\"清空检索\" hidden>✕</button>\n"
+     "        </label>\n"
+     "        <div class=\"related-group-controls\" role=\"group\" aria-label=\"分组方式\">\n"
+     "          <span class=\"related-control-label\">分组：</span>\n"
+     "          <button type=\"button\" class=\"related-group-btn is-active\" data-group-mode=\"category\" aria-pressed=\"true\">按主题分类</button>\n"
+     "          <button type=\"button\" class=\"related-group-btn\" data-group-mode=\"note\" aria-pressed=\"false\">按笔记</button>\n"
+     "          <button type=\"button\" class=\"related-group-btn\" data-group-mode=\"flat\" aria-pressed=\"false\">平铺</button>\n"
+     "        </div>\n"
+     "      </div>\n"
+     "      <div class=\"related-filter-row\">\n"
+     "        <div id=\"related-category-pills\" class=\"related-category-pills\" role=\"tablist\" aria-label=\"分类快捷筛选\"></div>\n"
+     "        <div id=\"related-matched-status\" class=\"related-matched-status\" role=\"status\" aria-live=\"polite\"></div>\n"
+     "      </div>\n"
+     "    </div>\n"
      "    <div id=\"related-index-list\" class=\"related-index-list\"></div>\n"
+     "    <div id=\"related-no-match\" class=\"related-no-match\" hidden>\n"
+     "      <p>未找到符合条件的关联对。</p>\n"
+     "      <button type=\"button\" id=\"related-reset-filters\" class=\"related-reset-btn\">清除筛选条件</button>\n"
+     "    </div>\n"
      "    <p id=\"related-empty\" class=\"museum-empty-copy\" hidden>当前还没有可对读的显式关系。</p>\n"
      "  </section>\n"
      "  <section id=\"related-detail\" class=\"related-detail\" hidden>\n"
@@ -8989,7 +9351,7 @@ if(relationValid())renderDetail();else renderIndex();
      "      <aside class=\"related-bridge\" aria-label=\"关系方向\">"
      "<strong id=\"related-kind\">显式 Org 链接</strong><span aria-hidden=\"true\">→</span>"
      "<p id=\"related-direction\">源 → 目标</p>"
-     "<button type=\"button\" id=\"related-swap\" hidden>交换方向</button>"
+     "<button type=\"button\" id=\"related-swap\" hidden title=\"交换源与目标方向 (快捷键 X)\">交换方向</button>"
      "<a id=\"related-bridge-back\" href=\"related.html\">← 关系书架</a>"
      "<a href=\"graph.html\">返回知识图谱</a></aside>\n"
      "      <article class=\"related-paper\" data-related-panel=\"target\" aria-label=\"目标笔记\"></article>\n"

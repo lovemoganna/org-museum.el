@@ -61,10 +61,18 @@
     var dimension = params.get('dimension') === '3d' ? '3d' : '2d';
     var presentation = {};
     try { presentation = JSON.parse(localStorage.getItem('org-museum-graph-presentation') || '{}'); } catch (_error) {}
+    if (presentation.routingMode == null) presentation.routingMode = 'spline';
+    if (presentation.showTrunk == null) presentation.showTrunk = true;
+    if (presentation.showBranch == null) presentation.showBranch = true;
+    if (presentation.showCross == null) presentation.showCross = true;
+    if (presentation.enableParticles == null) presentation.enableParticles = true;
+    if (presentation.edgeLabelDisplay == null) presentation.edgeLabelDisplay = 'auto';
+    if (presentation.showTierBadges == null) presentation.showTierBadges = false;
     var layoutMode = layouts.modes.includes(params.get('layout')) ? params.get('layout') :
-      layouts.modes.includes(presentation.mode) ? presentation.mode : 'semantic';
+      layouts.modes.includes(presentation.mode) ? presentation.mode : 'organic';
     var layoutOptions = {spacing: Math.max(.7, Math.min(2, Number(presentation.spacing) || 1)),
-      orientation: presentation.orientation === 'horizontal' ? 'horizontal' : 'vertical'};
+      orientation: presentation.orientation === 'horizontal' ? 'horizontal' : 'vertical',
+      focusedNodeId: presentation.focusedNodeId || null};
     var frozen = presentation.frozen === true;
     var positions = new Map();
     var camera = {yaw: -.45, pitch: -.24, zoom: 1, centerX: 0, centerY: 0, centerZ: 0};
@@ -106,16 +114,37 @@
     controls.appendChild(explore);
     var settings = document.createElement('details');
     settings.className = 'graph-layout-settings';
-    settings.innerHTML = '<summary>布局微调</summary><div class="graph-layout-panel">' +
+    settings.innerHTML = '<summary>布局微调与连线控制</summary><div class="graph-layout-panel">' +
       '<div class="graph-layout-panel-head"><strong data-layout-name>拓扑语义层级流</strong>' +
       '<p data-layout-hint></p></div>' +
-      '<label>节点间距 <output data-layout-spacing-value></output>' +
-      '<input type="range" data-layout-spacing min="0.7" max="2" step="0.1" aria-label="节点间距"></label>' +
-      '<label>层级方向<select data-layout-orientation><option value="vertical">从上到下</option>' +
-      '<option value="horizontal">从左到右</option></select></label>' +
-      '<label class="graph-layout-check"><input type="checkbox" data-layout-freeze>固定布局，停止自动移动</label>' +
-      '<button type="button" data-layout-reset>重置拖拽位置</button>' +
-      '<small>拖拽可固定单个节点；微调仅影响当前图谱视图。</small></div>';
+      '<fieldset class="graph-layout-fieldset"><legend>布局与排版</legend>' +
+      '<label for="graph-layout-root-select">中心根节点<select id="graph-layout-root-select" name="layout_root" data-layout-root aria-label="中心根节点"></select></label>' +
+      '<label for="graph-layout-spacing-input">节点间距 <output data-layout-spacing-value></output>' +
+      '<input id="graph-layout-spacing-input" name="layout_spacing" type="range" data-layout-spacing min="0.7" max="2" step="0.1" aria-label="节点间距"></label>' +
+      '<label for="graph-layout-orientation-select">层级方向<select id="graph-layout-orientation-select" name="layout_orientation" data-layout-orientation aria-label="层级方向"><option value="vertical">从上到下 (纵向树)</option>' +
+      '<option value="horizontal">从左到右 (横向树)</option></select></label>' +
+      '<label class="graph-layout-check"><input id="graph-layout-freeze-check" name="layout_freeze" type="checkbox" data-layout-freeze aria-label="固定布局，停止自动移动">固定布局，停止自动移动</label>' +
+      '<div class="graph-layout-actions-row">' +
+      '<button type="button" data-layout-reset>重置位置</button>' +
+      '<button type="button" data-focus-roots>聚焦中心根节点</button>' +
+      '<button type="button" data-set-as-root>设选中为根</button></div></fieldset>' +
+      '<fieldset class="graph-layout-fieldset"><legend>连线与拓扑路由 (MECE)</legend>' +
+      '<label for="graph-edge-routing-select">连线形态<select id="graph-edge-routing-select" name="edge_routing" data-edge-routing aria-label="连线形态">' +
+      '<option value="spline">平滑流线 (Spline S-Curve)</option>' +
+      '<option value="straight">经典直连 (Straight Ray)</option>' +
+      '<option value="stepped">阶梯分流 (Stepped Circuit)</option></select></label>' +
+      '<label for="graph-edge-labels-select">关系徽章<select id="graph-edge-labels-select" name="edge_labels" data-edge-labels aria-label="关系徽章">' +
+      '<option value="auto">智能避让 (Auto)</option>' +
+      '<option value="always">始终显示 (Always)</option>' +
+      '<option value="hover">仅悬停时 (Hover)</option>' +
+      '<option value="none">隐藏徽章 (None)</option></select></label>' +
+      '<label class="graph-layout-check"><input id="graph-edge-trunk-check" name="edge_trunk" type="checkbox" data-edge-show-trunk aria-label="显示根节点衍生主干线">显示根节点衍生主干线 (L0-L1)</label>' +
+      '<label class="graph-layout-check"><input id="graph-edge-branch-check" name="edge_branch" type="checkbox" data-edge-show-branch aria-label="显示次级衍生分支线">显示次级衍生分支线 (L1-L2)</label>' +
+      '<label class="graph-layout-check"><input id="graph-edge-cross-check" name="edge_cross" type="checkbox" data-edge-show-cross aria-label="显示跨分支网状关联线">显示跨分支网状关联线 (Cross)</label>' +
+      '<label class="graph-layout-check"><input id="graph-edge-particles-check" name="edge_particles" type="checkbox" data-edge-particles aria-label="动态流向粒子动效">动态流向粒子动效 (Flow Particles)</label></fieldset>' +
+      '<fieldset class="graph-layout-fieldset"><legend>节点与层级徽章</legend>' +
+      '<label class="graph-layout-check"><input id="graph-node-tier-check" name="node_tier" type="checkbox" data-node-tier-badges aria-label="显示节点层级微标">显示节点层级微标 (L0 根 / L1 主支)</label></fieldset>' +
+      '<small>参照 DuckDB Editor 专业级图谱排版：层级分明、主干突出、端点避障精准。</small></div>';
     controls.insertBefore(settings, document.getElementById('btn-layout'));
     var layoutSelect = settings.querySelector('[data-layout-mode]');
     var layoutMenu = document.getElementById('graph-layout-options');
@@ -195,19 +224,67 @@
       if (layoutSelect) layoutSelect.value = layoutMode;
       var nameEl = settings.querySelector('[data-layout-name]');
       if (nameEl) nameEl.textContent = layouts.labels[layoutMode] || layoutMode;
-      settings.querySelector('summary').textContent = '布局微调';
+      settings.querySelector('summary').textContent = '布局微调与连线控制';
       settings.querySelector('[data-layout-hint]').textContent = layouts.hints[layoutMode] || '';
       settings.querySelector('[data-layout-spacing]').value = layoutOptions.spacing;
       settings.querySelector('[data-layout-spacing-value]').textContent = Number(layoutOptions.spacing).toFixed(1) + '×';
       settings.querySelector('[data-layout-orientation]').value = layoutOptions.orientation;
       settings.querySelector('[data-layout-orientation]').disabled = !['hierarchy', 'semantic', 'dagre', 'treeVertical', 'treeHorizontal'].includes(layoutMode);
       settings.querySelector('[data-layout-freeze]').checked = frozen;
+
+      var rootSelect = settings.querySelector('[data-layout-root]');
+      if (rootSelect) {
+        rootSelect.innerHTML = '';
+        var optAuto = document.createElement('option');
+        optAuto.value = '';
+        optAuto.textContent = '自动推导 (最高度数枢纽)';
+        rootSelect.appendChild(optAuto);
+        var sortedRoots = graph.nodes.filter(function (n) { return (n.degree || 0) > 0; })
+          .sort(function (a, b) { return (b.degree || 0) - (a.degree || 0) || a.name.localeCompare(b.name); });
+        sortedRoots.forEach(function (n) {
+          var opt = document.createElement('option');
+          opt.value = n.id;
+          opt.textContent = n.name + ' (' + n.degree + ' 条关系)';
+          rootSelect.appendChild(opt);
+        });
+        rootSelect.value = layoutOptions.focusedNodeId || '';
+      }
+
+      var routingEl = settings.querySelector('[data-edge-routing]');
+      if (routingEl) routingEl.value = presentation.routingMode || 'spline';
+      var labelsEl = settings.querySelector('[data-edge-labels]');
+      if (labelsEl) labelsEl.value = presentation.edgeLabelDisplay || 'auto';
+      var trunkEl = settings.querySelector('[data-edge-show-trunk]');
+      if (trunkEl) trunkEl.checked = presentation.showTrunk !== false;
+      var branchEl = settings.querySelector('[data-edge-show-branch]');
+      if (branchEl) branchEl.checked = presentation.showBranch !== false;
+      var crossEl = settings.querySelector('[data-edge-show-cross]');
+      if (crossEl) crossEl.checked = presentation.showCross !== false;
+      var partEl = settings.querySelector('[data-edge-particles]');
+      if (partEl) partEl.checked = presentation.enableParticles !== false;
+      var tierBadgesEl = settings.querySelector('[data-node-tier-badges]');
+      if (tierBadgesEl) tierBadgesEl.checked = presentation.showTierBadges !== false;
+
+      document.body.classList.toggle('has-particles', presentation.enableParticles !== false);
+
       if (layoutLabel) layoutLabel.textContent = layouts.labels[layoutMode] || layoutMode;
       renderCommandBarLayoutMenu();
     }
     function savePresentation() {
-      try { localStorage.setItem('org-museum-graph-presentation', JSON.stringify({mode: layoutMode,
-        spacing: layoutOptions.spacing, orientation: layoutOptions.orientation, frozen: frozen})); } catch (_error) {}
+      try { localStorage.setItem('org-museum-graph-presentation', JSON.stringify({
+        mode: layoutMode,
+        spacing: layoutOptions.spacing,
+        orientation: layoutOptions.orientation,
+        focusedNodeId: layoutOptions.focusedNodeId,
+        frozen: frozen,
+        routingMode: presentation.routingMode,
+        edgeLabelDisplay: presentation.edgeLabelDisplay,
+        showTrunk: presentation.showTrunk,
+        showBranch: presentation.showBranch,
+        showCross: presentation.showCross,
+        enableParticles: presentation.enableParticles,
+        showTierBadges: presentation.showTierBadges
+      })); } catch (_error) {}
     }
     function applyLayout(mode) {
       rememberPositions(); layoutMode = mode;
@@ -231,6 +308,95 @@
       frozen = event.target.checked; rememberPositions(); savePresentation(); render();
     });
     settings.querySelector('[data-layout-reset]').addEventListener('click', function () { applyLayout(layoutMode); });
+    var rootSelectEl = settings.querySelector('[data-layout-root]');
+    if (rootSelectEl) {
+      rootSelectEl.addEventListener('change', function (event) {
+        layoutOptions.focusedNodeId = event.target.value || null;
+        applyLayout(layoutMode);
+      });
+    }
+    var focusRootsBtn = settings.querySelector('[data-focus-roots]');
+    if (focusRootsBtn) {
+      focusRootsBtn.addEventListener('click', function () {
+        var roots = activeNodes.filter(function (n) { return !!n.isRoot || (n.depth != null && n.depth === 0); });
+        if (roots.length) {
+          selectedNodeId = roots[0].id;
+          applyEdgeFocus();
+          showNode(roots[0]);
+          drawEdges();
+          announce('已聚焦根节点: ' + roots.map(function (n) { return n.name; }).join('、'));
+        }
+      });
+    }
+    var setAsRootBtn = settings.querySelector('[data-set-as-root]');
+    if (setAsRootBtn) {
+      setAsRootBtn.addEventListener('click', function () {
+        if (selectedNodeId) {
+          layoutOptions.focusedNodeId = selectedNodeId;
+          applyLayout(layoutMode);
+          announce('已将 ' + (nodeById(selectedNodeId) || {}).name + ' 设为根节点并重排');
+        } else {
+          announce('请先选中一个节点作为根节点');
+        }
+      });
+    }
+    var edgeRoutingSelect = settings.querySelector('[data-edge-routing]');
+    if (edgeRoutingSelect) {
+      edgeRoutingSelect.addEventListener('change', function (event) {
+        presentation.routingMode = event.target.value;
+        savePresentation();
+        drawEdges();
+      });
+    }
+    var edgeLabelsSelect = settings.querySelector('[data-edge-labels]');
+    if (edgeLabelsSelect) {
+      edgeLabelsSelect.addEventListener('change', function (event) {
+        presentation.edgeLabelDisplay = event.target.value;
+        savePresentation();
+        drawEdges();
+      });
+    }
+    var edgeShowTrunkCheck = settings.querySelector('[data-edge-show-trunk]');
+    if (edgeShowTrunkCheck) {
+      edgeShowTrunkCheck.addEventListener('change', function (event) {
+        presentation.showTrunk = event.target.checked;
+        savePresentation();
+        render();
+      });
+    }
+    var edgeShowBranchCheck = settings.querySelector('[data-edge-show-branch]');
+    if (edgeShowBranchCheck) {
+      edgeShowBranchCheck.addEventListener('change', function (event) {
+        presentation.showBranch = event.target.checked;
+        savePresentation();
+        render();
+      });
+    }
+    var edgeShowCrossCheck = settings.querySelector('[data-edge-show-cross]');
+    if (edgeShowCrossCheck) {
+      edgeShowCrossCheck.addEventListener('change', function (event) {
+        presentation.showCross = event.target.checked;
+        savePresentation();
+        render();
+      });
+    }
+    var edgeParticlesCheck = settings.querySelector('[data-edge-particles]');
+    if (edgeParticlesCheck) {
+      edgeParticlesCheck.addEventListener('change', function (event) {
+        presentation.enableParticles = event.target.checked;
+        savePresentation();
+        document.body.classList.toggle('has-particles', presentation.enableParticles);
+        drawEdges();
+      });
+    }
+    var nodeTierBadgesCheck = settings.querySelector('[data-node-tier-badges]');
+    if (nodeTierBadgesCheck) {
+      nodeTierBadgesCheck.addEventListener('change', function (event) {
+        presentation.showTierBadges = event.target.checked;
+        savePresentation();
+        render();
+      });
+    }
     document.addEventListener('click', function (event) {
       if (!settings.contains(event.target)) settings.open = false;
       document.querySelectorAll('.graph-commandbar details[open]').forEach(function (d) {
@@ -269,7 +435,16 @@
     function color(node) {
       return window.orgMuseumCategoryColor ? window.orgMuseumCategoryColor(node.group) : 'var(--museum-node-fill)';
     }
-    function radius(node) { return 8 + Math.min(9, Math.sqrt(Math.max(0, node.degree || 0)) * 3); }
+    function isNodeRoot(node) {
+      if (!node) return false;
+      return !!node.isRoot || (node.depth != null && node.depth === 0);
+    }
+    function radius(node) {
+      var isRoot = isNodeRoot(node);
+      var isIsolated = (node.degree || 0) === 0;
+      var base = isRoot ? 18 : (node.depth === 1 ? 12 : (isIsolated ? 8.5 : 10));
+      return base + Math.min(8, Math.sqrt(Math.max(0, node.degree || 0)) * 2);
+    }
     function snapshot(value) {
       return JSON.stringify(value);
     }
@@ -331,20 +506,73 @@
       .attr('r', 1.15)
       .attr('class', 'graph-grid-dot');
 
-    // 2. High-precision feathered arrow markers from DuckDB Editor
+    // 2. High-precision feathered arrow markers and filters from DuckDB Editor
+    var glowFilter = defs.append('filter')
+      .attr('id', 'network-glow')
+      .attr('x', '-30%').attr('y', '-30%')
+      .attr('width', '160%').attr('height', '160%');
+    glowFilter.append('feGaussianBlur')
+      .attr('stdDeviation', '3.5')
+      .attr('result', 'blur');
+    var feMerge = glowFilter.append('feMerge');
+    feMerge.append('feMergeNode').attr('in', 'blur');
+    feMerge.append('feMergeNode').attr('in', 'SourceGraphic');
+
+    var rootGrad = defs.append('radialGradient')
+      .attr('id', 'network-radial-root')
+      .attr('cx', '35%').attr('cy', '35%').attr('r', '65%');
+    rootGrad.append('stop').attr('offset', '0%').attr('stop-color', '#ffffff').attr('stop-opacity', '0.45');
+    rootGrad.append('stop').attr('offset', '45%').attr('stop-color', 'var(--museum-accent)').attr('stop-opacity', '0.18');
+    rootGrad.append('stop').attr('offset', '100%').attr('stop-color', 'transparent').attr('stop-opacity', '0');
+
     defs.append('marker').attr('id', 'network-arrow')
-      .attr('viewBox', '0 -4 10 8').attr('refX', 9.2).attr('refY', 0)
+      .attr('viewBox', '0 -4 10 8').attr('refX', 9.0).attr('refY', 0)
       .attr('markerUnits', 'userSpaceOnUse')
       .attr('markerWidth', 9.5).attr('markerHeight', 9.5)
       .attr('orient', 'auto-start-reverse').append('path')
-      .attr('d', 'M0,-3.2L9,0L0,3.2L2.4,0Z').attr('fill', 'currentColor');
+      .attr('d', 'M0,-3.2L8.8,0L0,3.2L2.2,0Z').attr('fill', 'currentColor');
 
     defs.append('marker').attr('id', 'network-arrow-selected')
-      .attr('viewBox', '0 -4 10 8').attr('refX', 9.5).attr('refY', 0)
+      .attr('viewBox', '0 -4 10 8').attr('refX', 9.4).attr('refY', 0)
       .attr('markerUnits', 'userSpaceOnUse')
       .attr('markerWidth', 11.5).attr('markerHeight', 11.5)
       .attr('orient', 'auto-start-reverse').append('path')
       .attr('d', 'M0,-3.4L9,0L0,3.4L2.4,0Z').attr('fill', 'currentColor');
+
+    defs.append('marker').attr('id', 'network-arrow-trunk')
+      .attr('viewBox', '0 -4 10 8').attr('refX', 9.2).attr('refY', 0)
+      .attr('markerUnits', 'userSpaceOnUse')
+      .attr('markerWidth', 10.5).attr('markerHeight', 10.5)
+      .attr('orient', 'auto-start-reverse').append('path')
+      .attr('d', 'M0,-3.3L9,0L0,3.3L2.2,0Z').attr('fill', 'currentColor');
+
+    defs.append('marker').attr('id', 'network-arrow-branch')
+      .attr('viewBox', '0 -4 10 8').attr('refX', 9.0).attr('refY', 0)
+      .attr('markerUnits', 'userSpaceOnUse')
+      .attr('markerWidth', 9.0).attr('markerHeight', 9.0)
+      .attr('orient', 'auto-start-reverse').append('path')
+      .attr('d', 'M0,-3.0L8.5,0L0,3.0L2.0,0Z').attr('fill', 'currentColor');
+
+    defs.append('marker').attr('id', 'network-arrow-cross')
+      .attr('viewBox', '0 -4 10 8').attr('refX', 8.8).attr('refY', 0)
+      .attr('markerUnits', 'userSpaceOnUse')
+      .attr('markerWidth', 8.5).attr('markerHeight', 8.5)
+      .attr('orient', 'auto-start-reverse').append('path')
+      .attr('d', 'M0,-2.8L8.0,0L0,2.8L1.8,0Z').attr('fill', 'currentColor');
+
+    defs.append('marker').attr('id', 'network-arrow-upstream')
+      .attr('viewBox', '0 -4 10 8').attr('refX', 9.2).attr('refY', 0)
+      .attr('markerUnits', 'userSpaceOnUse')
+      .attr('markerWidth', 10.5).attr('markerHeight', 10.5)
+      .attr('orient', 'auto-start-reverse').append('path')
+      .attr('d', 'M0,-3.2L9,0L0,3.2L2.2,0Z').attr('fill', '#38bdf8');
+
+    defs.append('marker').attr('id', 'network-arrow-downstream')
+      .attr('viewBox', '0 -4 10 8').attr('refX', 9.2).attr('refY', 0)
+      .attr('markerUnits', 'userSpaceOnUse')
+      .attr('markerWidth', 10.5).attr('markerHeight', 10.5)
+      .attr('orient', 'auto-start-reverse').append('path')
+      .attr('d', 'M0,-3.2L9,0L0,3.2L2.2,0Z').attr('fill', '#50fa7b');
 
     // Dot grid background plate: pans and zooms with content for immersive spatial depth
     var gridRect = root.append('rect')
@@ -523,16 +751,20 @@
 
         text.style('display', show ? null : 'none');
         if (show) {
-          text.attr('x', r + 8).attr('y', 0);
+          text.attr('text-anchor', 'middle')
+            .attr('dominant-baseline', 'hanging')
+            .attr('x', 0)
+            .attr('y', r + 10);
           var p = project(node);
           var x = dimension === '2d' ? p.x * transform.k + transform.x : p.x;
           var y = dimension === '2d' ? p.y * transform.k + transform.y : p.y;
           var labelLen = shortName(node.name).length;
+          var labelW = labelLen * 11 * (dimension === '2d' ? transform.k : 1);
           nodeLabelBoxes.push({
-            x: x + (r + 8) * (dimension === '2d' ? transform.k : 1),
-            y: y - 8 * (dimension === '2d' ? transform.k : 1),
-            width: labelLen * 11 * (dimension === '2d' ? transform.k : 1),
-            height: 16 * (dimension === '2d' ? transform.k : 1)
+            x: x - labelW / 2,
+            y: y + (r + 10) * (dimension === '2d' ? transform.k : 1),
+            width: labelW,
+            height: 18 * (dimension === '2d' ? transform.k : 1)
           });
         }
       });
@@ -580,12 +812,23 @@
       }
       return 'cross';
     }
+    function getEdgeMarker(edge, isHighlight, lineage) {
+      if (isHighlight) return 'url(#network-arrow-selected)';
+      if (lineage && lineage.upstreamEdges && lineage.upstreamEdges.has(edge.id)) return 'url(#network-arrow-upstream)';
+      if (lineage && lineage.downstreamEdges && lineage.downstreamEdges.has(edge.id)) return 'url(#network-arrow-downstream)';
+      var tier = edge.tier || edgeTier(edge);
+      if (tier === 'trunk') return 'url(#network-arrow-trunk)';
+      if (tier === 'cross') return 'url(#network-arrow-cross)';
+      if (tier === 'branch') return 'url(#network-arrow-branch)';
+      return 'url(#network-arrow)';
+    }
     function applyEdgeFocus() {
       if (!edgeSelection) return;
       var activeNodeId = hoveredNodeId || selectedNodeId;
       var activeEdgeId = selectedEdgeId || hoveredEdgeId;
       var focus = activeEdgeId || activeNodeId;
       var adjacent = getAdjacentMap();
+      var lineageData = (layouts.lineage && activeNodeId) ? layouts.lineage(activeNodeId, activeLinks) : null;
 
       var nodeDistances = new Map();
       if (activeEdgeId) {
@@ -633,6 +876,8 @@
       edgeSelection
         .classed('is-selected', function (edge) { return edge.id === selectedEdgeId; })
         .classed('is-hovered', function (edge) { return edge.id === hoveredEdgeId; })
+        .classed('is-upstream', function (edge) { return !!(lineageData && lineageData.upstreamEdges.has(edge.id)); })
+        .classed('is-downstream', function (edge) { return !!(lineageData && lineageData.downstreamEdges.has(edge.id)); })
         .classed('is-incident', function (edge) {
           return !activeEdgeId && !!activeNodeId && getEdgeHop(edge) === 1;
         })
@@ -654,31 +899,32 @@
         .classed('is-flowing', function (edge) {
           if (!focus) return false;
           return edge.id === selectedEdgeId || edge.id === hoveredEdgeId ||
-            (!!activeNodeId && getEdgeHop(edge) === 1);
+            (!!activeNodeId && (getEdgeHop(edge) === 1 || (lineageData && (lineageData.upstreamEdges.has(edge.id) || lineageData.downstreamEdges.has(edge.id)))));
         })
         .classed('is-muted', function (edge) {
           if (!focus) return false;
           if (edge.id === selectedEdgeId || edge.id === hoveredEdgeId) return false;
+          if (lineageData && (lineageData.upstreamEdges.has(edge.id) || lineageData.downstreamEdges.has(edge.id))) return false;
           var hop = getEdgeHop(edge);
           return hop > focusDepth || !Number.isFinite(hop);
         });
       edgeSelection.select('.graph-network-edge-line')
         .attr('marker-end', function (edge) {
           if (!edgeMath.flow(edge).atEnd) return null;
-          return (edge.id === selectedEdgeId || edge.id === hoveredEdgeId)
-            ? 'url(#network-arrow-selected)'
-            : 'url(#network-arrow)';
+          var isHighlight = edge.id === selectedEdgeId || edge.id === hoveredEdgeId;
+          return getEdgeMarker(edge, isHighlight, lineageData);
         })
         .attr('marker-start', function (edge) {
           if (!edgeMath.flow(edge).atStart) return null;
-          return (edge.id === selectedEdgeId || edge.id === hoveredEdgeId)
-            ? 'url(#network-arrow-selected)'
-            : 'url(#network-arrow)';
+          var isHighlight = edge.id === selectedEdgeId || edge.id === hoveredEdgeId;
+          return getEdgeMarker(edge, isHighlight, lineageData);
         });
       if (nodeSelection) {
         nodeSelection
           .classed('is-selected', function (node) { return node.id === selectedNodeId; })
           .classed('is-hovered', function (node) { return node.id === hoveredNodeId; })
+          .classed('is-upstream-node', function (node) { return !!(lineageData && lineageData.upstreamNodes.has(node.id) && node.id !== activeNodeId); })
+          .classed('is-downstream-node', function (node) { return !!(lineageData && lineageData.downstreamNodes.has(node.id) && node.id !== activeNodeId); })
           .classed('is-endpoint', function (node) {
             if (!activeEdgeId) return false;
             var edge = graph.links.find(function (e) { return e.id === activeEdgeId; });
@@ -702,6 +948,7 @@
           .classed('is-context', function (node) {
             if (!focus) return false;
             if (node.id === activeNodeId) return false;
+            if (lineageData && (lineageData.upstreamNodes.has(node.id) || lineageData.downstreamNodes.has(node.id))) return false;
             if (activeEdgeId) {
               var edge = graph.links.find(function (e) { return e.id === activeEdgeId; });
               if (edge && (edgeSource(edge) === node.id || edgeTarget(edge) === node.id)) return false;
@@ -757,9 +1004,19 @@
         var isConnectedToFocus = activeNode && (edgeSource(edge) === activeNode || edgeTarget(edge) === activeNode);
         var isCustomSemantic = edge.type && edge.type !== '显式链接' && edge.type !== 'related';
 
-        // Auto edge label display: default only show high-value semantic relationships;
-        // Show all edge types when hovering/selecting the edge or incident node
-        if (!isFocusedEdge && !isConnectedToFocus && !isCustomSemantic) {
+        // Auto edge label display: respect presentation.edgeLabelDisplay: auto, always, hover, none
+        var labelPolicy = presentation.edgeLabelDisplay || 'auto';
+        if (labelPolicy === 'none') {
+          label.style('display', 'none');
+          badge.style('display', 'none');
+          return;
+        }
+        if (labelPolicy === 'hover' && !isFocusedEdge && !isConnectedToFocus) {
+          label.style('display', 'none');
+          badge.style('display', 'none');
+          return;
+        }
+        if (labelPolicy === 'auto' && !isFocusedEdge && !isConnectedToFocus && !isCustomSemantic) {
           label.style('display', 'none');
           badge.style('display', 'none');
           return;
@@ -810,7 +1067,7 @@
           y: transform.applyY(projection.y)} : projection);
         radii.set(node.id, radius(node) * scale);
       });
-      edgeRoutes = edgeMath.routes(activeNodes, activeLinks, points, radii, edgeRoutes, layoutMode);
+      edgeRoutes = edgeMath.routes(activeNodes, activeLinks, points, radii, edgeRoutes, layoutMode, presentation.routingMode);
       edgeSelection.selectAll('path').attr('d', function (edge) {
         var route = edgeRoutes.get(edge.id); return route ? route.path : null;
       });
@@ -835,8 +1092,13 @@
       }
       var ids = new Set(activeNodes.map(function (node) { return node.id; }));
       activeLinks = graph.links.filter(function (edge) {
-        return ids.has(edgeSource(edge)) && ids.has(edgeTarget(edge)) &&
-          (relation === '*' || relation === edge.type);
+        if (!ids.has(edgeSource(edge)) || !ids.has(edgeTarget(edge))) return false;
+        if (relation !== '*' && relation !== edge.type) return false;
+        var tier = edgeTier(edge);
+        if (presentation.showTrunk === false && tier === 'trunk') return false;
+        if (presentation.showBranch === false && tier === 'branch') return false;
+        if (presentation.showCross === false && tier === 'cross') return false;
+        return true;
       }).map(function (edge) { return Object.assign({}, edge); });
       svg.attr('viewBox', '0 0 ' + w + ' ' + h)
         .attr('preserveAspectRatio', 'none');
@@ -846,6 +1108,7 @@
           var item = enter.append('g').attr('class', 'graph-network-edge').attr('role', 'button').attr('tabindex', 0);
           item.append('path').attr('class', 'graph-network-edge-casing');
           item.append('path').attr('class', 'graph-network-edge-line');
+          item.append('path').attr('class', 'graph-network-edge-particle');
           item.append('path').attr('class', 'graph-network-edge-hit');
           item.append('rect').attr('class', 'graph-network-edge-badge')
             .attr('rx', 4).attr('ry', 4);
@@ -856,28 +1119,31 @@
         .classed('is-trunk', function (edge) { return (edge.tier = edgeTier(edge)) === 'trunk'; })
         .classed('is-branch', function (edge) { return (edge.tier = edgeTier(edge)) === 'branch'; })
         .classed('is-leaf', function (edge) { return (edge.tier = edgeTier(edge)) === 'leaf'; })
-        .classed('is-cross', function (edge) { return (edge.tier = edgeTier(edge)) === 'cross'; });
+        .classed('is-cross', function (edge) { return (edge.tier = edgeTier(edge)) === 'cross'; })
+        .classed('is-bidirectional', function (edge) { return edge.direction === 'both'; });
       edgeSelection.select('.graph-network-edge-line')
         .style('--graph-edge-width', function (edge) {
           var tier = edge.tier || edgeTier(edge);
-          var base = tier === 'trunk' ? 2.6 : tier === 'branch' ? 1.8 : tier === 'leaf' ? 1.2 : 1.4;
+          var base = tier === 'trunk' ? 3.0 : tier === 'branch' ? 1.9 : tier === 'leaf' ? 1.2 : 1.4;
           var weightMod = .4 * (Math.sqrt(Math.max(.2, edge.weight || 1)) - 1);
-          return Math.max(1.0, Math.min(3.6, base + weightMod)) + 'px';
+          return Math.max(1.0, Math.min(3.8, base + weightMod)) + 'px';
         })
         .attr('stroke-dasharray', function (edge) {
-          return edge.style === 'dashed' ? '7 5' : edge.style === 'dotted' ? '2 5' : null;
+          var tier = edge.tier || edgeTier(edge);
+          if (edge.style === 'dashed' || tier === 'cross') return '6 4';
+          if (edge.style === 'dotted') return '2 5';
+          if (edge.direction === 'both') return '8 3';
+          return null;
         })
         .attr('marker-end', function (edge) {
           if (!edgeMath.flow(edge).atEnd) return null;
-          return (edge.id === selectedEdgeId || edge.id === hoveredEdgeId)
-            ? 'url(#network-arrow-selected)'
-            : 'url(#network-arrow)';
+          var isHighlight = edge.id === selectedEdgeId || edge.id === hoveredEdgeId;
+          return getEdgeMarker(edge, isHighlight, null);
         })
         .attr('marker-start', function (edge) {
           if (!edgeMath.flow(edge).atStart) return null;
-          return (edge.id === selectedEdgeId || edge.id === hoveredEdgeId)
-            ? 'url(#network-arrow-selected)'
-            : 'url(#network-arrow)';
+          var isHighlight = edge.id === selectedEdgeId || edge.id === hoveredEdgeId;
+          return getEdgeMarker(edge, isHighlight, null);
         });
       edgeSelection.select('.graph-network-edge-label').text(function (edge) { return edge.label || edge.type; });
       edgeSelection.attr('aria-label', function (edge) {
@@ -899,9 +1165,9 @@
           var toNode = nodeById(flow.to) || { name: flow.to };
           var arrowSymbol = edge.direction === 'both' ? ' ⇄ ' : edge.direction === 'reverse' ? ' ⬅ ' : ' ➔ ';
           if (tTitle) tTitle.textContent = fromNode.name + arrowSymbol + toNode.name;
-          var tierNames = { trunk: '主干 (Trunk)', branch: '分支 (Branch)', leaf: '叶缘 (Leaf)', cross: '跨支交叉 (Cross)' };
+          var tierNames = { trunk: '【主干衍生 (L0-L1)】', branch: '【次级分支】', leaf: '【叶缘末梢】', cross: '【跨支横向网状】' };
           var tierName = tierNames[edge.tier || edgeTier(edge)] || (edge.tier || edgeTier(edge));
-          var weightStr = edge.weight != null ? ' (Weight: ' + edge.weight + ')' : '';
+          var weightStr = edge.weight != null ? ' (权重: ' + edge.weight + ')' : '';
           if (tMeta) tMeta.textContent = (edge.label || edge.type || '关联') + weightStr + ' · ' + tierName;
           var pos = (event && event.clientX != null) ? event : { clientX: 200, clientY: 200 };
           tt.style.left = Math.min(window.innerWidth - 260, Math.max(10, pos.clientX + 14)) + 'px';
@@ -927,23 +1193,92 @@
       nodeSelection = nodeLayer.selectAll('g.graph-network-node').data(activeNodes, function (node) { return node.id; })
         .join(function (enter) {
           var item = enter.append('g').attr('class', 'graph-network-node').attr('role', 'button').attr('tabindex', 0);
-          item.append('circle').attr('class', 'graph-node-hit-target').attr('r', 25);
+          item.append('circle').attr('class', 'graph-node-hit-target').attr('r', 32);
+          item.append('circle').attr('class', 'graph-node-root-halo');
+          item.append('circle').attr('class', 'graph-node-root-ring');
           item.append('circle').attr('class', 'graph-node-halo');
           item.append('circle').attr('class', 'graph-node-dot');
+          item.append('circle').attr('class', 'graph-node-sheen');
           item.append('circle').attr('class', 'graph-node-core');
+          var tierBadge = item.append('g').attr('class', 'graph-node-tier-badge');
+          tierBadge.append('rect').attr('class', 'graph-node-tier-pill');
+          tierBadge.append('text').attr('class', 'graph-node-tier-text');
+          var degreeBadge = item.append('g').attr('class', 'graph-node-degree-badge');
+          degreeBadge.append('circle').attr('class', 'graph-node-degree-circle');
+          degreeBadge.append('text').attr('class', 'graph-node-degree-text');
           item.append('text').attr('class', 'graph-node-title')
-            .attr('text-anchor', 'start')
-            .attr('dominant-baseline', 'central');
+            .attr('text-anchor', 'middle')
+            .attr('dominant-baseline', 'hanging');
           item.append('title');
           return item;
         });
-      nodeSelection.select('.graph-node-halo').attr('r', function (node) { return radius(node) + 6; });
+      nodeSelection
+        .classed('is-root-node', isNodeRoot)
+        .classed('is-branch-node', function (node) { return !isNodeRoot(node) && node.depth === 1; })
+        .classed('is-leaf-node', function (node) { return !isNodeRoot(node) && (node.depth == null || node.depth > 1) && (node.degree || 0) > 0; })
+        .classed('is-isolated-node', function (node) { return !isNodeRoot(node) && (node.degree || 0) === 0; });
+      nodeSelection.select('.graph-node-root-halo')
+        .attr('r', function (node) { return isNodeRoot(node) ? radius(node) + 11 : 0; })
+        .style('display', function (node) { return isNodeRoot(node) ? null : 'none'; });
+      nodeSelection.select('.graph-node-root-ring')
+        .attr('r', function (node) { return isNodeRoot(node) ? radius(node) + 5.5 : 0; })
+        .style('display', function (node) { return isNodeRoot(node) ? null : 'none'; });
+      nodeSelection.select('.graph-node-halo').attr('r', function (node) { return radius(node) + 5.5; });
       nodeSelection.select('.graph-node-dot').attr('r', radius)
         .style('--graph-node-color', color);
-      nodeSelection.select('.graph-node-core').attr('r', function (node) { return Math.max(3, radius(node) * 0.42); });
+      nodeSelection.select('.graph-node-sheen')
+        .attr('r', function (node) { return isNodeRoot(node) ? Math.max(0, radius(node) - 1.5) : 0; })
+        .attr('fill', 'url(#network-radial-root)')
+        .style('display', function (node) { return isNodeRoot(node) ? null : 'none'; })
+        .attr('pointer-events', 'none');
+      nodeSelection.select('.graph-node-core').attr('r', function (node) {
+        if ((node.degree || 0) === 0 && !isNodeRoot(node)) return 0;
+        return isNodeRoot(node) ? Math.max(5.5, radius(node) * 0.44) : Math.max(3.2, radius(node) * 0.38);
+      });
+      nodeSelection.select('.graph-node-tier-badge')
+        .attr('transform', function (node) {
+          var r = radius(node);
+          return 'translate(' + (-r * 0.76 - 15) + ', ' + (-r * 0.76 - 10) + ')';
+        })
+        .style('display', function (node) {
+          if (presentation.showTierBadges === false) return 'none';
+          return (isNodeRoot(node) || node.depth === 1 || (node.depth === 2 && (node.degree || 0) > 1)) ? null : 'none';
+        });
+      nodeSelection.select('.graph-node-tier-pill')
+        .attr('width', 22).attr('height', 13).attr('rx', 3.5).attr('ry', 3.5);
+      nodeSelection.select('.graph-node-tier-text')
+        .attr('x', 11).attr('y', 7.5)
+        .text(function (node) {
+          if (isNodeRoot(node)) return 'L0';
+          if (node.depth === 1) return 'L1';
+          if (node.depth === 2) return 'L2';
+          return 'L' + (node.depth || 1);
+        });
+      nodeSelection.select('.graph-node-degree-badge')
+        .attr('transform', function (node) {
+          var r = radius(node);
+          var deg = node.degree || 0;
+          var xOff = deg >= 100 ? 3.5 : (deg >= 10 ? 2 : 0);
+          return 'translate(' + (r * 0.72 + xOff) + ', ' + (-r * 0.72 - (deg >= 10 ? 1 : 0)) + ')';
+        })
+        .style('display', function (node) {
+          return (node.degree != null && node.degree >= 2) ? null : 'none';
+        });
+      nodeSelection.select('.graph-node-degree-circle')
+        .attr('r', function (node) {
+          var deg = node.degree || 0;
+          return deg >= 100 ? 10.5 : (deg >= 10 ? 8.2 : 6.5);
+        });
+      nodeSelection.select('.graph-node-degree-text')
+        .attr('x', 0).attr('y', 0.5)
+        .attr('text-anchor', 'middle')
+        .attr('dominant-baseline', 'central')
+        .text(function (node) { return node.degree || ''; });
       nodeSelection.select('.graph-node-title')
-        .attr('x', function (node) { return radius(node) + 8; })
-        .attr('y', 0)
+        .attr('text-anchor', 'middle')
+        .attr('dominant-baseline', 'hanging')
+        .attr('x', 0)
+        .attr('y', function (node) { return radius(node) + (isNodeRoot(node) ? 12 : 10); })
         .text(function (node) { return shortName(node.name); });
       nodeSelection.select('title').text(function (node) { return node.name; });
       nodeSelection.attr('aria-label', function (node) { return node.name + '，' + node.degree + ' 条关系'; })
@@ -968,7 +1303,12 @@
           if (!tt) return;
           var tTitle = document.getElementById('tt-title');
           var tMeta = document.getElementById('tt-meta');
-          if (tTitle) tTitle.textContent = node.name;
+          var tierLabel = isNodeRoot(node)
+            ? '【L0 根节点/核心枢纽】'
+            : ((node.degree || 0) === 0
+              ? '【待连接/外围节点】'
+              : (node.depth === 1 ? '【L1 一级分支节点】' : '【L2+ 次级子节点】'));
+          if (tTitle) tTitle.textContent = tierLabel + ' ' + node.name;
           if (tMeta) tMeta.textContent = (node.group || '未分类') + ' · ' + (node.degree || 0) + ' 条关系' +
             (node.tags && node.tags.length ? ' · #' + node.tags.join(' #') : '');
           tt.style.left = Math.min(window.innerWidth - 260, Math.max(10, event.clientX + 14)) + 'px';
@@ -1009,19 +1349,19 @@
           if (simulation && !event.active) simulation.alphaTarget(0);
           rememberPositions();
         }));
-      if (layoutMode === 'force') {
+      if (layoutMode === 'force' || layoutMode === 'organic') {
         simulation = d3.forceSimulation(activeNodes).stop()
         .force('link', d3.forceLink(activeLinks).id(function (node) { return node.id; })
-          .distance(function (edge) { return 185 * layoutOptions.spacing / Math.sqrt(Math.max(.2, edge.weight || 1)); })
-          .strength(.36))
-        .force('charge', d3.forceManyBody().strength(-220 * layoutOptions.spacing))
-        .force('collide', d3.forceCollide().radius(function (node) { return radius(node) + 42; }).iterations(3))
-        .force('x', d3.forceX(function (node) { return node.cx; }).strength(.055))
-        .force('y', d3.forceY(function (node) { return node.cy; }).strength(.055))
-        .alphaDecay(.035).on('tick', tick).on('end', function () {
+          .distance(function (edge) { return 240 * layoutOptions.spacing / Math.sqrt(Math.max(.2, edge.weight || 1)); })
+          .strength(.32))
+        .force('charge', d3.forceManyBody().strength(-480 * layoutOptions.spacing))
+        .force('collide', d3.forceCollide().radius(function (node) { return radius(node) + 60; }).iterations(3))
+        .force('x', d3.forceX(function (node) { return node.cx; }).strength(.028))
+        .force('y', d3.forceY(function (node) { return node.cy; }).strength(.028))
+        .alphaDecay(.028).on('tick', tick).on('end', function () {
           if (autoFitPending) { autoFitPending = false; fit(); }
         });
-        if (!frozen) { simulation.tick(100); simulation.alpha(.08).restart(); }
+        if (!frozen) { simulation.tick(120); simulation.alpha(.08).restart(); }
       }
       else {
         simulation = null;
@@ -1114,9 +1454,44 @@
         triageList.appendChild(emptyMsg);
       } else {
         isolatedList.forEach(function (node) {
-          var item = document.createElement('button'); item.type = 'button'; item.textContent = node.name;
-          item.addEventListener('click', function () { showIsolated = true; setView('relations'); showNode(node); });
-          triageList.appendChild(item);
+          var card = document.createElement('article');
+          card.className = 'graph-isolated-card';
+          var head = document.createElement('div');
+          head.className = 'graph-isolated-card-head';
+          var titleBtn = document.createElement('button');
+          titleBtn.type = 'button';
+          titleBtn.className = 'graph-isolated-card-title';
+          titleBtn.textContent = node.name;
+          titleBtn.addEventListener('click', function () { showIsolated = true; setView('relations'); showNode(node); });
+          head.appendChild(titleBtn);
+          if (node.group) {
+            var tag = document.createElement('span');
+            tag.className = 'graph-isolated-card-badge';
+            tag.textContent = node.group;
+            head.appendChild(tag);
+          }
+          card.appendChild(head);
+          var desc = document.createElement('p');
+          desc.className = 'graph-isolated-card-desc';
+          desc.textContent = node.description || '未建立直接关系的孤立笔记。建议审阅内容并建立双向知识连线。';
+          card.appendChild(desc);
+          var actions = document.createElement('div');
+          actions.className = 'graph-isolated-card-actions';
+          var locateBtn = document.createElement('button');
+          locateBtn.type = 'button';
+          locateBtn.className = 'graph-isolated-btn-locate';
+          locateBtn.textContent = '在图谱中定位';
+          locateBtn.addEventListener('click', function () { showIsolated = true; setView('relations'); showNode(node); });
+          actions.appendChild(locateBtn);
+          if (node.url) {
+            var openLink = document.createElement('a');
+            openLink.className = 'graph-isolated-btn-open';
+            openLink.href = node.url;
+            openLink.textContent = '打开笔记 →';
+            actions.appendChild(openLink);
+          }
+          card.appendChild(actions);
+          triageList.appendChild(card);
         });
       }
       document.getElementById('graph-isolated-count').textContent = isolatedList.length;
@@ -1164,19 +1539,63 @@
        ['下游', graph.links.filter(function (edge) { return edgeMath.outgoing(edge, node.id); })]].forEach(function (group) {
         var section = document.createElement('section'), heading = document.createElement('h4');
         heading.textContent = group[0] + ' · ' + group[1].length; section.appendChild(heading);
-        group[1].forEach(function (edge) {
-          var other = nodeById(edgeSource(edge) === node.id ? edgeTarget(edge) : edgeSource(edge));
-          var row = document.createElement('button'); row.type = 'button';
-          row.textContent = (other ? other.name : '') + ' · ' + (edge.label || edge.type);
-          row.addEventListener('click', function () { showEdge(edge); });
-          section.appendChild(row);
-        });
+        if (!group[1].length) {
+          var emptyNeighbour = document.createElement('p');
+          emptyNeighbour.className = 'graph-neighbour-empty';
+          emptyNeighbour.textContent = '暂无' + group[0] + '直接关系';
+          section.appendChild(emptyNeighbour);
+        } else {
+          group[1].forEach(function (edge) {
+            var isOutgoing = edgeSource(edge) === node.id;
+            var other = nodeById(isOutgoing ? edgeTarget(edge) : edgeSource(edge));
+            if (!other) return;
+            var row = document.createElement('div');
+            row.className = 'graph-neighbour-item';
+            var nameBtn = document.createElement('button');
+            nameBtn.type = 'button';
+            nameBtn.className = 'graph-neighbour-target';
+            nameBtn.innerHTML = '<span class="graph-neighbour-dir">' + (isOutgoing ? '→' : '←') + '</span> ' +
+                                '<span class="graph-neighbour-name">' + other.name + '</span>';
+            nameBtn.title = '聚焦笔记：' + other.name;
+            nameBtn.addEventListener('click', function () { showNode(other); });
+            var edgeBadge = document.createElement('button');
+            edgeBadge.type = 'button';
+            edgeBadge.className = 'graph-neighbour-badge';
+            edgeBadge.textContent = edge.label || edge.type || '关联';
+            edgeBadge.title = '查看连线详情';
+            edgeBadge.addEventListener('click', function () { showEdge(edge); });
+            row.appendChild(nameBtn);
+            row.appendChild(edgeBadge);
+            section.appendChild(row);
+          });
+        }
         neighbours.appendChild(section);
       });
-      var add = document.createElement('button'); add.type = 'button'; add.textContent = '新增关系';
+      var add = document.createElement('button'); add.type = 'button'; add.className = 'graph-neighbour-add-btn'; add.textContent = '+ 新增关系';
       add.addEventListener('click', function () { showEdge(null, node.id); });
       neighbours.appendChild(add);
       render();
+      if (node && dimension === '2d' && typeof zoom !== 'undefined' && zoom) {
+        var tr = d3.zoomTransform(svg.node());
+        var currentX = tr.applyX(node.x);
+        var currentY = tr.applyY(node.y);
+        var cw = canvas.clientWidth || 900;
+        var ch = canvas.clientHeight || 700;
+        if (currentX < 80 || currentX > cw - 80 || currentY < 80 || currentY > ch - 80) {
+          var targetX = cw / 2 - node.x * tr.k;
+          var targetY = ch / 2 - node.y * tr.k;
+          svg.transition().duration(320).call(zoom.transform, d3.zoomIdentity.translate(targetX, targetY).scale(tr.k));
+        }
+      } else if (node && dimension === '3d') {
+        var proj = project(node);
+        var cw3 = canvas.clientWidth || 900;
+        var ch3 = canvas.clientHeight || 700;
+        if (proj.x < 100 || proj.x > cw3 - 100 || proj.y < 100 || proj.y > ch3 - 100) {
+          camera.centerX = (camera.centerX + node.x) / 2;
+          camera.centerY = (camera.centerY + node.y) / 2;
+          tick();
+        }
+      }
       if (pushHistory !== false) writeUrl(true);
     }
     function showEdge(edge, newOwner) {
@@ -1188,7 +1607,19 @@
       edgeEditor.textContent = '';
       var title = document.createElement('h2'); title.textContent = edge ? '关系详情' : '新增关系';
       var form = document.createElement('form');
-      function field(label, element) { var wrapper = document.createElement('label'); wrapper.textContent = label; wrapper.appendChild(element); form.appendChild(wrapper); return element; }
+      function field(label, element, name, id) {
+        var wrapper = document.createElement('label');
+        wrapper.textContent = label;
+        if (id) {
+          wrapper.htmlFor = id;
+          element.id = id;
+        }
+        if (name) element.name = name;
+        element.setAttribute('aria-label', label);
+        wrapper.appendChild(element);
+        form.appendChild(wrapper);
+        return element;
+      }
       var sourceText = document.createElement('p'); sourceText.textContent = '来源：' + ((nodeById(owner) || {}).name || owner);
       form.appendChild(sourceText);
       var targetSelect = document.createElement('select');
@@ -1198,24 +1629,24 @@
       });
       targetSelect.value = target || (targetSelect.options[0] && targetSelect.options[0].value);
       if (edge) targetSelect.disabled = true;
-      field('目标笔记', targetSelect);
-      var typeInput = field('关系类型', document.createElement('input'));
+      field('目标笔记', targetSelect, 'edge_target', 'graph-edge-target');
+      var typeInput = field('关系类型', document.createElement('input'), 'edge_type', 'graph-edge-type');
       typeInput.required = true; typeInput.maxLength = 48; typeInput.value = edge ? edge.type : '相关';
-      var labelInput = field('关系标签', document.createElement('input'));
+      var labelInput = field('关系标签', document.createElement('input'), 'edge_label', 'graph-edge-label');
       labelInput.required = true; labelInput.maxLength = 96; labelInput.value = edge ? edge.label : '相关';
       var directionSelect = document.createElement('select');
       [['forward', '来源 → 目标'], ['reverse', '目标 → 来源'], ['both', '双向']].forEach(function (item) {
         var option = document.createElement('option'); option.value = item[0]; option.textContent = item[1]; directionSelect.appendChild(option);
       });
-      directionSelect.value = edge ? edge.direction : 'forward'; field('方向', directionSelect);
-      var weightInput = field('权重（0.2–5）', document.createElement('input'));
+      directionSelect.value = edge ? edge.direction : 'forward'; field('方向', directionSelect, 'edge_direction', 'graph-edge-direction');
+      var weightInput = field('权重（0.2–5）', document.createElement('input'), 'edge_weight', 'graph-edge-weight');
       weightInput.type = 'number'; weightInput.min = '.2'; weightInput.max = '5'; weightInput.step = '.1';
       weightInput.value = edge ? edge.weight : 1;
       var styleSelect = document.createElement('select');
       [['solid', '实线'], ['dashed', '虚线'], ['dotted', '点线']].forEach(function (item) {
         var option = document.createElement('option'); option.value = item[0]; option.textContent = item[1]; styleSelect.appendChild(option);
       });
-      styleSelect.value = edge ? edge.style : 'solid'; field('线条', styleSelect);
+      styleSelect.value = edge ? edge.style : 'solid'; field('线条', styleSelect, 'edge_style', 'graph-edge-style');
       var message = document.createElement('p'); message.className = 'graph-edge-message'; message.setAttribute('role', 'status');
       var actions = document.createElement('div'); actions.className = 'graph-edge-actions';
       var close = document.createElement('button'); close.type = 'button'; close.textContent = '返回图谱';
