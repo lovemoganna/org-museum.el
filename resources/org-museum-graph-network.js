@@ -318,18 +318,43 @@
     var root = svg.append('g');
     var nodeLayer = root.append('g').attr('class', 'graph-nodes');
     var defs = svg.append('defs');
+
+    // 1. DuckDB Editor Dot Grid Pattern for subtle technical texture
+    defs.append('pattern')
+      .attr('id', 'museum-dot-grid')
+      .attr('width', 24)
+      .attr('height', 24)
+      .attr('patternUnits', 'userSpaceOnUse')
+      .append('circle')
+      .attr('cx', 12)
+      .attr('cy', 12)
+      .attr('r', 1.15)
+      .attr('class', 'graph-grid-dot');
+
+    // 2. High-precision feathered arrow markers from DuckDB Editor
     defs.append('marker').attr('id', 'network-arrow')
-      .attr('viewBox', '0 -4 10 8').attr('refX', 9).attr('refY', 0)
+      .attr('viewBox', '0 -4 10 8').attr('refX', 9.2).attr('refY', 0)
       .attr('markerUnits', 'userSpaceOnUse')
       .attr('markerWidth', 9.5).attr('markerHeight', 9.5)
       .attr('orient', 'auto-start-reverse').append('path')
-      .attr('d', 'M0,-3.5L9,0L0,3.5L2.2,0Z').attr('fill', 'currentColor');
+      .attr('d', 'M0,-3.2L9,0L0,3.2L2.4,0Z').attr('fill', 'currentColor');
+
     defs.append('marker').attr('id', 'network-arrow-selected')
-      .attr('viewBox', '0 -4 10 8').attr('refX', 9.2).attr('refY', 0)
+      .attr('viewBox', '0 -4 10 8').attr('refX', 9.5).attr('refY', 0)
       .attr('markerUnits', 'userSpaceOnUse')
       .attr('markerWidth', 11.5).attr('markerHeight', 11.5)
       .attr('orient', 'auto-start-reverse').append('path')
-      .attr('d', 'M0,-3.5L9,0L0,3.5L2.2,0Z').attr('fill', 'currentColor');
+      .attr('d', 'M0,-3.4L9,0L0,3.4L2.4,0Z').attr('fill', 'currentColor');
+
+    // Dot grid background plate: pans and zooms with content for immersive spatial depth
+    var gridRect = root.append('rect')
+      .attr('class', 'graph-canvas-grid')
+      .attr('x', -20000)
+      .attr('y', -20000)
+      .attr('width', 40000)
+      .attr('height', 40000)
+      .attr('fill', 'url(#museum-dot-grid)')
+      .attr('pointer-events', 'none');
 
     function updateZoomButtons() {
       var inBtn = document.getElementById('btn-zoom-in');
@@ -610,10 +635,15 @@
         return priority(a) - priority(b) || a.id.localeCompare(b.id);
       });
       ranked.forEach(function (edge) {
-        var label = edgeSelection.filter(function (candidate) { return candidate.id === edge.id; })
-          .select('.graph-network-edge-label');
+        var group = edgeSelection.filter(function (candidate) { return candidate.id === edge.id; });
+        var label = group.select('.graph-network-edge-label');
+        var badge = group.select('.graph-network-edge-badge');
         var element = label.node(), route = edgeRoutes.get(edge.id);
-        if (!element || !route) { label.style('display', 'none'); return; }
+        if (!element || !route) {
+          label.style('display', 'none');
+          badge.style('display', 'none');
+          return;
+        }
 
         var isFocusedEdge = edge.id === selectedEdgeId || edge.id === hoveredEdgeId;
         var activeNode = hoveredNodeId || selectedNodeId;
@@ -624,14 +654,16 @@
         // Show all edge types when hovering/selecting the edge or incident node
         if (!isFocusedEdge && !isConnectedToFocus && !isCustomSemantic) {
           label.style('display', 'none');
+          badge.style('display', 'none');
           return;
         }
 
         label.style('display', null);
         var textWidth = element.getComputedTextLength ? element.getComputedTextLength() : (edge.label || edge.type || '').length * 10;
-        var boxWidth = textWidth + 8, boxHeight = 17;
+        var boxWidth = Math.max(24, textWidth + 12);
+        var boxHeight = 18;
         var chosen = edgeMath.labelCandidates(route).find(function (candidate) {
-          var box = {x: candidate.x - boxWidth / 2, y: candidate.y - 12,
+          var box = {x: candidate.x - boxWidth / 2, y: candidate.y - boxHeight / 2,
             width: boxWidth, height: boxHeight};
           if (box.x < 3 || box.y < 3 || box.x + box.width > width - 3 || box.y + box.height > height - 3) return false;
           if (nodeBoxes.some(function (other) { return intersects(box, other, 3); })) return false;
@@ -648,9 +680,17 @@
         });
         if (chosen) {
           label.attr('x', chosen.x).attr('y', chosen.y).style('display', null);
-          accepted.push({x: chosen.x - boxWidth / 2, y: chosen.y - 12,
+          badge.attr('x', chosen.x - boxWidth / 2)
+            .attr('y', chosen.y - boxHeight / 2)
+            .attr('width', boxWidth)
+            .attr('height', boxHeight)
+            .style('display', null);
+          accepted.push({x: chosen.x - boxWidth / 2, y: chosen.y - boxHeight / 2,
             width: boxWidth, height: boxHeight});
-        } else label.style('display', 'none');
+        } else {
+          label.style('display', 'none');
+          badge.style('display', 'none');
+        }
       });
     }
     function drawEdges() {
@@ -699,6 +739,8 @@
           var item = enter.append('g').attr('class', 'graph-network-edge').attr('role', 'button').attr('tabindex', 0);
           item.append('path').attr('class', 'graph-network-edge-line');
           item.append('path').attr('class', 'graph-network-edge-hit');
+          item.append('rect').attr('class', 'graph-network-edge-badge')
+            .attr('rx', 4).attr('ry', 4);
           item.append('text').attr('class', 'graph-network-edge-label');
           return item;
         });
@@ -739,6 +781,7 @@
           item.append('circle').attr('class', 'graph-node-hit-target').attr('r', 25);
           item.append('circle').attr('class', 'graph-node-halo');
           item.append('circle').attr('class', 'graph-node-dot');
+          item.append('circle').attr('class', 'graph-node-core');
           item.append('text').attr('class', 'graph-node-title')
             .attr('text-anchor', 'start')
             .attr('dominant-baseline', 'central');
@@ -748,6 +791,7 @@
       nodeSelection.select('.graph-node-halo').attr('r', function (node) { return radius(node) + 6; });
       nodeSelection.select('.graph-node-dot').attr('r', radius)
         .style('--graph-node-color', color);
+      nodeSelection.select('.graph-node-core').attr('r', function (node) { return Math.max(3, radius(node) * 0.42); });
       nodeSelection.select('.graph-node-title')
         .attr('x', function (node) { return radius(node) + 8; })
         .attr('y', 0)

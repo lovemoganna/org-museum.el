@@ -10040,10 +10040,23 @@ button.museum-entry-category[aria-pressed="true"] {
 .graph-canvas-catcher { pointer-events: all; cursor: grab; }
 .graph-page #graph-canvas:active .graph-canvas-catcher,
 .graph-page #graph-canvas svg:active .graph-canvas-catcher { cursor: grabbing; }
+
+/* 1. Dot Grid background pattern styling */
+.graph-grid-dot {
+  fill: var(--museum-border);
+  opacity: 0.38;
+  transition: fill 200ms ease, opacity 200ms ease;
+}
+[data-theme="dark"] .graph-grid-dot,
+:root:not([data-theme="light"]) .graph-grid-dot {
+  opacity: 0.22;
+}
+
+/* 2. Layered Node Styling with inner core & smooth halo */
 .graph-page.is-network-runtime .graph-network-node .graph-node-halo {
   fill: none;
   stroke: transparent;
-  stroke-width: 2px;
+  stroke-width: 3px;
   stroke-opacity: 0;
   transition: stroke 160ms ease, stroke-opacity 160ms ease, r 160ms ease;
   pointer-events: none;
@@ -10052,29 +10065,42 @@ button.museum-entry-category[aria-pressed="true"] {
 .graph-page.is-network-runtime .graph-network-node:hover .graph-node-halo,
 .graph-page.is-network-runtime .graph-network-node:focus-visible .graph-node-halo {
   stroke: var(--museum-accent) !important;
-  stroke-opacity: 0.65 !important;
+  stroke-opacity: 0.45 !important;
 }
 .graph-page.is-network-runtime .graph-network-node.is-selected .graph-node-halo {
   stroke: var(--museum-accent) !important;
-  stroke-opacity: 0.85 !important;
-  stroke-width: 2.5px !important;
+  stroke-opacity: 0.8 !important;
+  stroke-width: 4px !important;
 }
 .graph-page.is-network-runtime .graph-network-node .graph-node-dot {
   stroke: var(--museum-paper);
-  stroke-width: 2px;
+  stroke-width: 2.2px;
   fill: var(--graph-node-color, var(--museum-node-fill));
-  transition: stroke 160ms ease, stroke-width 160ms ease;
+  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.12));
+  transition: stroke 160ms ease, stroke-width 160ms ease, fill 160ms ease;
+}
+.graph-page.is-network-runtime .graph-network-node .graph-node-core {
+  fill: var(--museum-paper);
+  opacity: 0.85;
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+.graph-page.is-network-runtime .graph-network-node.is-hovered .graph-node-core,
+.graph-page.is-network-runtime .graph-network-node:hover .graph-node-core,
+.graph-page.is-network-runtime .graph-network-node.is-selected .graph-node-core {
+  opacity: 1;
 }
 .graph-page.is-network-runtime .graph-network-node.is-context { opacity: .22; }
 .graph-page.is-network-runtime .graph-node-title {
   fill: var(--museum-ink);
-  font: 500 11px/1.2 var(--font-ui);
+  font: 550 11px/1.2 var(--font-ui);
+  letter-spacing: 0.01em;
   paint-order: stroke;
   stroke: var(--museum-paper);
-  stroke-width: 4px;
+  stroke-width: 3.5px;
   stroke-linejoin: round;
   user-select: none;
-  transition: opacity 120ms ease;
+  transition: opacity 120ms ease, font-weight 120ms ease;
 }
 .graph-page.is-network-runtime .graph-network-node.is-selected .graph-node-title,
 .graph-page.is-network-runtime .graph-network-node.is-hovered .graph-node-title,
@@ -10083,16 +10109,18 @@ button.museum-entry-category[aria-pressed="true"] {
   opacity: 1;
 }
 .graph-page.is-network-runtime .graph-network-node.is-selected .graph-node-dot {
-  stroke: var(--museum-accent); stroke-width: 3.5px; filter: none;
+  stroke: var(--museum-accent); stroke-width: 3.5px;
 }
 .graph-page.is-network-runtime .graph-network-node.is-endpoint .graph-node-dot {
   stroke: var(--museum-accent); stroke-width: 3.5px;
 }
+
+/* 3. Edge Styling & Directional Links */
 .graph-page.is-network-runtime .graph-network-edge { cursor: pointer; }
 .graph-page.is-network-runtime .graph-network-edge:focus { outline: none; }
 .graph-page.is-network-runtime .graph-network-edge-line {
-  color: var(--museum-ink-muted);
-  fill: none; stroke: currentColor; stroke-opacity: .72;
+  color: var(--museum-border-strong, var(--museum-border));
+  fill: none; stroke: currentColor; stroke-opacity: .75;
   stroke-linecap: round; transition: stroke-opacity 120ms ease, stroke-width 120ms ease, color 120ms ease;
 }
 .graph-page.is-network-runtime .graph-links .graph-network-edge-line {
@@ -10108,16 +10136,41 @@ button.museum-entry-category[aria-pressed="true"] {
 .graph-page.is-network-runtime .graph-network-edge.is-incident .graph-network-edge-line {
   color: var(--museum-ink); stroke: currentColor; stroke-opacity: .95; stroke-width: calc(var(--graph-edge-width, 1.8px) + 0.5px);
 }
-.graph-page.is-network-runtime .graph-network-edge.is-muted .graph-network-edge-line { stroke-opacity: .13; }
-.graph-page.is-network-runtime .graph-network-edge.is-muted .graph-network-edge-label { opacity: .2; }
-.graph-page.is-network-runtime .graph-network-edge-hit { fill: none; stroke: transparent; stroke-width: 20px; pointer-events: stroke; }
+.graph-page.is-network-runtime .graph-network-edge.is-muted .graph-network-edge-line { stroke-opacity: .12; }
+.graph-page.is-network-runtime .graph-network-edge.is-muted .graph-network-edge-label,
+.graph-page.is-network-runtime .graph-network-edge.is-muted .graph-network-edge-badge { opacity: .18; }
+.graph-page.is-network-runtime .graph-network-edge-hit { fill: none; stroke: transparent; stroke-width: 22px; pointer-events: stroke; }
+
+/* 4. Capsule Badge Pills for Edge Relationships (from DuckDB Editor) */
+.graph-page.is-network-runtime .graph-network-edge-badge {
+  fill: var(--museum-paper);
+  stroke: var(--museum-border-soft);
+  stroke-width: 1px;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.08));
+  pointer-events: visiblePainted;
+  transition: fill 120ms ease, stroke 120ms ease, opacity 120ms ease;
+}
 .graph-page.is-network-runtime .graph-network-edge-label {
-  fill: var(--museum-ink); font: 600 10px/1 var(--font-ui); text-anchor: middle;
-  paint-order: stroke; stroke: var(--museum-paper); stroke-width: 4px; pointer-events: visiblePainted;
+  fill: var(--museum-ink-muted);
+  font: 600 10px/1 var(--font-ui);
+  text-anchor: middle;
+  dominant-baseline: central;
+  letter-spacing: 0.02em;
+  pointer-events: visiblePainted;
+  user-select: none;
+  transition: fill 120ms ease, opacity 120ms ease;
+}
+.graph-page.is-network-runtime .graph-network-edge.is-selected .graph-network-edge-badge,
+.graph-page.is-network-runtime .graph-network-edge.is-hovered .graph-network-edge-badge,
+.graph-page.is-network-runtime .graph-network-edge:hover .graph-network-edge-badge {
+  fill: color-mix(in srgb, var(--museum-accent) 12%, var(--museum-paper));
+  stroke: var(--museum-accent);
 }
 .graph-page.is-network-runtime .graph-network-edge.is-selected .graph-network-edge-label,
-.graph-page.is-network-runtime .graph-network-edge.is-hovered .graph-network-edge-label {
-  fill: var(--museum-accent); font-weight: 700;
+.graph-page.is-network-runtime .graph-network-edge.is-hovered .graph-network-edge-label,
+.graph-page.is-network-runtime .graph-network-edge:hover .graph-network-edge-label {
+  fill: var(--museum-accent);
+  font-weight: 700;
 }
 #network-arrow path,
 #network-arrow-selected path {
