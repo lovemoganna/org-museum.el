@@ -1,6 +1,32 @@
 /* Org Museum's live graph reads one Org-backed graph snapshot at a time. */
 (function () {
   'use strict';
+  function parseNodeTimestamp(value) {
+    if (!value) return NaN;
+    if (typeof value === 'number') return value > 1e11 ? value : value * 1000;
+    var number = Number(value);
+    if (Number.isFinite(number) && number > 0) return number > 1e11 ? number : number * 1000;
+    // Date-only metadata is a local calendar day, matching the other reading views.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return new Date(value + 'T00:00:00').getTime();
+    return Date.parse(value);
+  }
+
+  function recentNodeIds(nodes, days, now) {
+    var end = new Date(now == null ? Date.now() : now);
+    end.setHours(0, 0, 0, 0);
+    var start = new Date(end);
+    start.setDate(start.getDate() - days + 1);
+    end.setDate(end.getDate() + 1);
+    return new Set(nodes.filter(function (node) {
+      var timestamp = parseNodeTimestamp(node.created) || parseNodeTimestamp(node.modified);
+      return timestamp >= start.getTime() && timestamp < end.getTime();
+    }).map(function (node) { return node.id; }));
+  }
+
+  if (typeof window === 'undefined') {
+    if (typeof module !== 'undefined') module.exports = {recentNodeIds: recentNodeIds};
+    return;
+  }
   if (!window.d3 || !document.getElementById('graph-data')) return;
   var switchDimension = null;
   window.orgMuseumGraphNetwork = {
@@ -412,32 +438,13 @@
           return edge.type === relation && (edgeSource(edge) === node.id || edgeTarget(edge) === node.id);
         });
       });
-      function parseNodeTimestamp(val) {
-        if (!val) return NaN;
-        if (typeof val === 'number') return val > 1e11 ? val : val * 1000;
-        if (typeof val === 'string') {
-          var num = Number(val);
-          if (!isNaN(num) && num > 0) return num > 1e11 ? num : num * 1000;
-          var parsed = Date.parse(val.replace(/-/g, '/'));
-          return isNaN(parsed) ? Date.parse(val) : parsed;
-        }
-        return NaN;
-      }
       if (timeRange !== 'all') {
         var days = parseInt(timeRange, 10);
         if (!isNaN(days) && days > 0) {
-          var refMs = 0;
-          graph.nodes.forEach(function (n) {
-            var ms = parseNodeTimestamp(n.created) || parseNodeTimestamp(n.modified);
-            if (!isNaN(ms) && ms > refMs) refMs = ms;
-          });
-          var now = Date.now();
-          var anchorMs = Math.max(now, refMs);
-          var cutoff = anchorMs - (days - 1) * 86400000;
+          var recentIds = recentNodeIds(graph.nodes, days);
           filtered = filtered.filter(function (node) {
             if (node.id === selectedNodeId) return true;
-            var t = parseNodeTimestamp(node.created) || parseNodeTimestamp(node.modified);
-            return !isNaN(t) && t >= cutoff;
+            return recentIds.has(node.id);
           });
         }
       }

@@ -87,37 +87,31 @@ test('graph commandbar includes time filter contracts and CSS', () => {
   assert(datedNodes.length > 0, 'graph nodes contain created/modified dates');
 });
 
-test('graph time filter correctly partitions nodes by creation time window', () => {
-  function parseNodeTimestamp(val) {
-    if (!val) return NaN;
-    if (typeof val === 'number') return val > 1e11 ? val : val * 1000;
-    if (typeof val === 'string') {
-      var num = Number(val);
-      if (!isNaN(num) && num > 0) return num > 1e11 ? num : num * 1000;
-      var parsed = Date.parse(val.replace(/-/g, '/'));
-      return isNaN(parsed) ? Date.parse(val) : parsed;
-    }
-    return NaN;
-  }
-  const maxMs = Math.max(...graph.nodes.map(n => parseNodeTimestamp(n.created) || parseNodeTimestamp(n.modified) || 0));
-  const now = Date.now();
-  const anchorMs = Math.max(now, maxMs);
+const {recentNodeIds} = require('../resources/org-museum-graph-network.js');
 
-  function filterByDays(days) {
-    const cutoff = anchorMs - (days - 1) * 86400000;
-    return graph.nodes.filter(n => {
-      const t = parseNodeTimestamp(n.created) || parseNodeTimestamp(n.modified);
-      return !isNaN(t) && t >= cutoff;
-    });
-  }
+test('graph time filter partitions real notes with a pinned clock', () => {
+  const latest = Math.max(...graph.nodes.map(n => Number(n.created || n.modified) * 1000 || 0));
+  const anchor = new Date(latest);
+  anchor.setHours(12, 0, 0, 0);
+  const nodes7 = recentNodeIds(graph.nodes, 7, anchor);
+  const nodes30 = recentNodeIds(graph.nodes, 30, anchor);
+  const nodes90 = recentNodeIds(graph.nodes, 90, anchor);
+  assert(nodes7.size > 0, 'latest real notes appear in their calendar window');
+  for (const id of nodes7) assert(nodes30.has(id));
+  for (const id of nodes30) assert(nodes90.has(id));
+  assert(nodes90.size <= graph.nodes.length);
+});
 
-  const nodes7 = filterByDays(7);
-  const nodes30 = filterByDays(30);
-  const nodes90 = filterByDays(90);
-  const nodesAll = graph.nodes;
-
-  assert(nodes7.length > 0 && nodes7.length < nodesAll.length, '7 days filters a subset of notes');
-  assert(nodes7.length <= nodes30.length, '30 days includes 7 days notes');
-  assert(nodes30.length <= nodes90.length, '90 days includes 30 days notes');
-  assert(nodes90.length <= nodesAll.length, 'All notes includes 90 days notes');
+test('recent dates include the whole first day and exclude future or invalid dates', () => {
+  const nodes = [
+    {id: 'first', created: '2026-10-03'},
+    {id: 'today', created: '2026-10-09'},
+    {id: 'old', created: '2026-10-02'},
+    {id: 'future', created: '2026-10-10'},
+    {id: 'fallback', created: 'invalid', modified: '2026-10-08'},
+    {id: 'missing'}
+  ];
+  assert.deepEqual([...recentNodeIds(nodes, 7, new Date(2026, 9, 9, 23, 59))], ['first', 'today', 'fallback']);
+  assert.equal(recentNodeIds([], 7, new Date(2026, 9, 9)).size, 0);
+  assert.equal(recentNodeIds(nodes, 7, new Date(2027, 9, 9)).size, 0);
 });
