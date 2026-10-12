@@ -275,6 +275,10 @@ def build(root: Path, engine: Path, output: Path, emacs: str):
         for relative, digest in preserved.items():
             if hashlib.sha256((candidate / relative).read_bytes()).hexdigest() != digest:
                 raise Invalid("legacy: an existing published page changed")
+        # Source-only export cleanup cannot see references in preserved HTML.
+        # Restore the existing public asset snapshot alongside those pages.
+        if (root / "assets").exists():
+            shutil.copytree(root / "assets", candidate / "assets", dirs_exist_ok=True)
         if old_assets:
             current = json.loads((candidate / "assets.json").read_text(encoding="utf-8"))
             if isinstance(current.get("assets"), list) and isinstance(old_assets.get("assets"), list):

@@ -1,15 +1,41 @@
 """Run with MUSEUM_TEST_LEGACY pointing to a real legacy org-notes checkout."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ENGINE = Path(__file__).parents[1]
 SPEC = importlib.util.spec_from_file_location("pipeline", ENGINE / "tools/museum_pipeline.py")
 m = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(m)
+
+class LegacyAssets(unittest.TestCase):
+    def test_export_cleanup_cannot_remove_preserved_page_assets(self):
+        with tempfile.TemporaryDirectory(prefix="museum-legacy-assets-") as temporary:
+            root = Path(temporary) / "repo"
+            (root / "assets").mkdir(parents=True)
+            (root / "assets/legacy.png").write_bytes(b"published legacy image")
+            (root / "museum.json").write_text(json.dumps({"repository": "owner/site"}))
+            output = Path(temporary) / "site"
+
+            def export(_args, **kwargs):
+                candidate = Path(kwargs["env"]["MUSEUM_OUTPUT"])
+                # The source-only export registry does not know legacy images.
+                (candidate / "assets/legacy.png").unlink()
+                return subprocess.CompletedProcess(_args, 0, b"", b"")
+
+            with patch.object(m, "validate", return_value=[]), \
+                 patch.object(m, "legacy_records", return_value=[]), \
+                 patch.object(m, "check_site"), \
+                 patch.object(m, "git", return_value="a" * 40), \
+                 patch.object(m.subprocess, "run", side_effect=export):
+                m.build(root, ENGINE, output, "test-emacs")
+            self.assertEqual((output / "assets/legacy.png").read_bytes(),
+                             (root / "assets/legacy.png").read_bytes())
 
 @unittest.skipUnless(os.getenv("MUSEUM_TEST_LEGACY"), "real legacy checkout required")
 class BatchBuild(unittest.TestCase):
