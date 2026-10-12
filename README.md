@@ -861,6 +861,16 @@ Verify that `org-museum-css-file` points to a valid path relative to the plugin 
 
 ## Version History
 
+### 2026-10-12 — Reading and graph consistency
+
+- Preserves image `ATTR_HTML` sizing and alignment; non-media attachments remain inline links in article text.
+- Shares distinct Org heading colours across reading, Org Mode, and related reading, including deeply nested list-based headings and both themes.
+- Aligns article metadata with its table-of-contents control and keeps metadata spacing independent of body typography.
+- Repairs nested attachment resolution, related-reading navigation and copying, sidebar empty-search feedback, and narrow navigation.
+- Improves graph layouts, label collision handling, reciprocal edge routing, and graph interaction; retains real graph data.
+- Preserves Org table text and configures background export pipes for UTF-8 on Windows.
+- Bundles Maple Mono NF CN Regular with its SIL OFL license and SHA-256 record.
+
 ### v2.4.2
 
 - Bundles the complete Highlight.js 11.10.0 browser language set for offline code highlighting
