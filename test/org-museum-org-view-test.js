@@ -163,6 +163,10 @@ assert.ok(cssContent.includes(".museum-org-buffer"), "CSS must include .museum-o
 assert.ok(cssContent.includes(".org-bullet"), "CSS must include .org-bullet");
 assert.ok(cssContent.includes(".org-descriptive-link"), "CSS must include .org-descriptive-link");
 assert.ok(cssContent.includes(".museum-org-table"), "CSS must include .museum-org-table");
+assert.ok(cssContent.includes(".museum-org-table-line"), "CSS must include .museum-org-table-line");
+assert.ok(cssContent.includes('font-family: "Maple Mono NF CN"'), "CSS must include Maple Mono NF CN @font-face");
+assert.ok(cssContent.includes('--font-org-table: "Maple Mono NF CN"'), "CSS must define --font-org-table with Maple Mono NF CN");
+assert.ok(cssContent.includes("--font-org-table-size: 13px;"), "CSS must define --font-org-table-size as 13px");
 assert.ok(cssContent.includes(".museum-org-preamble-drawer"), "CSS must include .museum-org-preamble-drawer");
 
 // Requirement 3: Code block folding & babel folding
@@ -240,4 +244,13 @@ mockDocument.querySelectorAll = () => [{textContent:'订单分析流水线', clo
 const sectionLink = mockWindow.orgMuseumOrgView.renderOrgSyntaxLine('[[file:org-babel-02-composition-engineering.org::*7. 完整案例][订单分析流水线]]');
 assert.ok(sectionLink.innerHTML.includes('href="org-babel-02-composition-engineering.html#section-canonical"'), 'Org section links reuse the real exported anchor');
 mockDocument.querySelectorAll = oldQueryAll;
+
+// Verify table line rendering: no extra duplicate trailing pipes
+const tableRow = mockWindow.orgMuseumOrgView.renderOrgSyntaxLine('| 不重不漏 | MECE | 给知识做分类 |');
+assert.ok(tableRow.classList.contains('museum-org-table-line'), 'Table row must have museum-org-table-line class');
+const pipeMatches = tableRow.innerHTML.match(/org-face-org-table-pipe/g);
+assert.equal(pipeMatches ? pipeMatches.length : 0, 4, 'Table row with 3 columns must contain exactly 4 pipe elements');
+const tableRule = mockWindow.orgMuseumOrgView.renderOrgSyntaxLine('|----------+------+--------------|');
+assert.ok(tableRule.innerHTML.includes('org-face-org-table-rule'), 'Table rule row must have org-face-org-table-rule class');
+
 console.log("All Org Museum Org View unit tests passed!");

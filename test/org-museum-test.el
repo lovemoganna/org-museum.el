@@ -1997,8 +1997,8 @@
     (insert-file-contents
      (expand-file-name "resources/org-museum-graph-network.js" org-museum-test--repo-root))
     (let ((source (buffer-string)))
-      (should (string-search "graph-node-hit-target').attr('r', 25)" source))
-      (should (string-search "window.innerWidth <= 600 ? 9 : 16" source))
+      (should (string-search "graph-node-hit-target').attr('r', 32)" source))
+      (should (string-search "window.innerWidth <= 600 ? 12 : 28" source))
       (should (string-search "node.name + '，' + node.degree" source))
       (should (string-search "event.key === ' '" source))
       (should (string-search "d3.drag().clickDistance(4)" source))
@@ -3263,7 +3263,7 @@
     (insert-file-contents
      (expand-file-name "resources/org-museum-graph-network.js" org-museum-test--repo-root))
     (let ((source (buffer-string)))
-      (should (string-search "window.innerWidth <= 600 ? 9 : 16" source))
+      (should (string-search "window.innerWidth <= 600 ? 12 : 28" source))
       (should (string-search "shortName(node.name)" source))
       (should (string-search "item.append('title')" source))
       (should (string-search "nodeSelection.select('title').text" source)))))
@@ -4519,7 +4519,22 @@
       (should (string-match-p
                (regexp-quote
                 "org-museum-graph-exclude-tags (quote (\"no-graph\" \"private\"))")
+               script))
+      (should (string-match-p
+               (regexp-quote "(set-language-environment \"UTF-8\")")
+               script))
+      (should (string-match-p
+               (regexp-quote "(setq locale-coding-system 'utf-8)")
                script)))))
+
+(ert-deftest org-museum-background-job-uses-utf8-coding-system ()
+  "Background process worker script and pipe configure UTF-8 encoding."
+  (let ((script (org-museum--background-script "C:/org-museum.el" 'export-all nil)))
+    (should (string-match-p "coding: utf-8" script))
+    (should (string-match-p "(set-language-environment \"UTF-8\")" script))
+    (should (string-match-p "(setq locale-coding-system 'utf-8)" script))
+    (should (string-match-p "(prefer-coding-system 'utf-8)" script))
+    (should (string-match-p "(setq default-process-coding-system '(utf-8-unix . utf-8-unix))" script))))
 
 (ert-deftest org-museum-background-success-actions-open-requested-results ()
   "Successful full export and publish sync retain their user-visible outcomes."
@@ -6354,8 +6369,9 @@
               (should (search-forward "museum-asset-image" nil t))
               (should (re-search-forward "<video controls[^>]*preload=\"none\"[^>]*>" nil t))
               (should (re-search-forward "<audio controls[^>]*preload=\"none\"[^>]*>" nil t))
-              (should (search-forward "museum-asset-pdf" nil t))
+              (should (re-search-forward "<a href=\"[^\"]+\\.pdf\">Paper</a>" nil t))
               (should (search-forward "id=\"museum-page-assets-title\"" nil t))
+              (should (search-forward "museum-asset-card museum-asset-image" nil t))
               (should-not
                (string-match-p
                 "<!-- [0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}"

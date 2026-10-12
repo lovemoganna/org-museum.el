@@ -70,6 +70,48 @@ test('a route avoids a node between its endpoints when there is room', () => {
     Math.hypot(candidate.x - midpoint.x, candidate.y - midpoint.y) >= 12));
 });
 
+test('detours clear actual large nodes rather than only small fixture circles', () => {
+  const nodes=[{id:'a'},{id:'b'},{id:'obstacle'}];
+  const links=[{id:'ab',source:'a',target:'b'}];
+  const points=new Map([['a',{x:80,y:100}],['b',{x:480,y:100}],['obstacle',{x:280,y:100}]]);
+  const radii=new Map([['a',12],['b',12],['obstacle',30]]);
+  const route=edges.routes(nodes,links,points,radii).get('ab');
+  const minimum=Math.min(...Array.from({length:101},(_,i)=>edges.point(route,i/100))
+    .map(p=>Math.hypot(p.x-280,p.y-100)));
+  assert(minimum>=36, `30px node needs real clearance; got ${minimum}`);
+});
+
+test('routing avoids a rendered title rectangle without removing the edge', () => {
+  const nodes=[{id:'a'},{id:'b'}],links=[{id:'ab',source:'a',target:'b'}];
+  const points=new Map([['a',{x:80,y:100}],['b',{x:480,y:100}]]);
+  const radii=new Map([['a',12],['b',12]]),box={id:'title',x:220,y:90,width:100,height:18};
+  const routes=edges.routes(nodes,links,points,radii,null,'organic','spline',[box]);
+  assert.equal(routes.size,1);
+  const route=routes.get('ab');
+  assert(!Array.from({length:101},(_,i)=>edges.point(route,i/100)).some(p=>
+    p.x>box.x && p.x<box.x+box.width && p.y>box.y && p.y<box.y+box.height));
+});
+
+test('reciprocal edges have separated tangent ports at their shared node', () => {
+  const nodes=[{id:'a'},{id:'b'}],links=[{id:'ab',source:'a',target:'b'},{id:'ba',source:'b',target:'a'}];
+  const points=new Map([['a',{x:80,y:100}],['b',{x:320,y:100}]]),radii=new Map([['a',24],['b',24]]);
+  const routes=edges.routes(nodes,links,points,radii,null,'organic');
+  const start=routes.get('ab').start,end=routes.get('ba').end;
+  assert(Math.hypot(start.x-end.x,start.y-end.y)>4,'two arrows need separate attachment points');
+});
+
+test('radial routing follows the real hub when the graph is translated', () => {
+  const nodes=[{id:'hub',isRoot:true},{id:'a'},{id:'b'}];
+  const links=[{id:'ha',source:'hub',target:'a'},{id:'hb',source:'hub',target:'b'},{id:'ab',source:'a',target:'b'}];
+  const radii=new Map([['hub',24],['a',12],['b',12]]);
+  function routes(x,y){return edges.routes(nodes,links,new Map([['hub',{x,y}],['a',{x:x-100,y}],['b',{x:x+100,y}]]),radii,null,'concentric');}
+  const a=routes(0,0),b=routes(900,600);
+  for(const link of links) for(const t of [0,.25,.5,.75,1]) {
+    const p=edges.point(a.get(link.id),t),q=edges.point(b.get(link.id),t);
+    assert(Math.abs(q.x-p.x-900)<1e-6 && Math.abs(q.y-p.y-600)<1e-6);
+  }
+});
+
 test('layout-adaptive routing selects cubic S-curves for hierarchy and straight rays for radial/grid', () => {
   const nodes = [{id: 'root'}, {id: 'child'}];
   const relations = [{id: 'e1', source: 'root', target: 'child'}];

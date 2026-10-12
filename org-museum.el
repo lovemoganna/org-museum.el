@@ -545,8 +545,10 @@ regeneration.")
     ("NotoSerifCJKsc-VF.woff2" . "Noto Serif CJK SC variable font")
     ("VictorMono-Roman-v1.564.woff2" . "Victor Mono 1.564 variable Roman")
     ("VictorMono-Italic-v1.564.woff2" . "Victor Mono 1.564 variable Italic")
+    ("MapleMono-NF-CN-Regular.ttf" . "Maple Mono NF CN Regular font")
     ("OFL-Noto-Sans-CJK.txt" . "Noto Sans CJK OFL license")
     ("OFL-Victor-Mono.txt" . "Victor Mono OFL license")
+    ("OFL-Maple-Mono.txt" . "Maple Mono OFL license")
     ("SHA256SUMS" . "font SHA-256 manifest")
     ("SOURCES.md" . "font provenance record"))
   "Bundled font files required for every offline export.")
@@ -892,8 +894,15 @@ the repository and link-tree sources over the generated build copy."
 (defun org-museum--background-script (source action args)
   "Return worker source loading SOURCE and executing ACTION with ARGS."
   (concat
-   ";;; -*- lexical-binding: t; -*-\n"
+   ";;; -*- lexical-binding: t; coding: utf-8 -*-\n"
    ";; Generated Org Museum background job.\n"
+   "(set-language-environment \"UTF-8\")\n"
+   "(setq locale-coding-system 'utf-8)\n"
+   "(prefer-coding-system 'utf-8)\n"
+   "(set-default-coding-systems 'utf-8)\n"
+   "(set-terminal-coding-system 'utf-8)\n"
+   "(set-keyboard-coding-system 'utf-8)\n"
+   "(setq default-process-coding-system '(utf-8-unix . utf-8-unix))\n"
    "(setq load-prefer-newer t)\n"
    (format "(load %S nil nil t)\n" source)
    "(setq\n"
@@ -1017,6 +1026,9 @@ Only one exporter or publisher runs at a time so generated files cannot race."
                :command (list (org-museum--background-emacs-executable)
                               "--quick" "--batch" "--load" script)
                :connection-type 'pipe
+               :coding (if (eq system-type 'windows-nt)
+                           '(utf-8-dos . utf-8-unix)
+                         'utf-8-unix)
                :noquery t
                :sentinel #'org-museum--background-sentinel))
       (error
@@ -1649,8 +1661,10 @@ changes the content hash and therefore keeps its new timestamp."
    out-file))
 
 (defun org-museum--asset-render-html
-    (asset out-file description &optional compact)
-  "Render ASSET for OUT-FILE using DESCRIPTION and optional COMPACT card mode."
+    (asset out-file description &optional compact attributes inline-link)
+  "Render ASSET for OUT-FILE using DESCRIPTION and optional COMPACT card mode.
+ATTRIBUTES preserves the source image's ATTR_HTML properties.  INLINE-LINK
+keeps non-media attachments in the text flow instead of making a resource card."
   (let* ((href (org-museum--html-escape
                 (org-museum--asset-href asset out-file) t))
          (name (org-museum--html-escape
@@ -1659,11 +1673,18 @@ changes the content hash and therefore keeps its new timestamp."
                           (or description (org-museum-asset-filename asset)) t))
          (caption (if (and description (not (string-empty-p description)))
                       (format "<figcaption>%s</figcaption>" name) ""))
-         (dimensions (if (and (numberp (org-museum-asset-width asset))
-                              (numberp (org-museum-asset-height asset)))
-                         (format "width=\"%d\" height=\"%d\" "
-                                 (org-museum-asset-width asset)
-                                 (org-museum-asset-height asset)) ""))
+         (image-attributes
+          (org-html--make-attribute-string
+           (org-combine-plists
+            (list :src (org-museum--asset-href asset out-file)
+                  :alt (or description (org-museum-asset-filename asset))
+                  :width (and (numberp (org-museum-asset-width asset))
+                              (number-to-string (org-museum-asset-width asset)))
+                  :height (and (numberp (org-museum-asset-height asset))
+                               (number-to-string (org-museum-asset-height asset)))
+                  :loading "lazy" :decoding "async")
+            attributes
+            (list :src (org-museum--asset-href asset out-file)))))
          (kind (org-museum-asset-kind asset))
          (mime (org-museum--html-escape (org-museum-asset-mime asset) t))
          (download-name (org-museum--html-escape
@@ -1675,13 +1696,15 @@ changes the content hash and therefore keeps its new timestamp."
                             "<span class=\"museum-asset-name\">%s</span></a>")
                     kind (org-museum-asset-id asset) href download-name
                     (capitalize (symbol-name kind)) name)))
-    (if compact download
+    (cond
+     (compact download)
+     (inline-link (format "<a href=\"%s\">%s</a>" href name))
+     (t
       (pcase kind
         ('image
          (format (concat "<figure class=\"museum-asset museum-asset-image\" "
-                         "data-asset-id=\"%s\"><img src=\"%s\" alt=\"%s\" "
-                         "%sloading=\"lazy\" decoding=\"async\" data-lightbox>%s</figure>")
-                 (org-museum-asset-id asset) href attribute-name dimensions caption))
+                         "data-asset-id=\"%s\"><img %s data-lightbox>%s</figure>")
+                 (org-museum-asset-id asset) image-attributes caption))
         ((or 'video 'audio)
          (let ((tag (symbol-name kind)))
            (format (concat "<figure class=\"museum-asset museum-asset-%s\" "
@@ -1697,7 +1720,7 @@ changes the content hash and therefore keeps its new timestamp."
                          "<a class=\"museum-asset-preview\" href=\"%s\" "
                          "target=\"_blank\" rel=\"noopener noreferrer\">预览 PDF</a></div>")
                  download href))
-        (_ download)))))
+        (_ download))))))
 
 (defun org-museum--asset-description (link)
   "Return LINK's plain description, or nil."
@@ -1723,7 +1746,11 @@ changes the content hash and therefore keeps its new timestamp."
 (defun org-museum--prepare-page-assets (buffer source-file out-file)
   "Resolve and replace asset links in BUFFER for SOURCE-FILE and OUT-FILE."
   (with-current-buffer buffer
-    (let ((page-id (org-museum--page-id-for-file source-file)) replacements)
+    (let ((page-id (org-museum--page-id-for-file source-file))
+          ;; Attachment fallback is relative to the note, including in export
+          ;; copies and preflight buffers which inherit another working directory.
+          (default-directory (file-name-directory source-file))
+          replacements)
       ;; Older saved results can contain our generated HTML instead of an Org
       ;; link. Recover only images whose original file proves the recorded hash.
       (org-element-map (org-element-parse-buffer) 'export-snippet
@@ -1811,7 +1838,11 @@ changes the content hash and therefore keeps its new timestamp."
                                   (org-element-property :end link)
                                   (concat "@@html:"
                                           (org-museum--asset-render-html
-                                           asset out-file description nil)
+                                           asset out-file description nil
+                                           (org-export-read-attribute
+                                            :attr_html (org-export-get-parent-element link))
+                                           (not (memq (org-museum-asset-kind asset)
+                                                      '(image video audio))))
                                           "@@"))
                             replacements)))
                 (org-museum-asset-error
@@ -2760,7 +2791,9 @@ PAGES and ALIASES use the same resolution rules as ordinary Org links."
   "Extract metadata from .org FILE; return an org-museum-page or nil."
   (with-temp-buffer
     (insert-file-contents file)
-    (org-mode)
+    ;; This runs after saves, on the editor's main thread.  Initialize Org's
+    ;; parser without starting the user's interactive Org integrations.
+    (delay-mode-hooks (org-mode))
     (let* ((ast  (org-element-parse-buffer))
            (kw   (org-museum--extract-keywords ast))
            (id   (or (org-entry-get (point-min) "ID" t)
@@ -3285,6 +3318,25 @@ user Org settings remain untouched."
               #'org-museum--parse-generic-emphasis-cjk))
      ,@body))
 
+(defun org-museum--html-headline (headline contents info)
+  "Preserve Org heading levels in HTML, including list-based deep headings.
+CONTENTS and INFO retain the standard HTML export behavior."
+  (let* ((level (min 8 (org-export-get-relative-level headline info)))
+         (formatter (plist-get info :html-format-headline-function)))
+    (plist-put info :html-format-headline-function
+               (lambda (todo todo-type priority text tags export-info)
+                 (format "<span class=\"museum-heading-level-%d\">%s</span>"
+                         level
+                         (funcall formatter todo todo-type priority text tags
+                                  export-info))))
+    ;; Keep Org's shared reference cache on INFO so TOC links keep their IDs.
+    (unwind-protect
+        (org-html-headline headline contents info)
+      (plist-put info :html-format-headline-function formatter))))
+
+(org-export-define-derived-backend 'org-museum-html 'html
+  :translate-alist '((headline . org-museum--html-headline)))
+
 (defun org-museum--export-with-theme (org-file out-file)
   "Export ORG-FILE to OUT-FILE with CSS, link-rewriting, and post-processing."
   (org-museum--call-preserving-source-mtime
@@ -3341,7 +3393,7 @@ user Org settings remain untouched."
                               htmlize-type nil))
                          (coding-system-for-write             'utf-8))
                     (org-museum--with-cjk-emphasis-export
-                      (org-export-to-file 'html out-file))))
+                      (org-export-to-file 'org-museum-html out-file))))
               (when (buffer-live-p export-buf) (kill-buffer export-buf))))
           (when (file-exists-p out-file)
             (org-museum--postprocess-html out-file org-file)))
@@ -8414,6 +8466,7 @@ window.addEventListener('pageshow',startReadingSession);
       (princ "  <div class=\"sidebar-search\">\n")
       (princ "    <input type=\"search\" id=\"org-museum-search-input\" placeholder=\"筛选标题…\" aria-label=\"筛选页面\">\n")
       (princ "  </div>\n")
+      (princ "  <p class=\"museum-empty-copy\" data-sidebar-search-empty role=\"status\" hidden>没有匹配的笔记。请调整或清空搜索。</p>\n")
       (princ (org-museum--sidebar-fx-controls))
       (if (null cats)
           (princ "  <p class=\"sidebar-empty\">索引为空。请先运行 org-museum-index-build。</p>\n")
@@ -8537,6 +8590,18 @@ window.addEventListener('pageshow',startReadingSession);
   "Remove page chrome and executable content from article HTML fragment."
   (with-temp-buffer
     (insert (or html ""))
+    ;; These controls depend on the single-article Org runtime.  A reading pane
+    ;; has its own density controls and links to the working original article.
+    (dolist (entry '(("div" . "museum-article-view-toolbar")
+                     ("section" . "museum-org-view")
+                     ("pre" . "museum-org-source")))
+      (goto-char (point-min))
+      (while (re-search-forward
+              (format "<%s\\b[^>]*class=\"[^\"]*%s[^\"]*\"[^>]*>"
+                      (car entry) (cdr entry)) nil t)
+        (let ((begin (match-beginning 0)))
+          (when (search-forward (concat "</" (car entry) ">") nil t)
+            (delete-region begin (point))))))
     (goto-char (point-min))
     (while (re-search-forward
             "<script\\b[^>]*>\\(?:.\\|\n\\)*?</script[[:space:]]*>" nil t)
@@ -8834,6 +8899,9 @@ function renderPanel(side,page){
 function updateMode(nextMode,push){
   document.querySelectorAll('.related-paper').forEach(function(panel,index){positions[mode][index]=panel.scrollTop;});
   mode=nextMode;document.body.dataset.relatedMode=mode;
+  if(push)setUrl(mode);
+  document.getElementById('related-open-source').href=themed(source.href);
+  document.getElementById('related-open-target').href=themed(target.href);
   document.querySelectorAll('[data-related-mode]').forEach(function(button){
     var active=button.dataset.relatedMode===mode;button.classList.toggle('is-active',active);
     button.setAttribute('aria-pressed',active?'true':'false');
@@ -8847,13 +8915,10 @@ function updateMode(nextMode,push){
     if(!code.dataset.highlighted&&(!lang||hljs.getLanguage(lang)))hljs.highlightElement(code);
     else if(lang&&!hljs.getLanguage(lang))code.classList.add('no-highlight');
   });
-  if(push)setUrl(mode);
 }
 function renderDetail(){
   if(!links(source,target)&&links(target,source)){var swap=source;source=target;target=swap;}
   index.hidden=true;empty.hidden=true;detail.hidden=false;
-  document.getElementById('related-open-source').href=themed(source.href);
-  document.getElementById('related-open-target').href=themed(target.href);
   var backShelf=document.getElementById('related-back-shelf');
   if(backShelf){
     backShelf.href=themed('related.html');
@@ -9322,7 +9387,7 @@ if(relationValid())renderDetail();else renderIndex();
      "        </div>\n"
      "      </div>\n"
      "      <div class=\"related-filter-row\">\n"
-     "        <div id=\"related-category-pills\" class=\"related-category-pills\" role=\"tablist\" aria-label=\"分类快捷筛选\"></div>\n"
+     "        <div id=\"related-category-pills\" class=\"related-category-pills\" role=\"group\" aria-label=\"分类快捷筛选\"></div>\n"
      "        <div id=\"related-matched-status\" class=\"related-matched-status\" role=\"status\" aria-live=\"polite\"></div>\n"
      "      </div>\n"
      "    </div>\n"
@@ -13254,8 +13319,10 @@ if(!moveTOC()){
 (function(){
 function init(){
   var inp=document.getElementById('org-museum-search-input');if(!inp)return;
+  var empty=document.querySelector('[data-sidebar-search-empty]');
   inp.addEventListener('input',function(){
     var t=this.value.toLowerCase().trim();
+    var matches=0;
     document.querySelectorAll('#org-museum-sidebar .sidebar-category').forEach(function(c){
       var visible=false;
       c.querySelectorAll('li a').forEach(function(a){
@@ -13265,6 +13332,7 @@ function init(){
         var show = !t || idx >= 0;
         a.parentElement.style.display = show ? '' : 'none';
         if(show){
+          matches++;
           visible=true;
           if(t){
             var pre = txt.substring(0, idx);
@@ -13280,6 +13348,7 @@ function init(){
       });
       c.style.display=visible?'':'none';
     });
+    if(empty)empty.hidden=!t||matches>0;
   });
 }
 if(document.readyState==='loading')
@@ -14519,12 +14588,20 @@ CONFIRM-IDENTITY must be non-nil for WIKI_ID or path changes."
                      (list (format "http://127.0.0.1:%d" org-museum--curation-server-port)
                            (format "http://localhost:%d" org-museum--curation-server-port)))))))
 
-(defun org-museum--curation-json-read (body)
-  "Decode BODY as a strict JSON object."
+(defun org-museum--curation-json-read (body &optional key-type)
+  "Decode one JSON object in BODY, using KEY-TYPE or string keys."
   (condition-case nil
       (let ((json-object-type 'alist) (json-array-type 'list)
-            (json-key-type 'string) (json-null nil) (json-false :json-false))
-        (json-read-from-string (decode-coding-string body 'utf-8 t)))
+            (json-key-type (or key-type 'string)) (json-null nil) (json-false :json-false))
+        (with-temp-buffer
+          (insert (decode-coding-string body 'utf-8 t))
+          (goto-char (point-min))
+          (skip-chars-forward " \t\r\n")
+          (unless (eq (char-after) ?{) (error "Expected JSON object"))
+          (let ((object (json-read)))
+            (skip-chars-forward " \t\r\n")
+            (unless (eobp) (error "Trailing JSON input"))
+            object)))
     (error (signal 'org-museum-curation-error (list "Malformed JSON request")))))
 
 (defun org-museum--curation-page-json (page-id)
@@ -14815,17 +14892,35 @@ Avoid hashing large bundled fonts on every page visit."
   "Collect and answer one bounded HTTP request from PROCESS using CHUNK."
   (let ((request (concat (or (process-get process 'request) "") chunk)))
     (process-put process 'request request)
-    (when (> (string-bytes request) (+ org-museum--curation-max-request-bytes 8192))
+    (when (or (> (string-bytes request) (+ org-museum--curation-max-request-bytes 8192))
+              (if (string-match "\r\n\r\n" request)
+                  (> (match-end 0) 8192)
+                (> (string-bytes request) 8192)))
       (process-send-string process (org-museum--curation-http-error 413 "Request too large"))
       (delete-process process))
     (when (and (process-live-p process) (string-match "\r\n\r\n" request))
       (let* ((header-end (match-end 0))
              (header-text (substring request 0 (- header-end 4)))
              (headers (org-museum--curation-http-headers header-text))
-             (length (string-to-number (or (cdr (assoc "content-length" headers)) "0"))))
-        (if (> length org-museum--curation-max-request-bytes)
+             (length-fields (cl-remove-if-not (lambda (h) (equal (car h) "content-length")) headers))
+             (host-fields (cl-remove-if-not (lambda (h) (equal (car h) "host")) headers))
+             (length-text (or (cdar length-fields) "0"))
+             (length (string-to-number length-text)))
+        (cond
+         ((or (> (length length-fields) 1) (/= (length host-fields) 1)
+              (assoc "transfer-encoding" headers)
+              (not (string-match-p "\\`[0-9]+\\'" length-text)))
+          (process-send-string process (org-museum--curation-http-error 400 "Invalid request framing"))
+          (delete-process process))
+         ((not (member (downcase (cdar host-fields))
+                       (list (format "127.0.0.1:%d" org-museum--curation-server-port)
+                             (format "localhost:%d" org-museum--curation-server-port))))
+          (process-send-string process (org-museum--curation-http-error 403 "Invalid local host"))
+          (delete-process process))
+         ((> length org-museum--curation-max-request-bytes)
             (progn (process-send-string process (org-museum--curation-http-error 413 "Request too large"))
-                   (delete-process process))
+                   (delete-process process)))
+         (t
           (when (>= (- (string-bytes request) header-end) length)
             (if (string-match "\\`\\([A-Z]+\\)[[:space:]]+\\([^[:space:]]+\\)[[:space:]]+HTTP/1\\.[01]" header-text)
                 (process-send-string
@@ -14834,7 +14929,7 @@ Avoid hashing large bundled fonts on every page visit."
                   (match-string 1 header-text) (match-string 2 header-text) headers
                   (substring request header-end (+ header-end length))))
               (process-send-string process (org-museum--curation-http-error 400 "Malformed request line")))
-            (delete-process process)))))))
+            (delete-process process))))))))
 
 ;;;###autoload
 (defun org-museum-curation-server-start (&optional page)

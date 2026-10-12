@@ -19,6 +19,10 @@
   margin: 1.2em 0;
 }
 
+.museum-asset-image {
+  overflow-x: auto;
+}
+
 :is(.article-container, .museum-md) :where(video, audio, iframe, object, embed),
 .museum-asset :where(img, video, audio) {
   display: block;
@@ -2132,6 +2136,19 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: "Maple Mono NF CN";
+  src: local("Maple Mono NF CN"),
+       local("Maple Mono NF CN Regular"),
+       local("MapleMono-NF-CN-Regular"),
+       local("MapleMono-NF-CN"),
+       local("MapleMono NF CN"),
+       url("fonts/MapleMono-NF-CN-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 /* Syntax palette and structural constants. Application colours are defined once
    in the shared semantic token layer below. */
 :root {
@@ -2150,6 +2167,8 @@
   --font-ui: "Org Museum Noto Sans SC", sans-serif;
   --font-code: "Org Museum Victor Mono", "Org Museum Noto Sans SC";
   --font-technical: "Org Museum Victor Mono", "Org Museum Noto Sans SC";
+  --font-org-table: "Maple Mono NF CN", "Maple Mono SC NF", "Maple Mono CN", "Maple Mono", monospace;
+  --font-org-table-size: 13px;
   --page-padding: clamp(28px, 4.45vw, 64px);
   --topbar-height: 92px;
   --reading-progress: 0%;
@@ -4122,21 +4141,23 @@ html.museum-panel-open { overflow: hidden; }
   left: 18px;
   display: grid;
   gap: 3px;
-  padding: 9px 11px;
-  border: 1px solid var(--rule-soft);
-  background: var(--panel-bg-soft);
+  padding: 8px 12px;
+  border: 1px solid var(--museum-border-soft, var(--rule-soft));
+  border-radius: var(--museum-radius-panel, 6px);
+  background: var(--museum-surface-raised, var(--museum-paper));
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--panel-shadow) 35%, transparent);
   pointer-events: none;
 }
 
 #graph-zero-notice strong {
-  color: var(--mono-white);
+  color: var(--museum-ink, var(--mono-white));
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 #graph-zero-notice span {
-  color: var(--text-muted);
-  font: 400 9px/1.5 var(--font-technical);
+  color: var(--museum-ink-muted, var(--text-muted));
+  font: 400 9.5px/1.4 var(--font-ui, var(--font-technical));
 }
 
 #graph-isolated-fallback {
@@ -4239,11 +4260,14 @@ html.museum-panel-open { overflow: hidden; }
   display: grid;
   gap: 3px;
   width: 240px;
-  padding: 10px 12px;
-  border: 1px solid var(--rule);
-  background: var(--mono-deep);
+  padding: 10px 14px;
+  border: 1px solid var(--museum-border-soft, var(--rule));
+  border-radius: var(--museum-radius-panel, 6px);
+  background: var(--museum-surface-raised, var(--museum-paper));
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--panel-shadow) 50%, transparent);
   opacity: 0;
   pointer-events: none;
+  transition: opacity 120ms ease;
 }
 
 #graph-tooltip.is-visible {
@@ -4251,14 +4275,14 @@ html.museum-panel-open { overflow: hidden; }
 }
 
 #graph-tooltip strong {
-  color: var(--mono-white);
-  font-size: 11px;
-  font-weight: 500;
+  color: var(--museum-ink, var(--mono-white));
+  font-size: 11.5px;
+  font-weight: 600;
 }
 
 #graph-tooltip span {
-  color: var(--text-muted);
-  font: 400 9px/1.5 var(--font-technical);
+  color: var(--museum-ink-muted, var(--text-muted));
+  font: 400 9.5px/1.4 var(--font-ui, var(--font-technical));
 }
 
 .graph-workspace-footer {
@@ -4928,6 +4952,15 @@ body.zen-mode .article-container {
   --museum-on-accent: #211f1e;
   --museum-secondary: #d4aa63;
   --museum-secondary-text: #e0bc78;
+  /* Org outline levels: shared by rendered articles and Org Mode. */
+  --museum-heading-1: #f0a6a1;
+  --museum-heading-2: #e5bf73;
+  --museum-heading-3: #85c9bf;
+  --museum-heading-4: #9bbcf0;
+  --museum-heading-5: #c6a7e6;
+  --museum-heading-6: #a9c77d;
+  --museum-heading-7: #e9ae82;
+  --museum-heading-8: #e4a8cc;
   --museum-hover: #3b302f;
   --museum-selected-surface: #443431;
   --museum-success-surface: #2f3a2d;
@@ -5058,6 +5091,14 @@ body.zen-mode .article-container {
   --museum-on-accent: #fffaf3;
   --museum-secondary: #ad7732;
   --museum-secondary-text: #76501e;
+  --museum-heading-1: #942d27;
+  --museum-heading-2: #805514;
+  --museum-heading-3: #216a61;
+  --museum-heading-4: #315f9a;
+  --museum-heading-5: #754391;
+  --museum-heading-6: #526b24;
+  --museum-heading-7: #995021;
+  --museum-heading-8: #963f70;
   --museum-hover: #eaded4;
   --museum-selected-surface: #efddd5;
   --museum-success-surface: #e8f0e5;
@@ -5481,35 +5522,35 @@ body {
 }
 
 .article-container h2 {
-  color: var(--museum-burgundy);
+  color: var(--museum-heading-1);
   font-size: var(--museum-type-h2);
   font-weight: var(--museum-weight-semibold);
   line-height: 1.38;
 }
 
 .article-container h3 {
-  color: var(--museum-accent);
+  color: var(--museum-heading-2);
   font-size: var(--museum-type-h3);
   font-weight: var(--museum-weight-semibold);
   line-height: 1.45;
 }
 
 .article-container h4 {
-  color: var(--museum-text);
+  color: var(--museum-heading-3);
   font-size: var(--museum-type-h4);
   font-weight: var(--museum-weight-semibold);
   line-height: 1.5;
 }
 
 .article-container h5 {
-  color: var(--museum-text);
+  color: var(--museum-heading-4);
   font-size: var(--museum-type-h5);
   font-weight: var(--museum-weight-semibold);
   line-height: 1.55;
 }
 
 .article-container h6 {
-  color: var(--museum-text-muted);
+  color: var(--museum-heading-5);
   font-size: var(--museum-type-h6);
   font-weight: var(--museum-weight-semibold);
   line-height: 1.55;
@@ -5552,6 +5593,9 @@ body {
 .museum-article-meta dl {
   display: flex;
   flex: 1;
+  min-width: 0;
+  min-height: var(--museum-touch-target);
+  align-items: center;
   flex-wrap: wrap;
   gap: 10px 18px;
 }
@@ -6534,8 +6578,8 @@ button.museum-tag-chip {
 
 /* 摘要对读排版 (Summary mode) - 统一字阶与紧凑信息密度 */
 .related-summary {
-  font-size: 13.5px;
-  line-height: 1.65;
+  font-size: var(--museum-type-body);
+  line-height: var(--museum-leading-body);
 }
 
 .related-summary-block {
@@ -6562,8 +6606,6 @@ button.museum-tag-chip {
 
 .related-summary-prose p {
   color: var(--museum-text);
-  font-size: 13.5px;
-  line-height: 1.65;
   margin: 0 0 8px;
 }
 
@@ -6606,8 +6648,6 @@ button.museum-tag-chip {
   background: var(--museum-surface-muted);
   color: var(--museum-text);
   margin-bottom: 8px;
-  font-size: 13px;
-  line-height: 1.6;
 }
 
 .related-muted {
@@ -6616,15 +6656,13 @@ button.museum-tag-chip {
 
 /* 完整正文排版 (Full article mode) - 统一字号与元素 */
 .related-full.article-container {
-  font-size: 13.5px;
-  line-height: 1.65;
   letter-spacing: 0.005em;
   color: var(--museum-text);
 }
 
 .related-full.article-container h2 {
   font-size: 16.5px;
-  color: var(--museum-burgundy);
+  color: var(--museum-heading-1);
   font-weight: 600;
   margin: 18px 0 8px;
   line-height: 1.4;
@@ -6634,7 +6672,7 @@ button.museum-tag-chip {
 
 .related-full.article-container h3 {
   font-size: 14.5px;
-  color: var(--museum-burgundy);
+  color: var(--museum-heading-2);
   font-weight: 600;
   margin: 14px 0 6px;
   line-height: 1.4;
@@ -6642,14 +6680,12 @@ button.museum-tag-chip {
 
 .related-full.article-container h4 {
   font-size: 13.5px;
-  color: var(--museum-text);
+  color: var(--museum-heading-3);
   font-weight: 600;
   margin: 10px 0 4px;
 }
 
 .related-full.article-container p {
-  font-size: 13.5px;
-  line-height: 1.65;
   margin: 0 0 10px;
   color: var(--museum-text);
 }
@@ -6658,12 +6694,10 @@ button.museum-tag-chip {
 .related-full.article-container ol {
   padding-left: 20px;
   margin: 8px 0 12px;
-  font-size: 13.5px;
 }
 
 .related-full.article-container li {
   margin: 3px 0;
-  line-height: 1.6;
 }
 
 /* 统一代码块：深色控制台底色与 Monokai 高亮完美兼容 (解决浅色模式对比度缺陷) */
@@ -7068,14 +7102,6 @@ button.museum-tag-chip {
   .museum-top-links {
     gap: 2px;
     overflow: visible;
-  }
-
-  .museum-nav-timeline,
-  .museum-nav-graph,
-  .museum-nav-related,
-  .museum-nav-ai,
-  .museum-nav-all {
-    display: none;
   }
 
   .museum-wordmark {
@@ -10565,7 +10591,7 @@ button.museum-entry-category[aria-pressed="true"] {
 }
 .graph-page.is-network-runtime .graph-network-node .graph-node-root-halo {
   fill: none;
-  stroke: var(--museum-accent);
+  stroke: var(--graph-node-root-fill, #0891b2);
   stroke-width: 2.2px;
   stroke-opacity: 0.45;
   pointer-events: none;
@@ -10573,7 +10599,7 @@ button.museum-entry-category[aria-pressed="true"] {
 }
 .graph-page.is-network-runtime .graph-network-node .graph-node-root-ring {
   fill: none;
-  stroke: var(--museum-accent);
+  stroke: var(--graph-node-root-fill, #0891b2);
   stroke-width: 1.6px;
   stroke-dasharray: 4 3;
   stroke-opacity: 0.88;
@@ -10604,79 +10630,128 @@ button.museum-entry-category[aria-pressed="true"] {
 }
 .graph-page.is-network-runtime .graph-network-node .graph-node-dot {
   stroke: var(--museum-paper);
-  stroke-width: 2.4px;
+  stroke-width: 2.2px;
   fill: var(--graph-node-color, var(--museum-node-fill));
   filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.18));
   transition: stroke 160ms ease, stroke-width 160ms ease, fill 160ms ease, filter 160ms ease, opacity 160ms ease;
 }
 .graph-page.is-network-runtime .graph-network-node.is-root-node .graph-node-dot {
-  stroke-width: 3.5px;
-  filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.28)) drop-shadow(0 0 8px color-mix(in srgb, var(--museum-accent) 40%, transparent));
+  fill: var(--graph-node-root-fill, #0e7490) !important;
+  stroke: var(--graph-node-root-stroke, #155e75) !important;
+  stroke-width: 3.5px !important;
+  filter: drop-shadow(0 4px 14px rgba(14, 116, 144, 0.42)) drop-shadow(0 0 10px rgba(6, 182, 212, 0.28));
 }
 .graph-page.is-network-runtime .graph-network-node.is-branch-node .graph-node-dot {
-  stroke-width: 2.4px;
-  filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.20));
+  fill: var(--graph-node-branch-fill, #059669) !important;
+  stroke: var(--graph-node-branch-stroke, #065f46) !important;
+  stroke-width: 2.8px !important;
+  filter: drop-shadow(0 3px 8px rgba(5, 150, 105, 0.32));
 }
 .graph-page.is-network-runtime .graph-network-node.is-leaf-node .graph-node-dot {
-  stroke-width: 1.8px;
+  fill: var(--graph-node-leaf-fill, #2a9d8f) !important;
+  stroke: var(--graph-node-leaf-stroke, #1b635c) !important;
+  stroke-width: 2px !important;
   opacity: 0.95;
-  filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.14));
+  filter: drop-shadow(0 2px 6px rgba(42, 157, 143, 0.24));
 }
 .graph-page.is-network-runtime .graph-network-node.is-isolated-node .graph-node-dot {
-  stroke: var(--museum-border-soft);
-  stroke-width: 1.6px;
-  stroke-dasharray: 3 2;
-  opacity: 0.72;
+  fill: var(--graph-node-isolated-fill, #cbd5e1) !important;
+  stroke: var(--graph-node-isolated-stroke, #94a3b8) !important;
+  stroke-width: 1.6px !important;
+  stroke-dasharray: 3 2.5;
+  opacity: 0.75;
   filter: none;
 }
 .graph-page.is-network-runtime .graph-network-node.is-isolated-node:hover .graph-node-dot {
-  stroke: var(--museum-accent);
+  stroke: var(--graph-node-root-fill, #0891b2) !important;
   stroke-dasharray: none;
   opacity: 1;
 }
+
+/* Dark Theme Tier Refinements: Luminous Jewels on Dark Velvet */
+:root[data-theme="dark"] .graph-page.is-network-runtime .graph-network-node.is-root-node .graph-node-dot {
+  fill: var(--graph-node-root-fill, #06b6d4) !important;
+  stroke: var(--graph-node-root-stroke, #a5f3fc) !important;
+  stroke-width: 3.2px !important;
+  filter: drop-shadow(0 0 14px rgba(6, 182, 212, 0.70)) drop-shadow(0 0 6px rgba(165, 243, 252, 0.55));
+}
+:root[data-theme="dark"] .graph-page.is-network-runtime .graph-network-node.is-branch-node .graph-node-dot {
+  fill: var(--graph-node-branch-fill, #10b981) !important;
+  stroke: var(--graph-node-branch-stroke, #a7f3d0) !important;
+  stroke-width: 2.6px !important;
+  filter: drop-shadow(0 0 10px rgba(16, 185, 129, 0.60));
+}
+:root[data-theme="dark"] .graph-page.is-network-runtime .graph-network-node.is-leaf-node .graph-node-dot {
+  fill: var(--graph-node-leaf-fill, #14b8a6) !important;
+  stroke: var(--graph-node-leaf-stroke, #99f6e4) !important;
+  stroke-width: 1.8px !important;
+  filter: drop-shadow(0 0 7px rgba(20, 184, 166, 0.45));
+}
+:root[data-theme="dark"] .graph-page.is-network-runtime .graph-network-node.is-isolated-node .graph-node-dot {
+  fill: var(--graph-node-isolated-fill, #1e293b) !important;
+  stroke: var(--graph-node-isolated-stroke, #64748b) !important;
+  stroke-width: 1.6px !important;
+  stroke-dasharray: 3 2.5;
+}
+
+/* Central Pearl Specular Core */
 .graph-page.is-network-runtime .graph-network-node .graph-node-core {
-  fill: var(--museum-paper);
-  opacity: 0.88;
+  fill: #ffffff;
+  opacity: 0.94;
+  filter: drop-shadow(0 0 2px rgba(255, 255, 255, 0.85));
   pointer-events: none;
-  transition: opacity 160ms ease, fill 160ms ease;
+  transition: opacity 160ms ease, fill 160ms ease, filter 160ms ease;
+}
+.graph-page.is-network-runtime .graph-network-node.is-root-node .graph-node-core {
+  fill: #ecfeff;
+  opacity: 0.98;
+}
+.graph-page.is-network-runtime .graph-network-node.is-branch-node .graph-node-core {
+  fill: #ecfdf5;
+  opacity: 0.95;
+}
+.graph-page.is-network-runtime .graph-network-node.is-leaf-node .graph-node-core {
+  fill: #f0fdfa;
+  opacity: 0.92;
 }
 .graph-page.is-network-runtime .graph-network-node.is-hovered .graph-node-core,
 .graph-page.is-network-runtime .graph-network-node:hover .graph-node-core,
 .graph-page.is-network-runtime .graph-network-node.is-selected .graph-node-core {
   opacity: 1;
   fill: #ffffff;
+  filter: drop-shadow(0 0 4px rgba(255, 255, 255, 1));
 }
 .graph-page.is-network-runtime .graph-network-node.is-context { opacity: .18; }
 .graph-page.is-network-runtime .graph-node-title {
   fill: var(--museum-ink);
-  font: 550 11px/1.2 var(--font-ui);
+  font: 600 12.5px/1.2 var(--font-ui);
   letter-spacing: 0.015em;
   paint-order: stroke fill;
   stroke: var(--museum-paper);
-  stroke-width: 4px;
+  stroke-width: 3.5px;
   stroke-linejoin: round;
   user-select: none;
   transition: opacity 120ms ease, font-weight 120ms ease, fill 120ms ease;
 }
 .graph-page.is-network-runtime .graph-network-node.is-root-node .graph-node-title {
   font-weight: 800;
-  font-size: 13px;
+  font-size: 14px;
   letter-spacing: 0.025em;
-  stroke-width: 4.5px;
+  stroke-width: 4px;
 }
 .graph-page.is-network-runtime .graph-network-node.is-branch-node .graph-node-title {
-  font-weight: 650;
-  font-size: 11.5px;
+  font-weight: 700;
+  font-size: 12.5px;
 }
 .graph-page.is-network-runtime .graph-network-node.is-leaf-node .graph-node-title {
-  font-weight: 500;
-  font-size: 10.5px;
-  opacity: 0.92;
+  font-weight: 550;
+  font-size: 11.5px;
+  opacity: 0.95;
 }
 .graph-page.is-network-runtime .graph-network-node.is-isolated-node .graph-node-title {
-  font-weight: 450;
-  font-size: 10.5px;
-  opacity: 0.75;
+  font-weight: 500;
+  font-size: 11.5px;
+  opacity: 0.8;
 }
 .graph-page.is-network-runtime .graph-network-node.is-selected .graph-node-title,
 .graph-page.is-network-runtime .graph-network-node.is-hovered .graph-node-title,
@@ -10719,11 +10794,22 @@ button.museum-entry-category[aria-pressed="true"] {
   font-weight: 900;
 }
 .graph-page.is-network-runtime .graph-network-node.is-branch-node .graph-node-tier-pill {
-  fill: color-mix(in srgb, var(--museum-secondary, #d4aa63) 14%, var(--museum-paper));
+  fill: color-mix(in srgb, var(--museum-secondary, #d4aa63) 18%, var(--museum-paper));
   stroke: var(--museum-secondary, #d4aa63);
+  stroke-width: 1.1px;
 }
 .graph-page.is-network-runtime .graph-network-node.is-branch-node .graph-node-tier-text {
   fill: var(--museum-secondary, #d4aa63);
+  font-weight: 800;
+}
+.graph-page.is-network-runtime .graph-network-node.is-leaf-node .graph-node-tier-pill {
+  fill: color-mix(in srgb, var(--museum-ink-muted) 12%, var(--museum-paper));
+  stroke: var(--museum-border-soft);
+  stroke-width: 1px;
+}
+.graph-page.is-network-runtime .graph-network-node.is-leaf-node .graph-node-tier-text {
+  fill: var(--museum-ink-muted);
+  font-weight: 700;
 }
 
 /* Degree Micro-Badges (DuckDB Editor reference) */
@@ -10757,29 +10843,47 @@ button.museum-entry-category[aria-pressed="true"] {
 
 /* 3. Edge Styling & Directional Links */
 :root {
-  --graph-edge-trunk: 3.0px;
-  --graph-edge-branch: 1.9px;
-  --graph-edge-leaf: 1.2px;
-  --graph-edge-cross: 1.4px;
+  --graph-edge-trunk: 1.8px;
+  --graph-edge-branch: 1.25px;
+  --graph-edge-leaf: 0.95px;
+  --graph-edge-cross: 1.05px;
+  --graph-node-root-fill: #0e7490;
+  --graph-node-root-stroke: #155e75;
+  --graph-node-branch-fill: #059669;
+  --graph-node-branch-stroke: #065f46;
+  --graph-node-leaf-fill: #2a9d8f;
+  --graph-node-leaf-stroke: #1b635c;
+  --graph-node-isolated-fill: #cbd5e1;
+  --graph-node-isolated-stroke: #94a3b8;
+}
+:root[data-theme="dark"] {
+  --graph-node-root-fill: #06b6d4;
+  --graph-node-root-stroke: #a5f3fc;
+  --graph-node-branch-fill: #10b981;
+  --graph-node-branch-stroke: #a7f3d0;
+  --graph-node-leaf-fill: #14b8a6;
+  --graph-node-leaf-stroke: #99f6e4;
+  --graph-node-isolated-fill: #1e293b;
+  --graph-node-isolated-stroke: #64748b;
 }
 .graph-page.is-network-runtime .graph-network-edge { cursor: pointer; }
 .graph-page.is-network-runtime .graph-network-edge:focus { outline: none; }
 .graph-page.is-network-runtime .graph-network-edge.is-trunk {
-  --graph-edge-width: var(--graph-edge-trunk, 3.0px);
+  --graph-edge-width: var(--graph-edge-trunk, 1.8px);
 }
 .graph-page.is-network-runtime .graph-network-edge.is-branch {
-  --graph-edge-width: var(--graph-edge-branch, 1.9px);
+  --graph-edge-width: var(--graph-edge-branch, 1.25px);
 }
 .graph-page.is-network-runtime .graph-network-edge.is-leaf {
-  --graph-edge-width: var(--graph-edge-leaf, 1.2px);
+  --graph-edge-width: var(--graph-edge-leaf, 0.95px);
 }
 .graph-page.is-network-runtime .graph-network-edge.is-cross {
-  --graph-edge-width: var(--graph-edge-cross, 1.4px);
+  --graph-edge-width: var(--graph-edge-cross, 1.05px);
 }
 .graph-page.is-network-runtime .graph-network-edge-casing {
   fill: none;
   stroke: var(--museum-paper, #ffffff);
-  stroke-width: calc(var(--graph-edge-width, 1.9px) + 3.2px);
+  stroke-width: calc(var(--graph-edge-width, 1.25px) + 2.2px);
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-opacity: 0.96;
@@ -10809,35 +10913,35 @@ button.museum-entry-category[aria-pressed="true"] {
   stroke-dasharray: 8 3;
 }
 .graph-page.is-network-runtime .graph-links .graph-network-edge-line {
-  stroke-width: var(--graph-edge-width, 1.9px);
+  stroke-width: var(--graph-edge-width, 1.25px);
 }
 .graph-page.is-network-runtime .graph-network-edge.is-selected .graph-network-edge-line,
 .graph-page.is-network-runtime .graph-network-edge.is-hovered .graph-network-edge-line,
 .graph-page.is-network-runtime .graph-network-edge:hover .graph-network-edge-line,
 .graph-page.is-network-runtime .graph-network-edge:focus-visible .graph-network-edge-line {
   color: var(--museum-accent);
-  stroke: currentColor; stroke-opacity: 1; stroke-width: calc(var(--graph-edge-width, 1.9px) + 1.4px);
+  stroke: currentColor; stroke-opacity: 1; stroke-width: calc(var(--graph-edge-width, 1.25px) + 0.9px);
   filter: drop-shadow(0 0 6px var(--museum-accent));
 }
 .graph-page.is-network-runtime .graph-network-edge.is-selected .graph-network-edge-casing,
 .graph-page.is-network-runtime .graph-network-edge.is-hovered .graph-network-edge-casing,
 .graph-page.is-network-runtime .graph-network-edge:hover .graph-network-edge-casing {
-  stroke-width: calc(var(--graph-edge-width, 1.9px) + 5px);
+  stroke-width: calc(var(--graph-edge-width, 1.25px) + 3.2px);
   stroke-opacity: 0.85;
 }
 .graph-page.is-network-runtime .graph-network-edge.is-incident .graph-network-edge-line {
-  color: var(--museum-ink); stroke: currentColor; stroke-opacity: .95; stroke-width: calc(var(--graph-edge-width, 1.9px) + 0.6px);
+  color: var(--museum-ink); stroke: currentColor; stroke-opacity: .95; stroke-width: calc(var(--graph-edge-width, 1.25px) + 0.4px);
 }
 .graph-page.is-network-runtime .graph-network-edge.is-upstream .graph-network-edge-line {
   color: #38bdf8 !important;
   stroke-opacity: 1 !important;
-  stroke-width: calc(var(--graph-edge-width, 1.9px) + 1.4px) !important;
+  stroke-width: calc(var(--graph-edge-width, 1.25px) + 0.9px) !important;
   filter: drop-shadow(0 0 6px #38bdf8);
 }
 .graph-page.is-network-runtime .graph-network-edge.is-downstream .graph-network-edge-line {
   color: #50fa7b !important;
   stroke-opacity: 1 !important;
-  stroke-width: calc(var(--graph-edge-width, 1.9px) + 1.4px) !important;
+  stroke-width: calc(var(--graph-edge-width, 1.25px) + 0.9px) !important;
   filter: drop-shadow(0 0 6px #50fa7b);
 }
 .graph-page.is-network-runtime .graph-network-edge.is-focus-l1 .graph-network-edge-line {
@@ -10932,8 +11036,8 @@ button.museum-entry-category[aria-pressed="true"] {
 
 /* Light Theme High-Contrast Refinements */
 :root[data-theme="light"] .graph-page.is-network-runtime .graph-network-node.is-root-node .graph-node-dot {
-  stroke: #fffaf3;
-  filter: drop-shadow(0 3px 10px rgba(0, 0, 0, 0.16));
+  stroke: var(--graph-node-root-stroke, #155e75);
+  filter: drop-shadow(0 4px 14px rgba(14, 116, 144, 0.42)) drop-shadow(0 0 10px rgba(6, 182, 212, 0.28));
 }
 :root[data-theme="light"] .graph-page.is-network-runtime .graph-network-edge-casing {
   stroke: #fffaf3;
@@ -10993,25 +11097,55 @@ button.museum-entry-category[aria-pressed="true"] {
 }
 .graph-page.is-network-runtime .graph-edge-editor { display: grid; gap: 12px; padding: 16px; }
 .graph-page.is-network-runtime .graph-edge-editor[hidden] { display: none; }
-.graph-page.is-network-runtime .graph-edge-editor h2 { margin: 0; color: var(--museum-ink); font: 700 16px/1.3 var(--font-ui); }
+.graph-page.is-network-runtime .graph-edge-editor h2 { margin: 0; color: var(--museum-ink); font: 700 15px/1.3 var(--font-ui); }
 .graph-page.is-network-runtime .graph-edge-editor form { display: grid; gap: 10px; }
 .graph-page.is-network-runtime .graph-edge-editor label { display: grid; gap: 5px; color: var(--museum-ink-muted); font: 600 11px/1.4 var(--font-ui); }
 .graph-page.is-network-runtime .graph-edge-editor input,
 .graph-page.is-network-runtime .graph-edge-editor select {
-  min-height: 36px; width: 100%; padding: 7px 9px; box-sizing: border-box;
-  border: 1px solid var(--museum-control-border); border-radius: 4px;
-  background: var(--museum-paper); color: var(--museum-ink); font: 500 12px/1.4 var(--font-ui);
+  min-height: 34px; width: 100%; padding: 6px 9px; box-sizing: border-box;
+  border: 1px solid var(--museum-control-border); border-radius: var(--museum-radius-control);
+  background: var(--museum-surface, var(--museum-paper)); color: var(--museum-ink); font: 500 11.5px/1.4 var(--font-ui);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.graph-page.is-network-runtime .graph-edge-editor input:focus-visible,
+.graph-page.is-network-runtime .graph-edge-editor select:focus-visible {
+  outline: 2px solid var(--museum-focus-ring);
+  outline-offset: 1px;
 }
 .graph-page.is-network-runtime .graph-edge-editor :is(input, select):disabled {
-  opacity: .72; cursor: default;
+  opacity: .65; cursor: not-allowed;
+  background: var(--museum-surface-muted, color-mix(in srgb, var(--museum-ink-muted) 8%, transparent));
+  color: var(--museum-text-muted, var(--museum-ink-muted));
 }
 .graph-page.is-network-runtime .graph-edge-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .graph-page.is-network-runtime .graph-edge-actions button {
-  min-height: 36px; padding: 7px 11px; border: 1px solid var(--museum-control-border);
-  border-radius: 4px; background: var(--museum-paper); color: var(--museum-ink); cursor: pointer;
+  min-height: 32px; padding: 6px 12px; border: 1px solid var(--museum-control-border);
+  border-radius: var(--museum-radius-control); background: var(--museum-surface, var(--museum-paper)); color: var(--museum-ink); cursor: pointer;
+  font: 600 11px/1 var(--font-ui);
+  transition: all 120ms ease;
 }
-.graph-page.is-network-runtime .graph-edge-actions button[type="submit"] { color: var(--museum-burgundy); border-color: var(--museum-burgundy); }
-.graph-page.is-network-runtime .graph-edge-message { min-height: 1em; color: var(--museum-ink-muted); font: 500 11px/1.4 var(--font-ui); }
+.graph-page.is-network-runtime .graph-edge-actions button:hover:not(:disabled) {
+  border-color: var(--museum-accent);
+  color: var(--museum-accent);
+  background: var(--museum-hover);
+}
+.graph-page.is-network-runtime .graph-edge-actions button:focus-visible {
+  outline: 2px solid var(--museum-focus-ring);
+  outline-offset: 2px;
+}
+.graph-page.is-network-runtime .graph-edge-actions button[type="submit"] {
+  color: var(--museum-on-accent, #fff);
+  background: var(--museum-accent);
+  border-color: var(--museum-accent);
+}
+.graph-page.is-network-runtime .graph-edge-actions button[type="submit"]:hover:not(:disabled) {
+  opacity: .92;
+}
+.graph-page.is-network-runtime .graph-edge-actions button:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+.graph-page.is-network-runtime .graph-edge-message { min-height: 1.2em; color: var(--museum-ink-muted); font: 500 10.5px/1.4 var(--font-ui); }
 .graph-page .graph-links path:not(.graph-network-edge-line):not(.graph-network-edge-hit) {
   stroke-opacity: .25; stroke-width: 1.4px; pointer-events: stroke;
 }
@@ -11105,9 +11239,10 @@ button.museum-entry-category[aria-pressed="true"] {
   grid-template-columns: minmax(190px, 1.2fr) auto auto auto auto auto 1fr;
   grid-template-areas:
     "title modes summary time filter layout counts"
-    "controls controls controls controls controls controls status";
+    "controls controls controls controls controls controls controls"
+    "status status status status status status status";
   align-items: center;
-  gap: 10px 12px;
+  gap: 8px 12px;
   padding: 12px 16px;
   border: 1px solid var(--museum-control-border);
   border-radius: var(--museum-radius-panel, 10px);
@@ -11445,6 +11580,20 @@ button.museum-entry-category[aria-pressed="true"] {
   opacity: 0.45;
   cursor: not-allowed;
 }
+.graph-page.is-network-runtime .graph-commandbar .graph-control-grid .graph-zoom-level {
+  min-width: 44px;
+  padding: 0 5px;
+  font: 700 11.5px/1 var(--font-mono, monospace);
+  letter-spacing: -0.02em;
+  color: var(--museum-ink);
+  background: color-mix(in srgb, var(--museum-paper) 60%, transparent);
+  text-align: center;
+}
+.graph-page.is-network-runtime .graph-commandbar .graph-control-grid .graph-zoom-level:hover,
+.graph-page.is-network-runtime .graph-commandbar .graph-control-grid .graph-zoom-level:focus-visible {
+  color: var(--museum-accent);
+  background: var(--museum-hover);
+}
 
 .graph-page.is-network-runtime .graph-dimension {
   display: inline-flex;
@@ -11615,29 +11764,29 @@ button.museum-entry-category[aria-pressed="true"] {
 }
 .graph-page.is-network-runtime #graph-selection-prompt strong {
   color: var(--museum-ink);
-  font-size: 19px;
+  font-size: 17px;
   line-height: 1.25;
 }
 .graph-page.is-network-runtime #graph-selection-prompt span {
   color: var(--museum-ink-muted);
   font-size: 11px;
-  line-height: 1.6;
+  line-height: 1.55;
 }
 .graph-page.is-network-runtime .graph-inspector-header {
-  padding-bottom: 14px;
+  padding-bottom: 12px;
   border-bottom-color: color-mix(in srgb, var(--museum-ink-muted) 22%, transparent);
 }
 .graph-page.is-network-runtime #graph-selected-title {
   margin: 4px 0 2px;
   color: var(--museum-ink);
-  font-size: 17px;
+  font-size: 15.5px;
   font-weight: 700;
   line-height: 1.3;
   letter-spacing: -0.015em;
 }
 .graph-page.is-network-runtime #graph-selected-meta {
   color: var(--museum-secondary-text);
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -11645,8 +11794,8 @@ button.museum-entry-category[aria-pressed="true"] {
 .graph-page.is-network-runtime #graph-selected-description {
   margin: 8px 0 12px;
   color: var(--museum-ink-muted);
-  font-size: 11.5px;
-  line-height: 1.6;
+  font-size: 11px;
+  line-height: 1.55;
 }
 .graph-page.is-network-runtime #graph-selected-facts {
   display: grid;
@@ -11666,7 +11815,7 @@ button.museum-entry-category[aria-pressed="true"] {
 .graph-page.is-network-runtime #graph-selected-facts dd {
   margin: 0;
   color: var(--museum-ink);
-  font: 500 11px/1.4 var(--font-code, monospace);
+  font: 500 10.5px/1.4 var(--font-code, monospace);
   word-break: break-all;
 }
 
@@ -11687,7 +11836,7 @@ button.museum-entry-category[aria-pressed="true"] {
 .graph-page.is-network-runtime .graph-neighbour-empty {
   margin: 2px 0 6px;
   color: var(--museum-ink-muted);
-  font: 400 10.5px/1.4 var(--font-ui);
+  font: 400 10px/1.4 var(--font-ui);
   font-style: italic;
 }
 .graph-page.is-network-runtime .graph-neighbour-item {
@@ -11715,17 +11864,21 @@ button.museum-entry-category[aria-pressed="true"] {
   border: 0;
   background: none;
   color: var(--museum-ink);
-  font: 600 11.5px/1.35 var(--font-ui);
+  font: 600 11px/1.35 var(--font-ui);
   text-align: left;
   cursor: pointer;
 }
 .graph-page.is-network-runtime .graph-neighbour-target:hover {
   color: var(--museum-accent);
 }
+.graph-page.is-network-runtime .graph-neighbour-target:focus-visible {
+  outline: 2px solid var(--museum-focus-ring);
+  outline-offset: 2px;
+}
 .graph-page.is-network-runtime .graph-neighbour-dir {
   color: var(--museum-ink-muted);
   font-weight: 700;
-  font-size: 11px;
+  font-size: 10.5px;
 }
 .graph-page.is-network-runtime .graph-neighbour-name {
   overflow: hidden;
@@ -11739,7 +11892,7 @@ button.museum-entry-category[aria-pressed="true"] {
   border-radius: 3px;
   background: color-mix(in srgb, var(--museum-ink-muted) 8%, transparent);
   color: var(--museum-ink-muted);
-  font: 600 10px/1 var(--font-ui);
+  font: 600 9.5px/1 var(--font-ui);
   cursor: pointer;
   transition: all 120ms ease;
 }
@@ -11747,6 +11900,10 @@ button.museum-entry-category[aria-pressed="true"] {
   color: var(--museum-accent);
   border-color: var(--museum-accent);
   background: var(--museum-hover);
+}
+.graph-page.is-network-runtime .graph-neighbour-badge:focus-visible {
+  outline: 2px solid var(--museum-focus-ring);
+  outline-offset: 2px;
 }
 .graph-page.is-network-runtime .graph-neighbour-add-btn {
   width: 100%;
@@ -11764,6 +11921,10 @@ button.museum-entry-category[aria-pressed="true"] {
   color: var(--museum-accent);
   border-color: var(--museum-accent);
   background: var(--museum-hover);
+}
+.graph-page.is-network-runtime .graph-neighbour-add-btn:focus-visible {
+  outline: 2px solid var(--museum-focus-ring);
+  outline-offset: 2px;
 }
 
 /* Inspector Primary action buttons */
@@ -11784,12 +11945,16 @@ button.museum-entry-category[aria-pressed="true"] {
   border-radius: var(--museum-radius-control);
   background: var(--museum-accent);
   color: var(--museum-on-accent, #fff);
-  font: 600 12px/1 var(--font-ui);
+  font: 600 11.5px/1 var(--font-ui);
   text-decoration: none;
   transition: opacity 120ms ease;
 }
 .graph-page.is-network-runtime #graph-open-link:hover {
   opacity: 0.92;
+}
+.graph-page.is-network-runtime #graph-open-link:focus-visible {
+  outline: 2px solid var(--museum-focus-ring);
+  outline-offset: 2px;
 }
 .graph-page.is-network-runtime #graph-related-link {
   display: inline-flex;
@@ -11801,13 +11966,17 @@ button.museum-entry-category[aria-pressed="true"] {
   border-radius: var(--museum-radius-control);
   background: var(--museum-surface, var(--museum-paper));
   color: var(--museum-ink);
-  font: 600 12px/1 var(--font-ui);
+  font: 600 11.5px/1 var(--font-ui);
   text-decoration: none;
   transition: all 120ms ease;
 }
 .graph-page.is-network-runtime #graph-related-link:hover {
   border-color: var(--museum-accent);
   color: var(--museum-accent);
+}
+.graph-page.is-network-runtime #graph-related-link:focus-visible {
+  outline: 2px solid var(--museum-focus-ring);
+  outline-offset: 2px;
 }
 
 /* Triage Panel Cards */
@@ -11822,7 +11991,7 @@ button.museum-entry-category[aria-pressed="true"] {
   border-bottom: 1px solid var(--museum-border-soft);
 }
 .graph-page.is-network-runtime .graph-triage-panel header strong {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--museum-ink);
 }
@@ -11841,7 +12010,7 @@ button.museum-entry-category[aria-pressed="true"] {
   border-radius: 12px;
   background: color-mix(in srgb, var(--museum-ink-muted) 12%, transparent);
   color: var(--museum-ink);
-  font: 700 11px/1 var(--font-code, monospace);
+  font: 700 10.5px/1 var(--font-code, monospace);
 }
 .graph-page.is-network-runtime .graph-isolated-list {
   display: grid;
@@ -11875,12 +12044,16 @@ button.museum-entry-category[aria-pressed="true"] {
   border: 0;
   background: none;
   color: var(--museum-ink);
-  font: 700 13px/1.35 var(--font-ui);
+  font: 700 12.5px/1.35 var(--font-ui);
   text-align: left;
   cursor: pointer;
 }
 .graph-page.is-network-runtime .graph-isolated-card-title:hover {
   color: var(--museum-accent);
+}
+.graph-page.is-network-runtime .graph-isolated-card-title:focus-visible {
+  outline: 2px solid var(--museum-focus-ring);
+  outline-offset: 2px;
 }
 .graph-page.is-network-runtime .graph-isolated-card-badge {
   display: inline-flex;
@@ -11927,6 +12100,10 @@ button.museum-entry-category[aria-pressed="true"] {
   border-color: var(--museum-accent);
   background: var(--museum-hover);
 }
+.graph-page.is-network-runtime .graph-isolated-btn-locate:focus-visible {
+  outline: 2px solid var(--museum-focus-ring);
+  outline-offset: 2px;
+}
 .graph-page.is-network-runtime .graph-isolated-btn-open {
   color: var(--museum-accent);
   font: 600 11px/1 var(--font-ui);
@@ -11934,6 +12111,10 @@ button.museum-entry-category[aria-pressed="true"] {
 }
 .graph-page.is-network-runtime .graph-isolated-btn-open:hover {
   text-decoration: underline;
+}
+.graph-page.is-network-runtime .graph-isolated-btn-open:focus-visible {
+  outline: 2px solid var(--museum-focus-ring);
+  outline-offset: 2px;
 }
 
 @media (max-width: 1199px) {
@@ -12064,6 +12245,21 @@ button.museum-entry-category[aria-pressed="true"] {
     min-height: 28px;
     font-size: 10px;
     padding: 0 8px;
+  }
+  .graph-page .graph-layout-panel,
+  .graph-page.is-network-runtime .graph-layout-panel {
+    right: 0;
+    left: auto;
+    width: min(320px, calc(100vw - 44px));
+    max-width: calc(100vw - 44px);
+    box-sizing: border-box;
+  }
+  .graph-page.is-network-runtime #graph-time-filters {
+    right: 0;
+    left: auto;
+    width: min(240px, calc(100vw - 44px));
+    max-width: calc(100vw - 44px);
+    box-sizing: border-box;
   }
 }
 
@@ -12543,7 +12739,6 @@ button.museum-entry-category[aria-pressed="true"] {
   line-height: 1.4;
   border-bottom: 1px solid var(--museum-border-soft);
 }
-.museum-org-heading-1 .org-face-org-level-1 { color: var(--museum-accent); }
 .museum-org-heading-2 {
   margin-top: 1.15em;
   margin-bottom: 0.25em;
@@ -12551,7 +12746,6 @@ button.museum-entry-category[aria-pressed="true"] {
   font-weight: 700;
   line-height: 1.4;
 }
-.museum-org-heading-2 .org-face-org-level-2 { color: var(--museum-secondary-text); }
 .museum-org-heading-3 {
   margin-top: 0.95em;
   margin-bottom: 0.2em;
@@ -12559,7 +12753,6 @@ button.museum-entry-category[aria-pressed="true"] {
   font-weight: 600;
   line-height: 1.45;
 }
-.museum-org-heading-3 .org-face-org-level-3 { color: var(--museum-success); }
 .museum-org-heading-4 {
   margin-top: 0.85em;
   margin-bottom: 0.15em;
@@ -12567,7 +12760,6 @@ button.museum-entry-category[aria-pressed="true"] {
   font-weight: 600;
   line-height: 1.45;
 }
-.museum-org-heading-4 .org-face-org-level-4 { color: var(--museum-accent); }
 .museum-org-heading-5,
 .museum-org-heading-6,
 .museum-org-heading-7,
@@ -12594,10 +12786,33 @@ button.museum-entry-category[aria-pressed="true"] {
   overflow-x: auto;
 }
 .museum-org-table-line {
-  white-space: pre;
-  font-family: var(--font-code, "Victor Mono", monospace);
+  white-space: pre !important;
+  font-family: var(--font-org-table, "Maple Mono NF CN", "Maple Mono SC NF", "Maple Mono CN", monospace) !important;
+  font-size: var(--font-org-table-size, 13px) !important;
+  font-weight: 400 !important;
+  font-style: normal !important;
+  line-height: 1.5 !important;
+  letter-spacing: 0 !important;
+  word-spacing: 0 !important;
+  tab-size: 8 !important;
+  font-variant-ligatures: none !important;
+  font-feature-settings: "calt" 0, "liga" 0, "dlig" 0, "tnum" 1 !important;
+  font-kerning: none !important;
+  text-rendering: geometricPrecision !important;
+  -webkit-font-smoothing: antialiased !important;
   color: var(--museum-secondary-text);
   overflow-x: auto;
+}
+.museum-org-table-line * {
+  font-family: inherit !important;
+  font-size: inherit !important;
+  font-weight: inherit !important;
+  font-style: inherit !important;
+  letter-spacing: inherit !important;
+  word-spacing: inherit !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
 }
 .museum-org-meta-line,
 .museum-org-drawer-line {
@@ -12605,13 +12820,22 @@ button.museum-entry-category[aria-pressed="true"] {
   font-size: 0.92em;
   opacity: 0.85;
 }
-.org-face-org-level-1 { color: var(--museum-accent); font-weight: 700; }
-.org-face-org-level-2 { color: var(--museum-secondary-text); font-weight: 700; }
-.org-face-org-level-3 { color: var(--museum-success); font-weight: 600; }
-.org-face-org-level-4 { color: var(--museum-accent); font-weight: 600; }
-.org-face-org-level-5 { color: var(--museum-secondary-text); font-weight: 600; }
-.org-face-org-level-6 { color: var(--museum-success); font-weight: 600; }
-.org-face-org-level-7, .org-face-org-level-8 { color: var(--museum-accent); font-weight: 600; }
+.org-face-org-level-1, .museum-heading-level-1 { color: var(--museum-heading-1); }
+.org-face-org-level-1 { font-weight: 700; }
+.org-face-org-level-2, .museum-heading-level-2 { color: var(--museum-heading-2); }
+.org-face-org-level-2 { font-weight: 700; }
+.org-face-org-level-3, .museum-heading-level-3 { color: var(--museum-heading-3); }
+.org-face-org-level-3 { font-weight: 600; }
+.org-face-org-level-4, .museum-heading-level-4 { color: var(--museum-heading-4); }
+.org-face-org-level-4 { font-weight: 600; }
+.org-face-org-level-5, .museum-heading-level-5 { color: var(--museum-heading-5); }
+.org-face-org-level-5 { font-weight: 600; }
+.org-face-org-level-6, .museum-heading-level-6 { color: var(--museum-heading-6); }
+.org-face-org-level-6 { font-weight: 600; }
+.org-face-org-level-7, .museum-heading-level-7 { color: var(--museum-heading-7); }
+.org-face-org-level-7 { font-weight: 600; }
+.org-face-org-level-8, .museum-heading-level-8 { color: var(--museum-heading-8); }
+.org-face-org-level-8 { font-weight: 600; }
 
 .org-face-org-todo {
   display: inline-block;
@@ -12672,9 +12896,24 @@ button.museum-entry-category[aria-pressed="true"] {
 .org-face-org-link:hover {
   color: var(--museum-accent-hover);
 }
-.org-face-org-table { color: var(--museum-ink); }
-.org-face-org-table-pipe { color: var(--museum-accent); font-weight: 700; opacity: 0.85; }
-.org-face-org-table-rule { color: var(--museum-ink-muted); opacity: 0.75; }
+.org-face-org-table {
+  color: var(--museum-ink);
+  font-family: var(--font-org-table, "Maple Mono NF CN", "Maple Mono SC NF", "Maple Mono CN", monospace);
+  font-size: var(--font-org-table-size, 13px);
+}
+.org-face-org-table-pipe {
+  color: var(--museum-accent);
+  font-weight: 700;
+  opacity: 0.85;
+  font-family: var(--font-org-table, "Maple Mono NF CN", "Maple Mono SC NF", "Maple Mono CN", monospace);
+  font-size: var(--font-org-table-size, 13px);
+}
+.org-face-org-table-rule {
+  color: var(--museum-ink-muted);
+  opacity: 0.75;
+  font-family: var(--font-org-table, "Maple Mono NF CN", "Maple Mono SC NF", "Maple Mono CN", monospace);
+  font-size: var(--font-org-table-size, 13px);
+}
 
 .org-face-org-list-dt {
   color: var(--museum-accent);
@@ -13315,15 +13554,6 @@ mark.org-search-match.is-active {
   .dashboard-result-meta, .dashboard-result-time, .dashboard-result-context { font-size: var(--museum-type-meta); line-height: 1.5; }
   .dashboard-result-tags { margin-left: auto; justify-content: flex-end; }
 
-  .graph-page.is-network-runtime .graph-commandbar {
-    grid-template-columns: minmax(190px, 1fr) auto auto auto auto auto;
-    grid-template-areas: "title modes summary time filter layout" "counts counts counts counts counts counts" "controls controls controls controls controls controls" "status status status status status status";
-  }
-  .graph-page.is-network-runtime .graph-commandbar #graph-match-status { grid-column: 1 / -1; justify-self: start; white-space: normal; background: transparent; padding: 0; }
-  .graph-page.is-network-runtime .graph-view-controls { min-width: 0; justify-content: flex-start; }
-  .graph-page.is-network-runtime .graph-commandbar .graph-view-controls { grid-column: 1 / -1; }
-  .graph-page.is-network-runtime .graph-commandbar .graph-counts { justify-self: start; }
-
   body[data-page-kind="ai-center"], body:has(.museum-ai-center-shell) { background: var(--museum-paper); }
   .museum-ai-center-shell { padding-top: calc(var(--topbar-height) + 28px); }
   .museum-ai-center-intro { color: var(--museum-text); margin-bottom: 20px; }
@@ -13339,9 +13569,8 @@ mark.org-search-match.is-active {
   .related-index-row { border-radius: var(--museum-radius-control); }
   .related-modebar { background: var(--museum-paper); border-color: var(--museum-border-soft); }
   .related-modebar :where(button, a) { color: var(--museum-text); }
-  .related-summary, .related-summary p, .related-summary li, .related-full.article-container { font-size: 13.5px; line-height: 1.65; }
   .related-summary ol { list-style: none; padding-left: 0; }
-  .article-container :where(p, ul, ol, dl) { margin-block: 0 1em; }
+  .article-container :where(p, ul, ol, dl):not(:where(.museum-article-meta *)) { margin-block: 0 1em; }
   .article-container :where(blockquote, pre, .org-src-container, .museum-table-scroll, figure) { margin-block: 1.2em; }
   :where(.museum-asset img, .museum-asset video, .museum-asset-card, .org-museum-experience) { border-radius: var(--museum-radius-panel); }
   :where(.article-container, .related-paper, .museum-ai-panel) :where(a) { text-underline-offset: .2em; }
@@ -13360,7 +13589,7 @@ mark.org-search-match.is-active {
   .org-museum-page.museum-ai-open #main-scroll { right: min(480px, calc(100vw - 20px)); }
   .org-museum-page.museum-ai-open .museum-article-layout { display: block; width: 100%; margin-inline: auto; box-sizing: border-box; }
 }
-@media screen and (max-width: 1199px) {
+@media screen and (min-width: 761px) and (max-width: 1199px) {
   .graph-page.is-network-runtime .graph-commandbar { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "title counts" "modes time" "summary summary" "filter layout" "controls controls" "status status"; }
 }
 @media screen and (max-width: 960px) {
@@ -13372,6 +13601,12 @@ mark.org-search-match.is-active {
 @media screen and (max-width: 820px) {
   :root { --topbar-height: 108px; }
   :root:has(.org-museum-home) { --topbar-height: 58px; }
+  /* The bookshelf owns navigation once the full link row cannot fit. */
+  .museum-nav-timeline,
+  .museum-nav-graph,
+  .museum-nav-related,
+  .museum-nav-ai,
+  .museum-nav-all { display: none; }
   .museum-topbar, .org-museum-home .museum-topbar { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; }
   .museum-topbar .museum-search-line { display: flex; width: 100%; box-sizing: border-box; grid-column: 1 / -1; grid-row: 2; }
   .museum-topbar .museum-top-links { grid-column: 2; grid-row: 1; }
@@ -13411,8 +13646,9 @@ mark.org-search-match.is-active {
 @media (max-width: 600px) {
   .graph-page.is-network-runtime .graph-commandbar #btn-layout { flex: 0 1 auto; min-width: 118px; }
   .graph-page .graph-layout-panel,
+  .graph-page.is-network-runtime .graph-layout-panel,
   .graph-page.is-network-runtime .graph-layout-settings .graph-layout-panel {
-    right: auto; left: 0; width: min(390px, calc(100vw - 42px));
+    right: 0; left: auto; width: min(320px, calc(100vw - 44px)); max-width: calc(100vw - 44px); box-sizing: border-box;
   }
   .museum-org-source { padding: 12px; font-size: 12px; }
   .museum-article-view-toolbar button { min-height: 44px; }
@@ -13452,7 +13688,7 @@ mark.org-search-match.is-active {
     font-size: var(--museum-type-body);
     line-height: var(--museum-leading-body);
   }
-  :is(.article-container, .museum-md) :is(p, ul, ol, dl) { margin-block: 0 1em; }
+  :is(.article-container, .museum-md) :is(p, ul, ol, dl):not(:where(.museum-article-meta *)) { margin-block: 0 1em; }
   :is(.article-container, .museum-md) li { margin-block: .3em; }
   :is(.article-container, .museum-md) li > :is(ul, ol) { margin-block: .35em; }
   .museum-md pre {

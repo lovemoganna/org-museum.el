@@ -46,6 +46,113 @@ test('random layout selection never repeats the current topology', () => {
   }
 });
 
+test('organic springs preserve equal branch lengths in a symmetric star', () => {
+  const nodes = ['hub', 'a', 'b', 'c'].map(id => ({id, name: id}));
+  const links = ['a', 'b', 'c'].map(target => ({source: 'hub', target}));
+  const original = JSON.stringify({nodes, links});
+  for (const spacing of [.7, 1, 2]) {
+    const points = layout.positions(nodes, links, 'organic', 1100, 750, {spacing});
+    const hub = points.get('hub');
+    const lengths = links.map(edge => {
+      const leaf = points.get(edge.target);
+      return Math.hypot(leaf.x - hub.x, leaf.y - hub.y);
+    });
+    assert(Math.max(...lengths) - Math.min(...lengths) < 1e-6,
+      `equivalent branches must reach the same equilibrium at spacing ${spacing}`);
+  }
+  assert.equal(JSON.stringify({nodes, links}), original);
+});
+
+test('organic real-note titles have clearance at desktop and narrow canvas sizes', () => {
+  const nodes = graph.nodes.filter(node => node.degree > 0);
+  const halfWidth = (node, width) => Math.max(64,
+    (Math.min(width < 600 ? 12 : 28, Array.from(String(node.name || node.id)).length) * 11 + 24) / 2);
+  for (const [width, height] of [[967, 820], [360, 700], [1400, 700]]) {
+    for (const spacing of [.7, 1, 2]) {
+      const points = layout.positions(nodes, graph.links, 'organic', width, height, {spacing});
+      for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+        const a = points.get(nodes[i].id), b = points.get(nodes[j].id);
+        assert(Math.abs(a.x - b.x) >= halfWidth(nodes[i], width) + halfWidth(nodes[j], width) + 19.9 ||
+          Math.abs(a.y - b.y) >= 103.9,
+          `title clearance: ${nodes[i].name} / ${nodes[j].name}, ${width}, ${spacing}`);
+      }
+    }
+  }
+});
+
+test('organic is repeatable and reciprocal links do not distort its geometry', () => {
+  const nodes = graph.nodes.filter(node => node.degree > 0);
+  const forward = layout.positions(nodes, graph.links, 'organic', 967, 820);
+  const reverse = layout.positions(nodes.slice().reverse(), graph.links.slice().reverse(), 'organic', 967, 820);
+  const reciprocal = graph.links.concat(graph.links.map(edge => ({...edge, source: edge.target, target: edge.source})));
+  const doubled = layout.positions(nodes, reciprocal, 'organic', 967, 820);
+  for (const node of nodes) {
+    assert.deepEqual(forward.get(node.id), reverse.get(node.id));
+    assert.deepEqual(forward.get(node.id), doubled.get(node.id));
+  }
+});
+
+test('all 12 layouts clear real note titles at default and extreme spacing', () => {
+  const nodes = graph.nodes.filter(node => node.degree > 0);
+  const half = (node, width) => Math.max(70, Array.from(node.name || node.id)
+    .slice(0, width < 600 ? 12 : 28)
+    .reduce((sum, char) => sum + (char.charCodeAt(0) < 256 ? 6.8 : 11), 24) / 2);
+  for (const mode of layout.modes) for (const [width, height] of [[939, 890], [360, 524]]) {
+    for (const spacing of [.7, 1, 2]) {
+      const points = layout.positions(nodes, graph.links, mode, width, height, {spacing});
+      for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+        const a = points.get(nodes[i].id), b = points.get(nodes[j].id);
+        assert(Math.abs(a.x - b.x) >= half(nodes[i], width) + half(nodes[j], width) + 23.9 ||
+          Math.abs(a.y - b.y) >= 103.9,
+          `${mode}: title collision at ${width}px / ${spacing}: ${nodes[i].name} / ${nodes[j].name}`);
+      }
+    }
+  }
+});
+
+test('every layout covers empty, single, and deep cyclic graphs without omissions', () => {
+  const nodes = Array.from({length: 16}, (_, i) => ({id: `n${i}`, name: `层级节点 ${i}`}));
+  const links = nodes.slice(1).map((node, i) => ({source: nodes[i].id, target: node.id}));
+  links.push({source: 'n15', target: 'n12'});
+  const original = JSON.stringify({nodes, links});
+  for (const mode of layout.modes) {
+    assert.equal(layout.positions([], [], mode, 1000, 700).size, 0);
+    assert.equal(layout.positions(nodes.slice(0, 1), [], mode, 1000, 700).size, 1);
+    const points = layout.positions(nodes, links, mode, 1000, 700, {focusedNodeId: 'n0'});
+    assert.equal(points.size, nodes.length, mode);
+    for (const node of nodes) {
+      assert(Number.isFinite(points.get(node.id).x) && Number.isFinite(points.get(node.id).y), `${mode}: ${node.id}`);
+    }
+  }
+  const spoke = layout.positions(nodes, links, 'spoke', 1000, 700, {focusedNodeId: 'n0'});
+  assert.equal(spoke.get('n11').depth, 11, 'branches beyond the old eight-level cutoff remain reachable');
+  assert.equal(JSON.stringify({nodes, links}), original);
+});
+
+test('both tidy trees center parents over asymmetric subtrees', () => {
+  const nodes = ['root','a','b','a1','a2','a3','b1'].map(id => ({id, name: id}));
+  const links = [['root','a'],['root','b'],['a','a1'],['a','a2'],['a','a3'],['b','b1']]
+    .map(([source,target]) => ({source,target}));
+  for (const mode of ['treeVertical', 'treeHorizontal']) {
+    const p = layout.positions(nodes, links, mode, 1100, 750, {focusedNodeId: 'root'});
+    const axis = mode === 'treeVertical' ? 'x' : 'y';
+    assert(Math.abs(p.get('root')[axis] - (p.get('a')[axis] + p.get('b')[axis])/2) < 1e-6);
+    assert(Math.abs(p.get('a')[axis] - (p.get('a1')[axis] + p.get('a3')[axis])/2) < 1e-6);
+    assert(p.get('b1')[axis] > p.get('a3')[axis], 'different subtrees occupy separate intervals');
+  }
+});
+
+test('closed cycles do not collapse into a line in grid and layered layouts', () => {
+  const nodes = ['a','b','c'].map(id => ({id, name: id}));
+  const links = [{source:'a',target:'b'},{source:'b',target:'c'},{source:'c',target:'a'}];
+  for (const mode of ['grid','semantic','dagre']) {
+    const p = layout.positions(nodes,links,mode,939,890);
+    const a=p.get('a'),b=p.get('b'),c=p.get('c');
+    const area=Math.abs((b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x));
+    assert(area>1000, `${mode}: separate cyclic relationships without a middle node on the shortcut`);
+  }
+});
+
 test('hierarchy respects reverse direction and keeps directed cycles together', () => {
   const nodes = ['a','b','c','d','e'].map(id => ({id}));
   const links = [{source:'b',target:'a',direction:'reverse'},

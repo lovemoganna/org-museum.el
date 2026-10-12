@@ -2,6 +2,22 @@
 (require 'ert)
 (require 'org-museum)
 
+(ert-deftest org-museum-related-excludes-article-only-org-controls ()
+  "Reading panes retain content without copying an unbound article toolbar."
+  (let ((result
+         (org-museum--related-clean-fragment
+          (concat "<div class=\"museum-article-view-toolbar\" role=\"group\">"
+                  "<button data-article-syntax>Org Mode</button><span role=\"status\"></span></div>"
+                  "<section class=\"museum-org-view\" hidden><pre class=\"museum-org-source\">"
+                  "<span>" (make-string 100000 ?x) "</span></pre></section>"
+                  "<h2 id=\"kept\">Heading</h2><p>Body</p>"
+                  "<pre class=\"src src-sql\">SELECT 1;</pre>"))))
+    (should-not (string-search "data-article-syntax" result))
+    (should-not (string-search "museum-org-source" result))
+    (should-not (string-search "museum-org-view" result))
+    (should (string-search "<h2 id=\"kept\">Heading</h2><p>Body</p>" result))
+    (should (string-search "SELECT 1;" result))))
+
 (ert-deftest org-museum-org-view-preserves-syntax-and-emacs-font-lock ()
   (let ((file (make-temp-file "museum-org-view-" nil ".org")))
     (unwind-protect

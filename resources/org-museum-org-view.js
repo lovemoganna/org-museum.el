@@ -435,22 +435,14 @@
     if (/^\s*\|/.test(line)) {
       var tblEl = document.createElement('div');
       tblEl.className = 'museum-org-line museum-org-table-line';
-      if (/^\s*\|[-+]+\|?\s*$/.test(trimmed)) {
+      if (/^\s*\|[-+|]+\s*$/.test(trimmed)) {
         tblEl.innerHTML = '<span class="org-face-org-table-rule">' + escapeHtml(line) + '</span>';
       } else {
-        var parts = line.split('|');
-        var out = '';
-        for (var p = 0; p < parts.length; p++) {
-          if (p === 0 && parts[p] === '') {
-            out += '<span class="org-face-org-table-pipe">|</span>';
-          } else if (p === parts.length - 1 && parts[p] === '') {
-            out += '<span class="org-face-org-table-pipe">|</span>';
-          } else {
-            out += '<span class="org-face-org-table">' + highlightInline(parts[p]) + '</span>' +
-                   (p < parts.length - 1 ? '<span class="org-face-org-table-pipe">|</span>' : '');
-          }
-        }
-        tblEl.innerHTML = out;
+        var html = line.replace(/(\|)([^|]*)/g, function (_, pipe, content) {
+          return '<span class="org-face-org-table-pipe">|</span>' +
+                 (content ? '<span class="org-face-org-table">' + highlightInline(content) + '</span>' : '');
+        });
+        tblEl.innerHTML = html;
       }
       return tblEl;
     }
