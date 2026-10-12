@@ -870,6 +870,7 @@ Verify that `org-museum-css-file` points to a valid path relative to the plugin 
 - Improves graph layouts, label collision handling, reciprocal edge routing, and graph interaction; retains real graph data.
 - Preserves Org table text and configures background export pipes for UTF-8 on Windows.
 - Bundles Maple Mono NF CN Regular with its SIL OFL license and SHA-256 record.
+- Preserves existing published image assets when GitHub Actions rebuilds source notes.
 
 ### v2.4.2
 
