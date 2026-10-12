@@ -136,7 +136,9 @@ def validate(root: Path):
             datetime.date.fromisoformat(meta["DATE"])
         except ValueError as error:
             raise Invalid("org: DATE must be an ISO calendar date") from error
-        if meta.get("WIKI_STATUS", "published") not in {"published", "draft"}:
+        raw_status = meta.get("WIKI_STATUS", "published").strip().lower()
+        status = "published" if raw_status == "publish" else raw_status
+        if status not in {"published", "draft"}:
             raise Invalid("org: unsupported publication status")
         for target in re.findall(r"\[\[file:([^]\n]+)\]", prose(text)):
             target = unquote(target.split("::", 1)[0])
@@ -146,7 +148,7 @@ def validate(root: Path):
             if not (destination.is_relative_to(notes) or destination.is_relative_to(root / "note-assets")):
                 raise Invalid("link: file links must resolve to notes or note-assets")
         records.append({"id": note_id, "ingestId": meta["INGEST_ID"], "path": relative,
-                        "title": meta["TITLE"], "status": meta.get("WIKI_STATUS", "published"),
+                        "title": meta["TITLE"], "status": status,
                         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                         "href": "pages/collected/" + path.relative_to(notes).with_suffix(".html").as_posix()})
     known_ids = seen | {p["id"] for p in legacy_records(root)}

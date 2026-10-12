@@ -58,6 +58,13 @@ class Validation(unittest.TestCase):
         output = self.root / "output"
         with self.assertRaises(OSError): m.build(self.root, self.root, output, "nonexistent-emacs-123")
         self.assertFalse(output.exists())
+    def test_publish_status_normalized(self):
+        self.path.write_text(note().replace("#+TITLE: 中文笔记\n", "#+TITLE: 中文笔记\n#+WIKI_STATUS: publish\n"), encoding="utf-8")
+        records = m.validate(self.root)
+        self.assertEqual(records[0]["status"], "published")
+    def test_invalid_status_rejected(self):
+        self.path.write_text(note().replace("#+TITLE: 中文笔记\n", "#+TITLE: 中文笔记\n#+WIKI_STATUS: drfat\n"), encoding="utf-8")
+        with self.assertRaises(m.Invalid): m.validate(self.root)
 
 class SourceSync(unittest.TestCase):
     def setUp(self):

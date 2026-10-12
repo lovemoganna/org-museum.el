@@ -207,6 +207,22 @@
                         :type 'org-museum-index-scan-failed))
       (delete-directory root t))))
 
+(ert-deftest org-museum-index-normalizes-publish-status ()
+  "A WIKI_STATUS of 'publish' is normalized to 'published'."
+  (let* ((root (make-temp-file "org-museum-status-test-" t))
+         (org-museum-root-dir root)
+         (org-museum-scan-dir "pages")
+         (file (expand-file-name "pages/status.org" root)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory file) t)
+          (with-temp-file file
+            (insert "#+TITLE: Status\n#+WIKI_ID: status\n#+WIKI_STATUS: publish\n"))
+          (org-museum-index-build t)
+          (should (equal "published"
+                         (org-museum-page-status (gethash "status" (org-museum-index-pages org-museum--index))))))
+      (delete-directory root t))))
+
 (ert-deftest org-museum-file-link-with-heading-builds-an-edge ()
   (let* ((root (make-temp-file "org-museum-file-heading-test-" t))
          (source (expand-file-name "source.org" root))

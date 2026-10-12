@@ -2803,8 +2803,9 @@ PAGES and ALIASES use the same resolution rules as ordinary Org links."
            (tags   (org-museum--parse-tags (gethash "FILETAGS" kw)))
            (cat    (or (gethash "CATEGORY" kw) "uncategorized"))
            (theme  (gethash "WIKI_THEME" kw))
-           (status (downcase (string-trim
+           (raw-status (downcase (string-trim
                               (or (gethash "WIKI_STATUS" kw) "published"))))
+           (status (if (equal raw-status "publish") "published" raw-status))
            (description (gethash "DESCRIPTION" kw))
            (relation-result (org-museum--parse-relation-annotations ast))
            (modified (org-museum--file-mtime file))
@@ -14390,9 +14391,10 @@ Guards:
           ("category" (setq content (org-museum--curation-replace-keyword
                                      content "CATEGORY" (org-museum--curation-clean-string value key 80))))
           ("status"
-           (unless (member value '("draft" "published"))
-             (signal 'org-museum-curation-error (list "status must be draft or published")))
-           (setq content (org-museum--curation-replace-keyword content "WIKI_STATUS" value)))
+           (let ((val (if (equal value "publish") "published" value)))
+             (unless (member val '("draft" "published"))
+               (signal 'org-museum-curation-error (list "status must be draft or published")))
+             (setq content (org-museum--curation-replace-keyword content "WIKI_STATUS" val))))
           ("createdDate"
            (unless (and (stringp value) (string-match-p "\\`[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\'" value))
              (signal 'org-museum-curation-error (list "createdDate must be YYYY-MM-DD")))
