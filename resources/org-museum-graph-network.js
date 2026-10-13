@@ -194,7 +194,7 @@
       '<label class="graph-layout-check"><input id="graph-edge-particles-check" name="edge_particles" type="checkbox" data-edge-particles aria-label="动态流向粒子动效">动态流向粒子动效 (Flow Particles)</label></fieldset>' +
       '<fieldset class="graph-layout-fieldset"><legend>节点与层级徽章</legend>' +
       '<label class="graph-layout-check"><input id="graph-node-tier-check" name="node_tier" type="checkbox" data-node-tier-badges aria-label="显示节点层级微标">显示节点层级微标 (L0 根 / L1 主支)</label></fieldset>' +
-      '<small>参照 DuckDB Editor 专业级图谱排版：层级分明、主干突出、端点避障精准。</small></div>';
+      '<small>知识图谱拓扑排版：层级分明、主干突出、端点避障精准。</small></div>';
     controls.insertBefore(settings, document.getElementById('btn-layout'));
     var layoutSelect = settings.querySelector('[data-layout-mode]');
     var layoutMenu = document.getElementById('graph-layout-options');
@@ -1445,7 +1445,7 @@
           if (tMeta) {
             if (edge.count > 1) {
               var tierNames = { trunk: '主干', branch: '分支', leaf: '末梢', cross: '跨支' };
-              var listHtml = '<div class="graph-tooltip-reactor-badge">Reactor 视角 · 共 ' + edge.count + ' 条关联 · 合计权重 ' + (edge.totalWeight || edge.weight) + '</div>';
+              var listHtml = '<div class="graph-tooltip-reactor-badge">多重关联 · 共 ' + edge.count + ' 条关系 · 权重 ' + (edge.totalWeight || edge.weight) + '</div>';
               listHtml += '<div class="graph-tooltip-edge-list">';
               (edge.edges || []).forEach(function (sub) {
                 var sf = edgeMath.flow(sub);
@@ -1975,7 +1975,7 @@
       var tNode = nodeById(target) || { name: target, id: target };
 
       var title = document.createElement('h2');
-      title.textContent = '节点关联 · Reactor 视角';
+      title.textContent = '节点间关联详情';
       edgeEditor.appendChild(title);
 
       var header = document.createElement('div');
