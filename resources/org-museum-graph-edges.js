@@ -108,13 +108,26 @@
       var isHorizontal = layoutMode === 'treeHorizontal' || (layoutMode !== 'treeVertical' && layoutMode !== 'dagre' && Math.abs(dx) > Math.abs(dy));
       var c1, c2;
       if (isHorizontal) {
-        var midX = (start.x + end.x) / 2;
-        c1 = {x: midX, y: start.y};
-        c2 = {x: midX, y: end.y};
+        if (Math.abs(dx) < 24) {
+          var loopSign = (start.x < 700) ? -1 : 1;
+          var sag = Math.max(26, distance * 0.2) * loopSign;
+          c1 = {x: start.x + sag, y: start.y + (end.y - start.y) * 0.25};
+          c2 = {x: end.x + sag, y: start.y + (end.y - start.y) * 0.75};
+        } else {
+          var midX = (start.x + end.x) / 2;
+          c1 = {x: midX, y: start.y};
+          c2 = {x: midX, y: end.y};
+        }
       } else {
-        var midY = (start.y + end.y) / 2;
-        c1 = {x: start.x, y: midY};
-        c2 = {x: end.x, y: midY};
+        if (Math.abs(dy) < 24) {
+          var dip = Math.max(24, distance * 0.18);
+          c1 = {x: start.x + (end.x - start.x) * 0.25, y: start.y + dip};
+          c2 = {x: start.x + (end.x - start.x) * 0.75, y: end.y + dip};
+        } else {
+          var midY = (start.y + end.y) / 2;
+          c1 = {x: start.x, y: midY};
+          c2 = {x: end.x, y: midY};
+        }
       }
       return {id: edge.id, sourceId: id(edge.source), targetId: id(edge.target),
         lane: lane, start: start, control: control, c1: c1, c2: c2, end: end,
@@ -125,27 +138,49 @@
 
     if (isRadial && lane === 0) {
       var sId = id(edge.source), tId = id(edge.target);
-      var center=rootCenter || {x:0,y:0,id:'root'};
+      var center = rootCenter || {x: 0, y: 0, id: 'root'};
       var isRootLink = sId === center.id || tId === center.id;
-      var srx=source.x-center.x,sry=source.y-center.y,trx=target.x-center.x,tryy=target.y-center.y;
+      var srx = source.x - center.x, sry = source.y - center.y, trx = target.x - center.x, tryy = target.y - center.y;
       var distToOrigin = Math.abs(srx * tryy - sry * trx) / distance;
-      if (isRootLink || layoutMode === 'grid' || distToOrigin > 55) {
+      if (isRootLink || layoutMode === 'grid') {
         return {id: edge.id, sourceId: id(edge.source), targetId: id(edge.target),
           lane: lane, start: start, control: control, end: end,
           curveType: 'linear',
           path: 'M' + start.x + ',' + start.y + 'L' + end.x + ',' + end.y};
       }
-      // Cross-branch edge piercing through center root: bow outward around origin
+      // Cross-branch edge piercing through center root or across concentric rings: bow outward around origin
       var mx = (start.x + end.x) / 2, my = (start.y + end.y) / 2;
-      var mDist = Math.hypot(mx-center.x, my-center.y);
-      var outX = mDist >= 5 ? (mx-center.x) / mDist : -uy;
-      var outY = mDist >= 5 ? (my-center.y) / mDist : ux;
-      var bow = Math.max(55, distance * 0.24);
+      var mDist = Math.hypot(mx - center.x, my - center.y);
+      var outX = mDist >= 5 ? (mx - center.x) / mDist : -uy;
+      var outY = mDist >= 5 ? (my - center.y) / mDist : ux;
+      var bow = distToOrigin < 55 ? Math.max(55, distance * 0.24) : Math.max(16, distance * 0.08);
       var curvedControl = {x: mx + outX * bow, y: my + outY * bow};
       return {id: edge.id, sourceId: id(edge.source), targetId: id(edge.target),
         lane: lane, start: start, control: curvedControl, end: end,
         curveType: 'quad',
         path: 'M' + start.x + ',' + start.y + 'Q' + curvedControl.x + ',' + curvedControl.y +
+          ' ' + end.x + ',' + end.y};
+    }
+
+    var isNetwork = layoutMode === 'organic' || layoutMode === 'force' ||
+      layoutMode === 'clusteredForce' || layoutMode === 'groupedCircular';
+    if (isNetwork && routingMode !== 'straight' && lane === 0) {
+      var mxNet = (start.x + end.x) / 2, myNet = (start.y + end.y) / 2;
+      var outwardSign = canonical;
+      if (rootCenter) {
+        var vcx = mxNet - rootCenter.x, vcy = myNet - rootCenter.y;
+        var dot = vcx * (-uy) + vcy * ux;
+        if (Math.abs(dot) > 2) outwardSign = dot >= 0 ? 1 : -1;
+      }
+      var naturalBow = Math.min(16, Math.max(5, distance * 0.055)) * outwardSign;
+      var quadControl = {
+        x: mxNet - uy * naturalBow,
+        y: myNet + ux * naturalBow
+      };
+      return {id: edge.id, sourceId: id(edge.source), targetId: id(edge.target),
+        lane: lane, start: start, control: quadControl, end: end,
+        curveType: 'quad',
+        path: 'M' + start.x + ',' + start.y + 'Q' + quadControl.x + ',' + quadControl.y +
           ' ' + end.x + ',' + end.y};
     }
 
@@ -200,7 +235,7 @@
     });
     return cost;
   }
-  function routes(nodes, edges, points, radii, previous, layoutMode, routingMode, obstacles) {
+  function routes(nodes, edges, points, radii, previous, layoutMode, routingMode, obstacles, routingOptions) {
     var groups = new Map(), result = new Map(), accepted = [], plans=[];
     var adjacency=new Map(),roots=new Map();
     nodes.forEach(function(n){adjacency.set(n.id,new Set());});
@@ -216,14 +251,16 @@
       if (!groups.has(pair)) groups.set(pair, []);
       groups.get(pair).push(edge);
     });
-    function candidatesFor(group, lanes) {
+    function candidatesFor(group, lanes, isSeparate) {
       var order=lanes.map(function(lane,index){return {lane:lane,index:index};}).sort(function(a,b){return a.lane-b.lane || a.index-b.index;});
       var ranks=new Map();order.forEach(function(item,i){ranks.set(item.index,i);});
       return group.map(function(edge,index){
-        var s=id(edge.source),t=id(edge.target),shift=(ranks.get(index)-(group.length-1)/2)*Math.min(.5,1.1/Math.max(1,group.length-1));
+        var s=id(edge.source),t=id(edge.target);
+        var shift = isSeparate ? (ranks.get(index)-(group.length-1)/2)*Math.min(.5,1.1/Math.max(1,group.length-1)) : 0;
         return geometry(edge,points.get(s),points.get(t),radii.get(s)||10,radii.get(t)||10,lanes[index],layoutMode,routingMode,roots.get(s),shift);
       });
     }
+    var separateLanes = !!(routingOptions && routingOptions.separateLanes);
     Array.from(groups).sort(function (a, b) {
       return b[1].length - a[1].length || a[0].localeCompare(b[0]);
     }).forEach(function (entry) {
@@ -255,18 +292,26 @@
         exterior = toward > 0 ? -1 : 1;
       }
       var options;
-      if (group.length === 1) options = [[0], [detour], [-detour], [detour * 1.5], [-detour * 1.5], [wide], [-wide]];
-      else if (group.length === 2) options = [[-parallelBase, parallelBase], [parallelBase, -parallelBase],[-wide,wide],[wide,-wide],
-        [wide,wide+parallelBase],[-wide,-wide-parallelBase]];
-      else if (exterior) options = [exterior, -exterior].map(function (sign) {
-        return group.map(function (_edge, index) { return sign * parallelBase * (index + 1); });
-      }).concat([group.map(function (_edge, index) { return (index % 2 ? 1 : -1) * parallelBase; })]);
-      else options = [group.map(function (_edge, index) { return (index - (group.length - 1) / 2) * parallelBase * 1.5; }),
-        group.map(function (_edge, index) { return parallelBase * (index + 1); })];
+      if (separateLanes) {
+        if (group.length === 1) options = [[0], [detour], [-detour], [detour * 1.5], [-detour * 1.5], [wide], [-wide]];
+        else if (group.length === 2) options = [[-parallelBase, parallelBase], [parallelBase, -parallelBase],[-wide,wide],[wide,-wide],
+          [wide,wide+parallelBase],[-wide,-wide-parallelBase]];
+        else if (exterior) options = [exterior, -exterior].map(function (sign) {
+          return group.map(function (_edge, index) { return sign * parallelBase * (index + 1); });
+        }).concat([group.map(function (_edge, index) { return (index % 2 ? 1 : -1) * parallelBase; })]);
+        else options = [group.map(function (_edge, index) { return (index - (group.length - 1) / 2) * parallelBase * 1.5; }),
+          group.map(function (_edge, index) { return parallelBase * (index + 1); })];
+      } else {
+        // Chainalysis Reactor style: edges between the same two nodes share 1 line
+        var sharedLanes = [0, detour, -detour, detour * 1.5, -detour * 1.5, wide, -wide];
+        options = sharedLanes.map(function (laneVal) {
+          return group.map(function () { return laneVal; });
+        });
+      }
       plans.push({group:group,options:options});
       var best = null, bestCost = Infinity;
       options.forEach(function (lanes, optionIndex) {
-        var candidates = candidatesFor(group,lanes);
+        var candidates = candidatesFor(group,lanes,separateLanes);
         var cost = candidates.reduce(function (sum, route) {
           var former = previous && previous.get(route.id);
           if (former && Math.sign(former.lane) !== Math.sign(route.lane)) sum += 4;
@@ -284,7 +329,7 @@
       function score(list){return list.reduce(function(sum,r){return sum+routeCost(r,nodes,points,radii,others,obstacles);},0);}
       var best=plan.group.map(function(e){return result.get(e.id);}),bestCost=score(best);
       plan.options.forEach(function(lanes){
-        var candidates=candidatesFor(plan.group,lanes);
+        var candidates=candidatesFor(plan.group,lanes,separateLanes);
         var cost=score(candidates);if(cost<bestCost-.01){best=candidates;bestCost=cost;}
       });
       best.forEach(function(r){result.set(r.id,r);});
@@ -316,6 +361,114 @@
     });
     return candidates;
   }
+  function consolidate(edgesList) {
+    if (!Array.isArray(edgesList)) return [];
+    var map = new Map();
+    edgesList.forEach(function (edge) {
+      if (!edge) return;
+      var s = id(edge.source), t = id(edge.target);
+      if (!s || !t) return;
+      var key = s < t ? (s + '\u0000' + t) : (t + '\u0000' + s);
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(edge);
+    });
+
+    var result = [];
+    map.forEach(function (group, key) {
+      var parts = key.split('\u0000');
+      var nodeA = parts[0], nodeB = parts[1];
+      if (group.length === 1) {
+        var single = group[0];
+        result.push(Object.assign({}, single, {
+          canonicalId: key,
+          edges: [single],
+          count: 1,
+          totalWeight: Number(single.weight != null ? single.weight : 1),
+          badgeText: single.label || single.type || '关联',
+          isBidirectional: single.direction === 'both'
+        }));
+        return;
+      }
+
+      var hasAtoB = false, hasBtoA = false;
+      var totalWeight = 0;
+      var tiers = {trunk: 4, branch: 3, leaf: 2, cross: 1};
+      var maxTierScore = 0, bestTier = 'leaf';
+      var styles = new Set();
+      var types = new Set();
+      var labels = new Set();
+
+      group.forEach(function (e) {
+        var s = id(e.source), t = id(e.target);
+        var dir = e.direction || 'forward';
+        var eWeight = Number(e.weight != null ? e.weight : 1);
+        totalWeight += (isNaN(eWeight) ? 1 : eWeight);
+
+        if (e.type) types.add(e.type);
+        if (e.label) labels.add(e.label);
+        if (e.style) styles.add(e.style);
+
+        var tierScore = tiers[e.tier] || 2;
+        if (tierScore > maxTierScore) {
+          maxTierScore = tierScore;
+          bestTier = e.tier || 'branch';
+        }
+
+        if (dir === 'both') {
+          hasAtoB = true;
+          hasBtoA = true;
+        } else if (dir === 'reverse') {
+          if (s === nodeA && t === nodeB) hasBtoA = true;
+          else if (s === nodeB && t === nodeA) hasAtoB = true;
+        } else {
+          if (s === nodeA && t === nodeB) hasAtoB = true;
+          else if (s === nodeB && t === nodeA) hasBtoA = true;
+        }
+      });
+
+      var effDir = (hasAtoB && hasBtoA) ? 'both' : (hasAtoB ? 'forward' : 'reverse');
+      var sourceNode = effDir === 'reverse' ? nodeB : nodeA;
+      var targetNode = effDir === 'reverse' ? nodeA : nodeB;
+      var finalDir = effDir === 'reverse' ? 'forward' : effDir;
+
+      var distinctLabels = Array.from(labels.size ? labels : types);
+      var combinedLabel = distinctLabels.length === 1
+        ? (group.length > 1 ? distinctLabels[0] + ' × ' + group.length : distinctLabels[0])
+        : distinctLabels.join(' · ') + ' (' + group.length + ')';
+
+      var badgeText;
+      if (finalDir === 'both') {
+        badgeText = '⇄ ' + group.length;
+      } else if (group.length > 1) {
+        badgeText = (distinctLabels[0] || '关联') + ' × ' + group.length;
+      } else {
+        badgeText = distinctLabels[0] || '关联';
+      }
+
+      var consolidated = {
+        id: key,
+        canonicalId: key,
+        source: sourceNode,
+        target: targetNode,
+        direction: finalDir,
+        weight: Math.round(totalWeight * 10) / 10,
+        totalWeight: Math.round(totalWeight * 10) / 10,
+        type: Array.from(types).join('/') || '关联',
+        label: combinedLabel,
+        badgeText: badgeText,
+        tier: bestTier,
+        style: styles.has('solid') ? 'solid' : (styles.has('dashed') ? 'dashed' : 'solid'),
+        edges: group,
+        count: group.length,
+        isBidirectional: finalDir === 'both'
+      };
+
+      result.push(consolidated);
+    });
+
+    return result;
+  }
   return {flow: flow, incoming: incoming, outgoing: outgoing,
-    point: point, routes: routes, labelCandidates: labelCandidates, geometry: geometry};
+    point: point, routes: routes, labelCandidates: labelCandidates, geometry: geometry,
+    consolidate: consolidate, bundle: consolidate};
 });

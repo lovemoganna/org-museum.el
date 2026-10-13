@@ -10755,10 +10755,17 @@ button.museum-entry-category[aria-pressed="true"] {
 }
 .graph-page.is-network-runtime .graph-network-node.is-selected .graph-node-title,
 .graph-page.is-network-runtime .graph-network-node.is-hovered .graph-node-title,
+.graph-page.is-network-runtime .graph-network-node.is-endpoint .graph-node-title,
 .graph-page.is-network-runtime .graph-network-node:hover .graph-node-title {
   font-weight: 750;
   opacity: 1;
   fill: var(--museum-accent);
+}
+.graph-page.is-network-runtime .graph-network-node.is-selected .graph-node-halo,
+.graph-page.is-network-runtime .graph-network-node.is-endpoint .graph-node-halo {
+  stroke: var(--museum-accent) !important;
+  stroke-opacity: 0.65 !important;
+  stroke-width: 3.5px !important;
 }
 .graph-page.is-network-runtime .graph-network-node.is-selected .graph-node-dot {
   stroke: var(--museum-accent); stroke-width: 3.5px;
@@ -10910,7 +10917,7 @@ button.museum-entry-category[aria-pressed="true"] {
   stroke-opacity: 0.62;
 }
 .graph-page.is-network-runtime .graph-network-edge.is-bidirectional .graph-network-edge-line {
-  stroke-dasharray: 8 3;
+  stroke-opacity: 0.88;
 }
 .graph-page.is-network-runtime .graph-links .graph-network-edge-line {
   stroke-width: var(--graph-edge-width, 1.25px);
@@ -11146,6 +11153,188 @@ button.museum-entry-category[aria-pressed="true"] {
   cursor: not-allowed;
 }
 .graph-page.is-network-runtime .graph-edge-message { min-height: 1.2em; color: var(--museum-ink-muted); font: 500 10.5px/1.4 var(--font-ui); }
+
+/* Chainalysis Reactor Style Edge Inspector & Tooltip */
+.graph-page.is-network-runtime .graph-edge-reactor-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: var(--museum-radius-control);
+  background: var(--museum-surface, var(--museum-paper));
+  border: 1px solid var(--museum-control-border);
+}
+.graph-page.is-network-runtime .graph-edge-reactor-endpoints {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--museum-ink);
+}
+.graph-page.is-network-runtime .graph-edge-reactor-endpoints .reactor-dir-icon {
+  color: var(--museum-accent);
+  font-weight: 800;
+}
+.graph-page.is-network-runtime .graph-edge-reactor-endpoints .reactor-endpoint-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--museum-ink);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  transition: color 120ms ease, text-decoration-color 120ms ease;
+  text-align: left;
+}
+.graph-page.is-network-runtime .graph-edge-reactor-endpoints .reactor-endpoint-btn:hover {
+  color: var(--museum-accent);
+  text-decoration-color: var(--museum-accent);
+}
+.graph-page.is-network-runtime .graph-edge-reactor-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.graph-page.is-network-runtime .graph-edge-reactor-stat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--museum-accent) 8%, var(--museum-paper));
+  border: 1px solid var(--museum-control-border);
+  font: 600 10.5px/1 var(--font-ui);
+  color: var(--museum-ink);
+}
+.graph-page.is-network-runtime .graph-edge-multi-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+}
+.graph-page.is-network-runtime .graph-edge-multi-card {
+  padding: 10px 12px;
+  border-radius: var(--museum-radius-control);
+  background: var(--museum-surface, var(--museum-paper));
+  border: 1px solid var(--museum-control-border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.graph-page.is-network-runtime .graph-edge-multi-card:hover {
+  border-color: var(--museum-accent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+.graph-page.is-network-runtime .graph-edge-multi-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.graph-page.is-network-runtime .graph-edge-multi-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 11.5px;
+  color: var(--museum-ink);
+}
+.graph-page.is-network-runtime .graph-edge-multi-card-dir {
+  color: var(--museum-accent);
+  font-weight: 800;
+}
+.graph-page.is-network-runtime .graph-edge-multi-card-meta {
+  font-size: 10.5px;
+  color: var(--museum-ink-muted);
+}
+.graph-page.is-network-runtime .graph-edge-multi-card-flow {
+  font-size: 11px;
+  color: var(--museum-ink-muted);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.graph-page.is-network-runtime .reactor-flow-node-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--museum-ink);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  transition: color 120ms ease, text-decoration-color 120ms ease;
+  text-align: left;
+}
+.graph-page.is-network-runtime .reactor-flow-node-btn:hover {
+  color: var(--museum-accent);
+  text-decoration-color: var(--museum-accent);
+}
+.graph-page.is-network-runtime .reactor-flow-arrow {
+  color: var(--museum-accent);
+  font-weight: 800;
+}
+.graph-page.is-network-runtime .reactor-flow-type {
+  color: var(--museum-ink-muted);
+}
+.graph-page.is-network-runtime .graph-edge-multi-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.graph-page.is-network-runtime .graph-edge-multi-card-actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--museum-control-border);
+  border-radius: 4px;
+  background: var(--museum-paper);
+  color: var(--museum-ink);
+  font: 600 10.5px/1 var(--font-ui);
+  cursor: pointer;
+}
+.graph-page.is-network-runtime .graph-edge-multi-card-actions button:hover {
+  border-color: var(--museum-accent);
+  color: var(--museum-accent);
+}
+
+/* Tooltip Reactor style */
+#graph-tooltip .graph-tooltip-reactor-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--museum-accent);
+  margin-bottom: 5px;
+  letter-spacing: 0.02em;
+}
+#graph-tooltip .graph-tooltip-edge-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+#graph-tooltip .graph-tooltip-edge-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+#graph-tooltip .graph-tooltip-edge-item .sub-edge-dir {
+  color: var(--museum-accent);
+  font-weight: 800;
+}
+#graph-tooltip .graph-tooltip-edge-item .sub-edge-name {
+  font-weight: 600;
+  color: var(--museum-ink);
+}
+#graph-tooltip .graph-tooltip-edge-item .sub-edge-meta {
+  color: var(--museum-ink-muted);
+  font-size: 10px;
+}
+
 .graph-page .graph-links path:not(.graph-network-edge-line):not(.graph-network-edge-hit) {
   stroke-opacity: .25; stroke-width: 1.4px; pointer-events: stroke;
 }
@@ -11628,6 +11817,41 @@ button.museum-entry-category[aria-pressed="true"] {
   box-shadow: 0 1px 3px color-mix(in srgb, var(--panel-shadow) 30%, transparent);
 }
 
+.graph-page.is-network-runtime .graph-perspective-presets {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  gap: 1px;
+  border: 1px solid var(--museum-control-border);
+  border-radius: var(--museum-radius-control);
+  background: var(--museum-surface, var(--museum-paper));
+  margin-right: 4px;
+}
+.graph-page.is-network-runtime .graph-commandbar .graph-perspective-presets button {
+  width: auto;
+  min-width: 44px;
+  min-height: 26px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: calc(var(--museum-radius-control) - 2px);
+  background: transparent;
+  color: var(--museum-ink-muted);
+  font: 600 11px/1 var(--font-ui);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 120ms ease;
+}
+.graph-page.is-network-runtime .graph-commandbar .graph-perspective-presets button:hover:not([aria-pressed="true"]) {
+  color: var(--museum-ink);
+  background: var(--museum-hover);
+}
+.graph-page.is-network-runtime .graph-commandbar .graph-perspective-presets button[aria-pressed="true"] {
+  background: var(--museum-burgundy);
+  color: var(--museum-on-accent, #fff);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--panel-shadow) 30%, transparent);
+}
+
 .graph-page.is-network-runtime .graph-network-controls {
   display: inline-flex;
   align-items: center;
@@ -11657,6 +11881,12 @@ button.museum-entry-category[aria-pressed="true"] {
   color: var(--museum-accent);
   border-color: var(--museum-accent);
   background: var(--museum-hover);
+}
+.graph-page.is-network-runtime .graph-commandbar .graph-network-controls > button[data-explore][aria-pressed="true"] {
+  background: var(--museum-accent);
+  border-color: var(--museum-accent);
+  color: var(--museum-on-accent, #fff);
+  font-weight: 600;
 }
 .graph-page.is-network-runtime .graph-commandbar .graph-network-controls > button[data-explore]:disabled {
   opacity: 0.45;
@@ -11749,6 +11979,72 @@ button.museum-entry-category[aria-pressed="true"] {
   background:
     radial-gradient(circle at 18% 20%, color-mix(in srgb, var(--museum-accent) 5%, transparent), transparent 34%),
     linear-gradient(135deg, color-mix(in srgb, var(--museum-paper) 96%, var(--museum-paper-soft)), var(--museum-paper));
+}
+.graph-empty-filter {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--museum-paper) 80%, transparent);
+  backdrop-filter: blur(2px);
+  padding: 20px;
+}
+.graph-empty-filter[hidden] {
+  display: none !important;
+}
+.graph-empty-filter-card {
+  pointer-events: auto;
+  max-width: 360px;
+  width: 100%;
+  padding: 24px 20px;
+  text-align: center;
+  background: var(--museum-surface, var(--museum-paper));
+  border: 1px solid var(--museum-border-soft);
+  border-radius: var(--museum-radius-panel, 10px);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--panel-shadow, rgba(0, 0, 0, 0.15)) 50%, transparent);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.graph-empty-filter-icon {
+  color: var(--museum-ink-muted);
+  opacity: 0.65;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.graph-empty-filter-title {
+  margin: 0;
+  font: 600 15px/1.3 var(--font-title);
+  color: var(--museum-ink);
+}
+.graph-empty-filter-desc {
+  margin: 0;
+  font: 400 12px/1.5 var(--font-ui);
+  color: var(--museum-ink-muted);
+}
+.graph-empty-filter-btn {
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 14px;
+  border-radius: var(--museum-radius-control, 6px);
+  border: 1px solid var(--museum-accent);
+  background: var(--museum-accent);
+  color: var(--museum-on-accent, #fff);
+  font: 500 12px/1 var(--font-ui);
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+.graph-empty-filter-btn:hover,
+.graph-empty-filter-btn:focus-visible {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
 }
 .graph-page.is-network-runtime .graph-workspace-footer {
   padding: 22px 20px;

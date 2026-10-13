@@ -442,9 +442,11 @@
     });
     for (var r = 1; r < rows.length; r++) along[r] = along[r-1] + (axisSizes[r-1]+axisSizes[r])/2 + step * .3;
     var local = new Map();
+    var hasFocus = options && options.focusedNodeId && group.includes(options.focusedNodeId);
     rows.forEach(function (row,r) { row.forEach(function (n,i) {
+      var isRoot = hasFocus ? (n === options.focusedNodeId) : (r === 0 && i === 0);
       local.set(n, {x: horizontal ? along[r] : coords.get(n), y: horizontal ? coords.get(n) : along[r],
-        z: r*12, depth:r, rank:i, isRoot:r===0});
+        z: r*12, depth:r, rank:i, isRoot:isRoot});
     }); });
     // Directed cycles should not be drawn as one collinear stack. Stagger only
     // their cross-axis coordinates; directed layer ranks remain unchanged.
@@ -474,6 +476,7 @@
 
   function radialTree(group, graph, mode, step, width, options) {
     var tree = rootedTree(group, graph, options, false), local = new Map(), angles = new Map(), bounds = new Map();
+    var catIndexMap = null;
     local.set(tree.hub, {x:0,y:0,z:0,depth:0,rank:0,isRoot:true});
     if (group.length === 1) return local;
     function sector(n, start, span, equal) {
@@ -482,7 +485,7 @@
       kids.forEach(function (child) {
         var childSpan = span * (equal ? 1 : tree.mass.get(child)) / total;
         angles.set(child, cursor + childSpan / 2);
-        bounds.set(child,[cursor+childSpan*.1,cursor+childSpan*.9]);
+        bounds.set(child,[cursor+(mode==='concentric'?-childSpan*.1:childSpan*.1),cursor+childSpan*(mode==='concentric'?1.1:.9)]);
         sector(child, cursor, childSpan, false); cursor += childSpan;
       });
     }
@@ -494,6 +497,7 @@
       angles.forEach(function (angle,n) { angles.set(n,angle+rotation);var b=bounds.get(n);bounds.set(n,[b[0]+rotation,b[1]+rotation]); });
     } else if (mode === 'dandelion') {
       var categories = new Map();
+      catIndexMap = new Map();
       orderedIds(group.filter(function (n) { return n !== tree.hub; }), graph).forEach(function (n) {
         var cat = graph.nodeMap.get(n).group || '其他'; if (!categories.has(cat)) categories.set(cat,[]); categories.get(cat).push(n);
       });
@@ -503,12 +507,16 @@
         list.forEach(function (n,i) {
           var angle=cursor+span*(i+.5)/list.length,pitch=span/list.length;
           angles.set(n,angle);bounds.set(n,[angle-pitch*.3,angle+pitch*.3]);
+          catIndexMap.set(n, i);
         }); cursor += span;
       });
     }
     tree.order.slice(1).forEach(function (n,i) {
       var depth = tree.depth.get(n), angle = angles.get(n), radius;
-      if (mode === 'dandelion') radius = step * (1.15 + Math.floor(i/7) * .85);
+      if (mode === 'dandelion') {
+        var cIdx = (catIndexMap && catIndexMap.get(n)) != null ? catIndexMap.get(n) : i;
+        radius = step * (1.12 + Math.floor(cIdx / 4) * .80 + (cIdx % 2 ? .20 : 0));
+      }
       else if (mode === 'starburst') radius = step * (1.1 + (depth-1) * .65);
       else radius = step * depth * (mode === 'spoke' ? .9 : 1);
       local.set(n, {x:Math.cos(angle)*radius,y:Math.sin(angle)*radius,z:depth*12,depth:depth,rank:i,isRoot:false});
@@ -528,7 +536,7 @@
     return result;
   }
 
-  function groupedLayout(group, graph, mode, step, width) {
+  function groupedLayout(group, graph, mode, step, width, options) {
     var order = orderedIds(group, graph), membership = new Map();
     order.forEach(function (n) { membership.set(n, mode === 'groupedCircular' ? graph.nodeMap.get(n).group || '其他' : n); });
     if (mode === 'clusteredForce') {
@@ -552,9 +560,22 @@
     }
     var communities = new Map();
     order.forEach(function (n) { var key=membership.get(n); if (!communities.has(key)) communities.set(key,[]); communities.get(key).push(n); });
-    var groups = Array.from(communities.values()).sort(function (a,b) { return b.length-a.length || String(a[0]).localeCompare(String(b[0])); });
+    var hasFocus = options && options.focusedNodeId && group.includes(options.focusedNodeId);
+    var root = hasFocus ? options.focusedNodeId : order[0];
+    var groups = Array.from(communities.values()).sort(function (a,b) {
+      if (hasFocus) {
+        if (a.includes(root)) return -1;
+        if (b.includes(root)) return 1;
+      }
+      return b.length-a.length || String(a[0]).localeCompare(String(b[0]));
+    });
     var motifs = groups.map(function (list) {
-      var local = new Map(), circle = circularOrder(list,graph), hub = circle[0];
+      var local = new Map(), circle = circularOrder(list,graph);
+      var hub = (hasFocus && list.includes(root)) ? root : circle[0];
+      if (circle.includes(hub) && circle[0] !== hub) {
+        circle.splice(circle.indexOf(hub), 1);
+        circle.unshift(hub);
+      }
       var central = mode === 'clusteredForce' && circle.length > 3;
       var rim = central ? circle.slice(1) : circle;
       if (central) local.set(hub,{x:0,y:0});
@@ -569,7 +590,7 @@
       var chord = 2*Math.sin(Math.PI*(j-i)/motifs.length);
       macro=Math.max(macro,(motifs[i].radius+motifs[j].radius+step*.25)/chord);
     }
-    var local = new Map(), root=order[0];
+    var local = new Map();
     motifs.forEach(function (motif,i) {
       var angle = motifs.length === 2 ? i*Math.PI : -Math.PI/2+i*Math.PI*2/motifs.length;
       motif.local.forEach(function (p,n) {
@@ -582,8 +603,19 @@
     },false);
   }
 
-  function regularGrid(group, graph, step, width, height) {
-    var order = circularOrder(group,graph), cellX = Math.max(step*1.1,Math.max.apply(null,group.map(function (n) { return titleHalf(graph.nodeMap.get(n),width)*2; }))+step*.2);
+  function regularGrid(group, graph, step, width, height, options) {
+    options = options || {};
+    var order = circularOrder(group,graph);
+    var hasFocus = options.focusedNodeId && group.includes(options.focusedNodeId);
+    var root = hasFocus ? options.focusedNodeId : order[0];
+    if (hasFocus) {
+      var rIdx = order.indexOf(root);
+      if (rIdx > 0) {
+        order.splice(rIdx, 1);
+        order.unshift(root);
+      }
+    }
+    var cellX = Math.max(step*1.1,Math.max.apply(null,group.map(function (n) { return titleHalf(graph.nodeMap.get(n),width)*2; }))+step*.2);
     var cellY = Math.max(104,step*.7), aspect = Math.min(1.8,Math.max(.5,width/height)), columns=1,best=Infinity;
     var exact=group.length<=32 && group.reduce(function(sum,n){return sum+graph.adjacent.get(n).size;},0)<=160;
     function grid(cols) {
@@ -591,7 +623,7 @@
       order.forEach(function(n,i){
         var row=Math.floor(i/cols),count=Math.min(cols,group.length-row*cols),col=i%cols;
         if(row%2) col=count-1-col;
-        result.set(n,{x:(col-(count-1)/2)*cellX,y:row*cellY,z:0,depth:i===0?0:row+1,rank:col,isRoot:i===0});
+        result.set(n,{x:(col-(count-1)/2)*cellX,y:row*cellY,z:0,depth:n===root?0:row+1,rank:col,isRoot:n===root});
       });return result;
     }
     for(var c=1;c<=group.length;c++) {
@@ -599,7 +631,7 @@
       var score=Math.abs(Math.log(ratio/aspect))+(rows*c-group.length)/group.length*.35+(exact?embeddingCost(grid(c),graph,step)*.12:0);
       if(score<best){best=score;columns=c;}
     }
-    var local=grid(columns),root=order[0];
+    var local=grid(columns);
     return improveOrder(local,graph,step,function(a,b){return a!==root && b!==root;},true);
   }
 
@@ -607,8 +639,13 @@
     options = options || {};
     var spacing = Math.max(.7, Math.min(2, Number(options.spacing) || 1));
     var graph = topology(nodes, links), result = new Map(), boxes = [], step = 190 * spacing;
+    var focusedNodeId = options.focusedNodeId;
+    var primaryCompIdx = focusedNodeId
+      ? graph.components.findIndex(function (g) { return g.includes(focusedNodeId); })
+      : 0;
+    if (primaryCompIdx < 0) primaryCompIdx = 0;
 
-    graph.components.forEach(function (group) {
+    graph.components.forEach(function (group, cIdx) {
       var local = new Map();
       var groupNodeObjs = group.map(function (id) { return graph.nodeMap.get(id) || { id: id, name: id }; });
       var groupDegree = function (id) { return (graph.adjacent.get(id) || new Set()).size; };
@@ -620,6 +657,7 @@
 
       if (mode === 'hierarchy') {
         var levels = layers(group, graph.outgoing), y = 0;
+        var hasFocus = options.focusedNodeId && group.includes(options.focusedNodeId);
         levels.forEach(function (row, rIdx) {
           var sizes = row.map(function (cluster) { return cluster.length > 1 ? Math.max(step * 1.5, cluster.length * step / Math.PI) : step; });
           var total = sizes.reduce(function (a, b) { return a + b + step * .3; }, 0), x = -total / 2;
@@ -628,9 +666,10 @@
             var center = x + sizes[i] / 2, orbit = sizes[i] * .4;
             cluster.forEach(function (node, j) {
               var angle = j * Math.PI * 2 / cluster.length - (cluster.length === 2 ? 0 : Math.PI / 2);
+              var isRoot = hasFocus ? (node === options.focusedNodeId) : (rIdx === 0 && i === 0 && j === 0);
               local.set(node, {x: center + (cluster.length > 1 ? Math.cos(angle) * orbit : 0),
                 y: y + rowHeight / 2 + (cluster.length > 1 ? Math.sin(angle) * orbit : 0), z: 0,
-                depth: rIdx, rank: i * 10 + j, isRoot: rIdx === 0});
+                depth: rIdx, rank: i * 10 + j, isRoot: isRoot});
             }); x += sizes[i] + step * .3;
           }); y += rowHeight + step * .4;
         });
@@ -642,33 +681,38 @@
       } else if (mode === 'concentric' || mode === 'dandelion' || mode === 'starburst' || mode === 'spoke') {
         local = radialTree(group, graph, mode, step, width, options);
       } else if (mode === 'clusteredForce' || mode === 'groupedCircular') {
-        local = groupedLayout(group, graph, mode, step, width);
+        local = groupedLayout(group, graph, mode, step, width, options);
       } else if (mode === 'grid') {
-        local = regularGrid(group, graph, step, width, height);
+        local = regularGrid(group, graph, step, width, height, options);
       } else if (mode === 'organic' || mode === 'force') {
+        var hasFocus = options.focusedNodeId && group.includes(options.focusedNodeId);
         if (group.length === 1) {
           local.set(group[0], { x: 0, y: 0, z: 0, depth: 0, rank: 0, isRoot: true });
         } else if (group.length === 2) {
           var d2 = step * 0.72;
-          local.set(groupOrdered[0].id, { x: -d2 / 2, y: 0, z: 0, depth: 0, rank: 0, isRoot: true });
-          local.set(groupOrdered[1].id, { x: d2 / 2, y: 0, z: 0, depth: 1, rank: 1, isRoot: false });
+          var rootNode = (hasFocus && groupOrdered[1].id === options.focusedNodeId) ? groupOrdered[1] : groupOrdered[0];
+          var childNode = (rootNode.id === groupOrdered[0].id) ? groupOrdered[1] : groupOrdered[0];
+          local.set(rootNode.id, { x: -d2 / 2, y: 0, z: 0, depth: 0, rank: 0, isRoot: true });
+          local.set(childNode.id, { x: d2 / 2, y: 0, z: 0, depth: 1, rank: 1, isRoot: false });
         } else if (group.length === 3) {
           // Symmetrical equilateral triangle centered at (0, 0)
           var triR = step * 0.82;
           var baseAngleTri = -Math.PI / 2;
+          var focusedIdx = hasFocus ? groupOrdered.findIndex(function (n) { return n.id === options.focusedNodeId; }) : -1;
+          var rootIdx = focusedIdx >= 0 ? focusedIdx : 0;
           groupOrdered.forEach(function (node, i) {
-            var angle = baseAngleTri + i * (Math.PI * 2 / 3);
+            var angle = baseAngleTri + ((i - rootIdx + 3) % 3) * (Math.PI * 2 / 3);
             local.set(node.id, {
               x: Math.cos(angle) * triR,
               y: Math.sin(angle) * triR,
               z: i * 10,
-              depth: i === 0 ? 0 : 1,
+              depth: i === rootIdx ? 0 : 1,
               rank: i,
-              isRoot: i === 0
+              isRoot: i === rootIdx
             });
           });
         } else {
-          var hub = groupOrdered[0];
+          var hub = (hasFocus && groupOrdered.find(function (n) { return n.id === options.focusedNodeId; })) || groupOrdered[0];
           local.set(hub.id, { x: 0, y: 0, z: 0, depth: 0, rank: 0, isRoot: true });
           var visited = new Set([hub.id]);
           var depthMap = new Map([[hub.id, 0]]);
@@ -851,64 +895,102 @@
       var minY = Math.min.apply(null, values.map(function (p) { return p.y; }));
       var maxX = Math.max.apply(null, values.map(function (p) { return p.x; }));
       var maxY = Math.max.apply(null, values.map(function (p) { return p.y; }));
-      var padX = Math.max(64, step * 0.32);
+      var isSmall = group.length <= 2;
+      var padX = isSmall ? Math.max(48, step * 0.22) : Math.max(64, step * 0.32);
       if (mode === 'organic') groupNodeObjs.forEach(function (node) {
-        padX = Math.max(padX, (Number(node.labelWidth) || Math.min(width < 600 ? 12 : 28, Array.from(String(node.name || node.id)).length) * 11 + 24) / 2 + 10);
+        padX = Math.max(padX, (Number(node.labelWidth) || Math.min(width < 600 ? 12 : 28, Array.from(String(node.name || node.id)).length) * 11 + 24) / 2 + (isSmall ? 6 : 10));
       });
       if (modes.includes(mode) && mode !== 'organic') groupNodeObjs.forEach(function (node) {
-        padX = Math.max(padX, titleHalf(node, width) + 10);
+        padX = Math.max(padX, titleHalf(node, width) + (isSmall ? 6 : 10));
       });
-      var padY = Math.max(48, step * 0.24);
-      boxes.push({ local: local, minX: minX, minY: minY, width: maxX - minX + padX * 2, height: maxY - minY + padY * 2, padX: padX, padY: padY });
+      var padY = isSmall ? Math.max(36, step * 0.18) : Math.max(48, step * 0.24);
+      boxes.push({
+        local: local,
+        cIdx: cIdx,
+        isPrimary: cIdx === primaryCompIdx,
+        minX: minX, minY: minY,
+        width: maxX - minX + padX * 2,
+        height: maxY - minY + padY * 2,
+        padX: padX, padY: padY
+      });
     });
 
-    var area = boxes.reduce(function (sum, box) { return sum + box.width * box.height; }, 0);
     var gap = modes.includes(mode) ? step * .35 : Math.max(160, step * 0.80);
-    var widest = Math.max(1, ...boxes.map(function (box) { return box.width; }));
     var targetAspect = modes.includes(mode)
       ? Math.min(2.2, Math.max(width < 600 ? .45 : 1.15, (width || 900) / (height || 700)))
       : Math.min(1.65, Math.max(1.15, (width || 900) / (height || 700)));
-    var targetWidth = Math.max(widest, Math.sqrt(area * targetAspect));
 
-    var candidates = [widest, targetWidth];
-    var prefix = 0;
-    boxes.forEach(function (box) { prefix += box.width + (prefix ? gap : 0); candidates.push(prefix); });
+    function solveShelf(boxList) {
+      if (!boxList.length) return { shelf: 0, rows: [] };
+      var area = boxList.reduce(function (sum, box) { return sum + box.width * box.height; }, 0);
+      var widest = Math.max(1, ...boxList.map(function (box) { return box.width; }));
+      var targetWidth = Math.max(widest, Math.sqrt(area * targetAspect));
+      var candidates = [widest, targetWidth];
+      var prefix = 0;
+      boxList.forEach(function (box) { prefix += box.width + (prefix ? gap : 0); candidates.push(prefix); });
 
-    var shelf = widest, best = -Infinity;
-    candidates.forEach(function (candidate) {
-      candidate = Math.max(widest, candidate);
-      var x = 0, y = 0, rowHeight = 0, usedWidth = 0;
-      boxes.forEach(function (box) {
-        if (x && x + box.width > candidate + .01) { x = 0; y += rowHeight + gap; rowHeight = 0; }
-        usedWidth = Math.max(usedWidth, x + box.width);
-        x += box.width + gap;
-        rowHeight = Math.max(rowHeight, box.height);
+      var bestShelf = widest, bestScore = -Infinity;
+      candidates.forEach(function (candidate) {
+        candidate = Math.max(widest, candidate);
+        var x = 0, y = 0, rowHeight = 0, usedWidth = 0;
+        boxList.forEach(function (box) {
+          if (x && x + box.width > candidate + .01) { x = 0; y += rowHeight + gap; rowHeight = 0; }
+          usedWidth = Math.max(usedWidth, x + box.width);
+          x += box.width + gap;
+          rowHeight = Math.max(rowHeight, box.height);
+        });
+        var usedHeight = y + rowHeight;
+        var curAspect = usedWidth / Math.max(1, usedHeight);
+        var logAspectDiff = Math.abs(Math.log(curAspect / targetAspect));
+        var areaEff = area / Math.max(1, usedWidth * usedHeight);
+        var score = areaEff / (1 + logAspectDiff * logAspectDiff * 3.6);
+        if (score > bestScore) { bestScore = score; bestShelf = candidate; }
       });
-      var usedHeight = y + rowHeight;
-      var curAspect = usedWidth / Math.max(1, usedHeight);
-      var logAspectDiff = Math.abs(Math.log(curAspect / targetAspect));
-      var areaEff = area / Math.max(1, usedWidth * usedHeight);
-      var score = areaEff / (1 + logAspectDiff * logAspectDiff * 3.6);
-      if (score > best) { best = score; shelf = candidate; }
-    });
 
-    var rows = [], currentRow = { boxes: [], width: 0, height: 0 };
-    boxes.forEach(function (box) {
-      if (currentRow.boxes.length && currentRow.width + gap + box.width > shelf + .01) {
-        rows.push(currentRow);
-        currentRow = { boxes: [], width: 0, height: 0 };
-      }
-      if (currentRow.boxes.length) currentRow.width += gap;
-      currentRow.boxes.push(box);
-      currentRow.width += box.width;
-      currentRow.height = Math.max(currentRow.height, box.height);
-    });
-    if (currentRow.boxes.length) rows.push(currentRow);
+      var rows = [], currentRow = { boxes: [], width: 0, height: 0 };
+      boxList.forEach(function (box) {
+        if (currentRow.boxes.length && currentRow.width + gap + box.width > bestShelf + .01) {
+          rows.push(currentRow);
+          currentRow = { boxes: [], width: 0, height: 0 };
+        }
+        if (currentRow.boxes.length) currentRow.width += gap;
+        currentRow.boxes.push(box);
+        currentRow.width += box.width;
+        currentRow.height = Math.max(currentRow.height, box.height);
+      });
+      if (currentRow.boxes.length) rows.push(currentRow);
+      return { shelf: bestShelf, rows: rows };
+    }
+
+    var connectedBoxes = boxes.filter(function (b) { return b.local.size > 1; });
+    var isolatedBoxes = boxes.filter(function (b) { return b.local.size === 1; });
+    var rows = [];
+
+    if (connectedBoxes.length > 0 && isolatedBoxes.length > 0) {
+      var connectedPacked = solveShelf(connectedBoxes);
+      var maxConnWidth = Math.max(1, ...connectedPacked.rows.map(function (r) { return r.width; }));
+      var isolatedShelf = Math.max(maxConnWidth, connectedPacked.shelf);
+      var isoRows = [], curIsoRow = { boxes: [], width: 0, height: 0, isIsolated: true };
+      isolatedBoxes.forEach(function (box) {
+        if (curIsoRow.boxes.length && curIsoRow.width + gap + box.width > isolatedShelf + .01) {
+          isoRows.push(curIsoRow);
+          curIsoRow = { boxes: [], width: 0, height: 0, isIsolated: true };
+        }
+        if (curIsoRow.boxes.length) curIsoRow.width += gap;
+        curIsoRow.boxes.push(box);
+        curIsoRow.width += box.width;
+        curIsoRow.height = Math.max(curIsoRow.height, box.height);
+      });
+      if (curIsoRow.boxes.length) isoRows.push(curIsoRow);
+      rows = connectedPacked.rows.concat(isoRows);
+    } else {
+      rows = solveShelf(boxes).rows;
+    }
 
     var maxRowWidth = Math.max(1, ...rows.map(function (r) { return r.width; }));
     var curY = 0;
-    rows.forEach(function (r) {
-      var curX = (maxRowWidth - r.width) / 2;
+    rows.forEach(function (r, rIdx) {
+      var curX = (rows.length > 1 && r.boxes.length === 1) ? 0 : (maxRowWidth - r.width) / 2;
       r.boxes.forEach(function (box) {
         var boxOffsetY = (r.height - box.height) / 2;
         var cx = curX + box.width / 2, cy = curY + boxOffsetY + box.height / 2;
@@ -919,12 +1001,13 @@
             z: point.z, cx: cx, cy: cy,
             depth: point.depth != null ? point.depth : 0,
             rank: point.rank != null ? point.rank : 0,
-            isRoot: !!point.isRoot
+            isRoot: focusedNodeId ? (node === focusedNodeId) : (box.isPrimary && !!point.isRoot)
           });
         });
         curX += box.width + gap;
       });
-      curY += r.height + gap;
+      var isTransition = rIdx > 0 && !rows[rIdx - 1].isIsolated && r.isIsolated;
+      curY += r.height + (isTransition ? gap * 1.35 : gap);
     });
 
     if (mode === 'force') result.forEach(function (p, node) {

@@ -26,7 +26,7 @@ test('every topology positions the same real graph without changing it', () => {
       assert.equal(typeof point.isRoot, 'boolean', `${mode}: boolean isRoot for ${node.id}`);
       if (point.isRoot) rootCount++;
     }
-    assert(rootCount > 0, `${mode}: at least one root identified`);
+    assert.equal(rootCount, 1, `${mode}: exactly one dominant root identified without halo collision`);
     signatures.add(graph.nodes.map(node => {
       const point = positions.get(node.id);
       return `${Math.round(point.x)},${Math.round(point.y)},${Math.round(point.z)}`;
@@ -228,3 +228,79 @@ test('recent dates include the whole first day and exclude future or invalid dat
   assert.equal(recentNodeIds([], 7, new Date(2026, 9, 9)).size, 0);
   assert.equal(recentNodeIds(nodes, 7, new Date(2027, 9, 9)).size, 0);
 });
+
+test('Chainalysis Reactor multi-edge view, endpoint buttons and is-endpoint CSS contracts exist', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'resources', 'org-museum.css'), 'utf8');
+  assert(css.includes('.graph-edge-reactor-header'), 'CSS includes reactor header');
+  assert(css.includes('.reactor-endpoint-btn'), 'CSS includes reactor endpoint buttons');
+  assert(css.includes('.reactor-flow-node-btn'), 'CSS includes reactor flow node buttons');
+  assert(css.includes('.graph-network-node.is-endpoint .graph-node-halo'), 'CSS highlights endpoint node halo');
+  assert(css.includes('.graph-network-node.is-endpoint .graph-node-title'), 'CSS highlights endpoint node title');
+
+  const networkJs = fs.readFileSync(path.join(__dirname, '..', 'resources', 'org-museum-graph-network.js'), 'utf8');
+  assert(networkJs.includes('renderReactorMultiView'), 'network.js includes renderReactorMultiView');
+  assert(networkJs.includes('reactor-endpoint-btn'), 'network.js attaches reactor-endpoint-btn');
+  assert(networkJs.includes('reactor-flow-node-btn'), 'network.js attaches reactor-flow-node-btn');
+});
+
+test('explore buttons aria-pressed feedback, empty filter recovery and search shortcut contracts exist', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'resources', 'org-museum.css'), 'utf8');
+  assert(css.includes('button[data-explore][aria-pressed="true"]'), 'CSS includes explore button active state');
+  assert(css.includes('.graph-empty-filter'), 'CSS includes graph-empty-filter overlay');
+  assert(css.includes('.graph-empty-filter-card'), 'CSS includes empty filter card');
+  assert(css.includes('.graph-empty-filter-btn'), 'CSS includes empty filter reset button');
+
+  const networkJs = fs.readFileSync(path.join(__dirname, '..', 'resources', 'org-museum-graph-network.js'), 'utf8');
+  assert(networkJs.includes('updateExploreButtons'), 'network.js defines updateExploreButtons');
+  assert(networkJs.includes('graph-empty-notice'), 'network.js mounts graph-empty-notice');
+  assert(networkJs.includes('graph-clear-filters'), 'network.js wires up reset filters action');
+  assert(networkJs.includes("event.key === '/'"), 'network.js handles / shortcut to focus search');
+});
+
+test('layout smooth tween transition contract exists in graph network runtime', () => {
+  const networkJs = fs.readFileSync(path.join(__dirname, '..', 'resources', 'org-museum-graph-network.js'), 'utf8');
+  assert(networkJs.includes('transitionToLayout'), 'network.js defines transitionToLayout');
+  assert(networkJs.includes('d3.timer'), 'network.js utilizes d3.timer for animation frames');
+  assert(networkJs.includes('layoutTimer'), 'network.js tracks layoutTimer lifecycle');
+});
+
+test('topology layout iteration contracts: setLayout API, core perspective presets, and compact packing', () => {
+  const networkJs = fs.readFileSync(path.join(__dirname, '..', 'resources', 'org-museum-graph-network.js'), 'utf8');
+  assert(networkJs.includes('setLayout: function'), 'network.js exposes setLayout API');
+  assert(networkJs.includes('getLayout: function'), 'network.js exposes getLayout API');
+  assert(networkJs.includes('getLayoutModes: function'), 'network.js exposes getLayoutModes API');
+  assert(networkJs.includes('graph-perspective-presets'), 'network.js contains graph-perspective-presets container');
+  assert(networkJs.includes('data-preset-layout="semantic"'), 'network.js provides semantic preset pill');
+  assert(networkJs.includes('data-preset-layout="concentric"'), 'network.js provides concentric preset pill');
+  assert(networkJs.includes('data-preset-layout="organic"'), 'network.js provides organic preset pill');
+  assert(networkJs.includes('updatePerspectivePresetButtons'), 'network.js defines updatePerspectivePresetButtons');
+
+  const css = fs.readFileSync(path.join(__dirname, '..', 'resources', 'org-museum.css'), 'utf8');
+  assert(css.includes('.graph-perspective-presets'), 'CSS includes .graph-perspective-presets rules');
+  assert(css.includes('.graph-perspective-presets button[aria-pressed="true"]'), 'CSS includes active perspective preset state');
+
+  assert(networkJs.includes('computeFitTransform'), 'network.js defines computeFitTransform');
+  assert(networkJs.includes("event.key === '1'"), 'network.js handles 1 shortcut for semantic layout');
+  assert(networkJs.includes("event.key === '2'"), 'network.js handles 2 shortcut for concentric layout');
+  assert(networkJs.includes("event.key === '3'"), 'network.js handles 3 shortcut for organic layout');
+  assert(networkJs.includes("event.key === 'l'"), 'network.js handles L shortcut for cycling layouts');
+  assert(networkJs.includes("event.key === 'ArrowRight'"), 'network.js handles roving focus in preset pills');
+});
+
+test('partitioned shelf packing places connected components above isolated notes dock', () => {
+  const positions = layout.positions(graph.nodes, graph.links, 'organic', 1100, 750);
+  const connectedNodes = graph.nodes.filter(n => n.degree > 0);
+  const isolatedNodes = graph.nodes.filter(n => (n.degree || 0) === 0);
+  assert.equal(connectedNodes.length, 11);
+  assert.equal(isolatedNodes.length, 18);
+
+  const maxConnY = Math.max(...connectedNodes.map(n => positions.get(n.id).y));
+  const minIsoY = Math.min(...isolatedNodes.map(n => positions.get(n.id).y));
+  assert(minIsoY > maxConnY, 'isolated notes dock starts below all connected components');
+
+  const rootNodes = graph.nodes.filter(n => positions.get(n.id).isRoot);
+  assert.equal(rootNodes.length, 1, 'only one dominant root across all 29 notes');
+  assert.equal(positions.get(rootNodes[0].id).depth, 0);
+});
+
+

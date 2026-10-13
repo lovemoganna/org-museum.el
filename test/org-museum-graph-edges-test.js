@@ -92,12 +92,39 @@ test('routing avoids a rendered title rectangle without removing the edge', () =
     p.x>box.x && p.x<box.x+box.width && p.y>box.y && p.y<box.y+box.height));
 });
 
-test('reciprocal edges have separated tangent ports at their shared node', () => {
+test('reciprocal edges share 1 line by default (Chainalysis Reactor style) and separate when requested', () => {
   const nodes=[{id:'a'},{id:'b'}],links=[{id:'ab',source:'a',target:'b'},{id:'ba',source:'b',target:'a'}];
   const points=new Map([['a',{x:80,y:100}],['b',{x:320,y:100}]]),radii=new Map([['a',24],['b',24]]);
-  const routes=edges.routes(nodes,links,points,radii,null,'organic');
-  const start=routes.get('ab').start,end=routes.get('ba').end;
-  assert(Math.hypot(start.x-end.x,start.y-end.y)>4,'two arrows need separate attachment points');
+
+  // Default Chainalysis Reactor style: node pair shares 1 single collinear line
+  const sharedRoutes=edges.routes(nodes,links,points,radii,null,'organic');
+  const sharedStart=sharedRoutes.get('ab').start,sharedEnd=sharedRoutes.get('ba').end;
+  assert.equal(sharedRoutes.get('ab').lane, 0, 'shared route uses lane 0');
+  assert.equal(sharedRoutes.get('ba').lane, 0, 'shared route uses lane 0');
+  assert(Math.abs(sharedStart.y - sharedEnd.y) < 1e-4, 'routes are strictly collinear along chord');
+
+  // Explicit separateLanes option separates attachment points
+  const sepRoutes=edges.routes(nodes,links,points,radii,null,'organic',null,null,{separateLanes:true});
+  const sepStart=sepRoutes.get('ab').start,sepEnd=sepRoutes.get('ba').end;
+  assert(Math.hypot(sepStart.x-sepEnd.x,sepStart.y-sepEnd.y)>4,'two arrows have separate attachment points when separateLanes is true');
+});
+
+test('consolidate bundles parallel/reciprocal relations into a single shared edge (Chainalysis Reactor)', () => {
+  const rawLinks = [
+    {id: 'e1', source: 'a', target: 'b', direction: 'forward', weight: 1, type: '显式链接', label: '显式链接'},
+    {id: 'e2', source: 'b', target: 'a', direction: 'forward', weight: 1.5, type: '衍生自', label: '衍生自'},
+    {id: 'e3', source: 'c', target: 'd', direction: 'forward', weight: 2, type: '相关', label: '相关'}
+  ];
+  const bundled = edges.consolidate(rawLinks);
+  assert.equal(bundled.length, 2, 'three raw links collapse into two consolidated edges');
+  const abEdge = bundled.find(e => (e.source === 'a' && e.target === 'b') || (e.source === 'b' && e.target === 'a'));
+  assert(abEdge, 'consolidated edge between a and b exists');
+  assert.equal(abEdge.count, 2, 'bundled edge contains 2 relations');
+  assert.equal(abEdge.isBidirectional, true, 'reciprocal links create bidirectional consolidated edge');
+  assert.equal(abEdge.direction, 'both', 'bidirectional flow marker');
+  assert.equal(abEdge.weight, 2.5, 'weights are summed');
+  assert.equal(abEdge.badgeText, '⇄ 2', 'Reactor badge shows bidirectional count ⇄ 2');
+  assert.equal(abEdge.edges.length, 2, 'constituent edges are preserved for inspection');
 });
 
 test('radial routing follows the real hub when the graph is translated', () => {
@@ -303,12 +330,25 @@ test('focusedNodeId parameter successfully re-anchors layout root', () => {
   // Default picks highest degree (nodeB, degree 2)
   assert.equal(defaultPoints.get('nodeB').isRoot, true);
 
-  // Explicitly focus nodeA
+  // Explicitly focus nodeA in spoke
   const focusedPoints = layout.positions(nodes, links, 'spoke', 1000, 700, {focusedNodeId: 'nodeA'});
   assert.equal(focusedPoints.get('nodeA').isRoot, true);
   assert.equal(focusedPoints.get('nodeA').depth, 0);
   assert.equal(focusedPoints.get('nodeB').isRoot, false);
   assert.equal(focusedPoints.get('nodeB').depth, 1);
+
+  // Organic also honors focusedNodeId as root
+  const organicFocused = layout.positions(nodes, links, 'organic', 1000, 700, {focusedNodeId: 'nodeA'});
+  assert.equal(organicFocused.get('nodeA').isRoot, true);
+  assert.equal(organicFocused.get('nodeA').depth, 0);
+
+  // Semantic and Grid honor focusedNodeId as root
+  const semanticFocused = layout.positions(nodes, links, 'semantic', 1000, 700, {focusedNodeId: 'nodeA'});
+  assert.equal(semanticFocused.get('nodeA').isRoot, true);
+
+  const gridFocused = layout.positions(nodes, links, 'grid', 1000, 700, {focusedNodeId: 'nodeA'});
+  assert.equal(gridFocused.get('nodeA').isRoot, true);
+  assert.equal(gridFocused.get('nodeA').depth, 0);
 });
 
 test('radial cross-branch edges curve outward around center root to avoid penetration', () => {
