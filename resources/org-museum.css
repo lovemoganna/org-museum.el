@@ -411,6 +411,7 @@
 .timeline-calendar-nav {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 4px;
   padding: 3px;
   border-radius: var(--museum-radius-control);
@@ -452,11 +453,11 @@
 
 .timeline-calendar-weekdays {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 10px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
   margin-bottom: 10px;
   text-align: center;
-  min-width: 620px;
+  width: 100%;
 }
 
 .timeline-calendar-weekdays span {
@@ -494,12 +495,13 @@
 
 .timeline-calendar-grid {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 10px;
-  min-width: 620px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
 }
 
 .timeline-calendar-cell {
+  min-width: 0;
   min-height: 108px;
   border: 1px solid color-mix(in srgb, var(--museum-border-soft) 85%, transparent);
   border-radius: 10px;
@@ -510,6 +512,7 @@
   gap: 6px;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   position: relative;
+  overflow: hidden;
 }
 
 .timeline-calendar-cell:hover:not(.is-other-month) {
@@ -595,6 +598,8 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+  width: 100%;
   overflow: hidden;
 }
 
@@ -603,6 +608,9 @@
   align-items: center;
   gap: 6px;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   padding: 4px 7px;
   border: 1px solid color-mix(in srgb, var(--note-color, var(--museum-accent)) 24%, transparent);
   border-radius: var(--museum-radius-control);
@@ -612,11 +620,17 @@
   font-weight: 550;
   text-align: left;
   cursor: pointer;
-  white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
   transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1);
   box-shadow: 0 1px 2px var(--panel-shadow);
+}
+
+.timeline-calendar-note-title {
+  min-width: 0;
+  flex: 1 1 0%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .timeline-calendar-note-item:hover {
