@@ -2282,7 +2282,8 @@ Layout: <org-museum-root-dir>/<org-museum-pages-subdir>/"
   "Return PAGE creation date in ISO or DOTTED form."
   (format-time-string
    (if dotted "%Y.%m.%d" "%Y-%m-%d")
-   (seconds-to-time (org-museum--page-created-number page))))
+   (seconds-to-time (org-museum--page-created-number page))
+   t))
 
 (defun org-museum--sort-pages-by-modified (pages)
   "Return a fresh copy of PAGES sorted newest first."
@@ -2296,7 +2297,8 @@ Layout: <org-museum-root-dir>/<org-museum-pages-subdir>/"
 When DOTTED is non-nil, use YYYY.MM.DD; otherwise use YYYY-MM-DD."
   (format-time-string
    (if dotted "%Y.%m.%d" "%Y-%m-%d")
-   (seconds-to-time (org-museum--page-modified-number page))))
+   (seconds-to-time (org-museum--page-modified-number page))
+   t))
 
 (defun org-museum--published-page-p (page)
   "Return non-nil when PAGE should be visible in the exported index."
@@ -2716,8 +2718,8 @@ a valid Org date and `modified-fallback' when VALUE is absent or invalid."
             (let* ((year (string-to-number (match-string 1 trimmed)))
                    (month (string-to-number (match-string 2 trimmed)))
                    (day (string-to-number (match-string 3 trimmed)))
-                   (time (encode-time 0 0 0 day month year))
-                   (decoded (decode-time time)))
+                   (time (encode-time 0 0 12 day month year t))
+                   (decoded (decode-time time t)))
               (if (and (= year (decoded-time-year decoded))
                        (= month (decoded-time-month decoded))
                        (= day (decoded-time-day decoded)))

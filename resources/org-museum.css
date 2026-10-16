@@ -338,6 +338,8 @@
   width: 100%;
   padding: 20px 24px 28px;
   box-sizing: border-box;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .timeline-calendar-header {
@@ -454,6 +456,7 @@
   gap: 10px;
   margin-bottom: 10px;
   text-align: center;
+  min-width: 620px;
 }
 
 .timeline-calendar-weekdays span {
@@ -493,6 +496,7 @@
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 10px;
+  min-width: 620px;
 }
 
 .timeline-calendar-cell {
@@ -1007,6 +1011,41 @@
   #timeline-canvas,
   .timeline-preview {
     display: none;
+  }
+
+  .timeline-calendar-view {
+    padding: 14px 10px 20px;
+    border-radius: var(--museum-radius-panel);
+  }
+
+  .timeline-calendar-header {
+    gap: 10px;
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+  }
+
+  .timeline-calendar-title {
+    font-size: 18px;
+  }
+
+  .timeline-calendar-weekdays,
+  .timeline-calendar-grid {
+    gap: 6px;
+    min-width: 540px;
+  }
+
+  .timeline-calendar-cell {
+    min-height: 90px;
+    padding: 6px 6px;
+  }
+
+  .timeline-calendar-day-num {
+    font-size: 12px;
+  }
+
+  .timeline-calendar-note-item {
+    padding: 3px 5px;
+    font-size: 11px;
   }
 
   .timeline-workspace {

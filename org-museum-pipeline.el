@@ -12,7 +12,7 @@
     (let* ((id (alist-get 'id record))
            (path (alist-get 'sourcePath record))
            (date (or (alist-get 'modifiedDate record) "1970-01-01"))
-           (time (float-time (date-to-time (concat date "T00:00:00Z"))))
+           (time (float-time (date-to-time (concat date "T12:00:00Z"))))
            (page (make-org-museum-page
                   :id id :title (alist-get 'title record) :path path
                   :category (or (alist-get 'category record) "uncategorized")
