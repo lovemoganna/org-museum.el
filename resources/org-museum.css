@@ -14088,3 +14088,271 @@ mark.org-search-match.is-active {
   .museum-topbar .museum-theme-menu:not(.museum-settings-menu) > summary { min-height: 44px; }
   .museum-org-heading-actions { opacity: 1; }
 }
+
+/* ==========================================================================
+   ROUND 25 — AWWWARDS, WEBBY & FWA EXCELLENCE ENHANCEMENT LAYER
+   Museum Craftsmanship, Micro-Lighting, Tactile Kinematics & Architectural Depth
+   ========================================================================== */
+
+:root {
+  --museum-ease-fluid: cubic-bezier(0.16, 1, 0.3, 1);
+  --museum-ease-tactile: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --museum-ease-smooth: cubic-bezier(0.25, 1, 0.5, 1);
+  --museum-shadow-ambient: 0 1px 3px color-mix(in srgb, var(--panel-shadow) 20%, transparent);
+  --museum-shadow-lift: 0 8px 24px -4px color-mix(in srgb, var(--panel-shadow) 32%, transparent), 0 2px 6px color-mix(in srgb, var(--panel-shadow) 16%, transparent);
+  --museum-shadow-glow: 0 0 16px -2px color-mix(in srgb, var(--museum-accent) 24%, transparent);
+}
+
+/* Exhibition Ambient Atmospheric Illumination */
+body {
+  background-color: var(--museum-shell);
+  background-image:
+    radial-gradient(1200px 520px at 50% -40px, color-mix(in srgb, var(--museum-shell-accent) 5%, transparent), transparent 75%),
+    radial-gradient(900px 600px at 85% 30%, color-mix(in srgb, var(--museum-gold) 3%, transparent), transparent 70%);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+}
+
+:root[data-theme="light"] body {
+  background-image:
+    radial-gradient(1200px 520px at 50% -40px, color-mix(in srgb, var(--museum-secondary) 6%, transparent), transparent 75%),
+    radial-gradient(900px 600px at 85% 30%, color-mix(in srgb, var(--museum-accent) 3%, transparent), transparent 70%);
+}
+
+/* Micro-Typography & Precision Tabular Alignment */
+:is(.dashboard-metrics strong, .museum-today, .timeline-node-date, .graph-counts dd, .dashboard-trend-value, time, .dashboard-result-time, .graph-isolated-grid small, .timeline-calendar-day-num) {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+:is(.dashboard-filter-head h2, .dashboard-chart-head h2, .museum-index-toolbar h2, .timeline-hero h1, .related-page-title, .museum-article-title, .article-container h1, .article-container h2) {
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+/* Frosted Glass Topbar & Hairline Optical Polish */
+.museum-topbar {
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  background: color-mix(in srgb, var(--museum-shell-deep) 92%, transparent);
+  box-shadow: 0 4px 20px -2px color-mix(in srgb, var(--panel-shadow) 22%, transparent);
+  transition: background-color 220ms var(--museum-ease-fluid), border-color 220ms var(--museum-ease-fluid);
+}
+
+.museum-topbar-link {
+  position: relative;
+  transition: color 180ms ease, background-color 180ms ease, transform 180ms var(--museum-ease-tactile);
+  border-radius: var(--museum-radius-control);
+}
+
+.museum-topbar-link:active {
+  transform: scale(0.96);
+}
+
+.museum-topbar-link.is-active::after {
+  content: "";
+  position: absolute;
+  bottom: 6px;
+  left: 10px;
+  right: 10px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--museum-shell-accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--museum-shell-accent) 60%, transparent);
+}
+
+/* Search Bar Keycap Badge & Radiant Focus */
+.museum-search-line {
+  transition: border-color 200ms var(--museum-ease-fluid), background-color 200ms var(--museum-ease-fluid), box-shadow 200ms var(--museum-ease-fluid);
+}
+
+.museum-search-line:focus-within {
+  border-color: var(--museum-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--museum-accent) 22%, transparent), 0 3px 12px -2px color-mix(in srgb, var(--museum-accent) 26%, transparent);
+}
+
+.museum-search-line kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--museum-control-border) 60%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--museum-surface-raised) 75%, transparent);
+  color: var(--museum-shell-muted);
+  font: 500 10.5px/1 var(--font-technical);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--panel-shadow) 20%, transparent);
+  user-select: none;
+  pointer-events: none;
+}
+
+/* Architectural Dashboard Metrics Module */
+.dashboard-metrics {
+  background: color-mix(in srgb, var(--museum-surface-raised) 55%, transparent);
+  border: 1px solid var(--museum-border-soft);
+  border-radius: var(--museum-radius-panel);
+  padding: 10px 18px;
+  margin-bottom: 22px;
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--panel-shadow) 12%, transparent);
+}
+
+.dashboard-metrics > div {
+  padding: 0 20px;
+}
+
+.dashboard-metrics strong {
+  color: var(--museum-primary);
+  font-size: 22px;
+  text-shadow: 0 0 12px color-mix(in srgb, var(--museum-primary) 20%, transparent);
+}
+
+/* Note Cards Hover Elevation & Refined Accent Spine */
+.museum-index-dashboard .museum-search-result {
+  position: relative;
+  transition: transform 220ms var(--museum-ease-fluid), background-color 180ms ease, box-shadow 220ms var(--museum-ease-fluid), border-color 180ms ease;
+  border-left: 2px solid transparent;
+  padding-left: 12px;
+}
+
+.museum-index-dashboard .museum-search-result:hover,
+.museum-index-dashboard .museum-search-result:focus-visible {
+  transform: translateY(-2px);
+  background: color-mix(in srgb, var(--museum-hover) 80%, transparent);
+  border-left-color: var(--museum-accent);
+  box-shadow: var(--museum-shadow-lift);
+}
+
+.dashboard-result-topic {
+  border-radius: 12px;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--panel-shadow) 12%, transparent);
+  transition: all 180ms var(--museum-ease-fluid);
+}
+
+.dashboard-result-topic:hover {
+  transform: translateY(-1px);
+}
+
+.museum-tag-chip {
+  transition: all 180ms var(--museum-ease-fluid);
+}
+
+.museum-tag-chip:hover {
+  transform: translateY(-1px);
+  border-color: var(--museum-secondary);
+  color: var(--museum-secondary-text);
+}
+
+/* Topic Distribution Gradient Capsules */
+.dashboard-type-track {
+  height: 9px;
+  border-radius: 5px;
+  overflow: hidden;
+  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--panel-shadow) 20%, transparent);
+}
+
+.dashboard-type-track i {
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--museum-primary), color-mix(in srgb, var(--museum-primary) 70%, var(--museum-gold)));
+  transition: width 350ms var(--museum-ease-fluid);
+}
+
+.dashboard-type-row.is-active .dashboard-type-track i {
+  background: linear-gradient(90deg, var(--museum-gold), color-mix(in srgb, var(--museum-gold) 60%, var(--museum-primary)));
+}
+
+/* Trend Chart Visual Polish */
+.dashboard-trend-columns i {
+  border-radius: 3px 3px 0 0;
+  transition: height 280ms var(--museum-ease-fluid), filter 180ms ease;
+}
+
+.dashboard-trend-bin:hover .dashboard-trend-columns i {
+  filter: brightness(1.18);
+}
+
+.dashboard-trend-bin:hover,
+.dashboard-trend-bin.is-active {
+  box-shadow: 0 2px 10px -2px color-mix(in srgb, var(--panel-shadow) 30%, transparent);
+}
+
+/* Filter Controls Tactile Feedback */
+:where(.dashboard-filter, .dashboard-date-shortcut, .museum-drawer-toggle, .graph-commandbar button, .related-modebar button, .museum-ai-channel button) {
+  transition: transform 140ms var(--museum-ease-tactile), background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease, color 150ms ease;
+}
+
+:where(.dashboard-filter, .dashboard-date-shortcut, .museum-drawer-toggle, .graph-commandbar button, .related-modebar button, .museum-ai-channel button):active {
+  transform: scale(0.965);
+}
+
+/* Interactive Graph: Living Aura & Energy Glow */
+.graph-network-node {
+  transition: filter 220ms var(--museum-ease-fluid);
+}
+
+.graph-network-node:hover .graph-node-circle,
+.graph-network-node.is-selected .graph-node-circle {
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--museum-accent) 65%, transparent));
+}
+
+.graph-page.is-network-runtime .graph-network-edge.is-flowing .graph-network-edge-line {
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--museum-accent) 55%, transparent));
+}
+
+/* Reading Experience & Radiant Progress Indicator */
+.org-museum-page .museum-topbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2.5px;
+  background:
+    linear-gradient(
+      to right,
+      var(--museum-accent) 0,
+      var(--museum-secondary) var(--reading-progress),
+      var(--museum-border-soft) var(--reading-progress),
+      var(--museum-border-soft) 100%
+    );
+  box-shadow: 0 0 8px color-mix(in srgb, var(--museum-accent) 50%, transparent);
+  transition: background 150ms ease;
+}
+
+.museum-article-toc-trigger {
+  box-shadow: 0 4px 16px -2px color-mix(in srgb, var(--panel-shadow) 28%, transparent);
+  transition: all 180ms var(--museum-ease-fluid);
+}
+
+.museum-article-toc-trigger:hover {
+  transform: translateY(-2px);
+  border-color: var(--museum-accent);
+}
+
+.museum-article-toc-trigger:active {
+  transform: scale(0.96);
+}
+
+/* Scholarly Blockquotes & Code Blocks */
+:is(.article-container, .museum-md) blockquote {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--museum-border-soft) 60%, transparent), 0 2px 8px color-mix(in srgb, var(--panel-shadow) 10%, transparent);
+}
+
+:is(.article-container, .museum-md) pre.src,
+:is(.article-container, .museum-md) .org-src-container {
+  box-shadow: 0 2px 12px -2px color-mix(in srgb, var(--panel-shadow) 24%, transparent);
+}
+
+/* Accessibility: Vestibular Protection */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+    transform: none !important;
+  }
+}
