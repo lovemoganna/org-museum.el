@@ -2269,7 +2269,7 @@ Layout: <org-museum-root-dir>/<org-museum-pages-subdir>/"
     ;; Preserve JSON values while avoiding false UNC path matches in
     ;; serialized Org text (a literal backslash becomes \\ in JSON).
     (setq encoded (replace-regexp-in-string
-                   (regexp-quote "\\") "\u005c" encoded t t))
+                   (regexp-quote "\\\\") "\\u005c" encoded t t))
     encoded))
 
 (defun org-museum--page-modified-number (page)
