@@ -87,7 +87,7 @@ def privacy_scan_material(text: str, label: str) -> str:
         # The publisher emits a fixed JavaScript assignment with JSON data.
         # Examine the decoded object rather than backslash-escaped JSON bytes.
         match = re.fullmatch(
-            r"(?s)(/\\*.*?\\*/\\s*)window\\.ORG_MUSEUM_RELATED_DATA=(\\{.*\\});\\s*",
+            r"(?s)(/\*.*?\*/\s*)window\.ORG_MUSEUM_RELATED_DATA=(\{.*\});\s*",
             text,
         )
         if not match:
