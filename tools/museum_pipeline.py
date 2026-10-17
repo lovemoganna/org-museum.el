@@ -61,7 +61,7 @@ def privacy_scan_material(text: str, label: str) -> str:
     even when the original source has no private path. Keep raw HTML checks,
     and scan every decoded JSON string to preserve the original privacy gate.
     """
-    if label != "ai-center.html":
+    if label not in {"ai-center.html", "resources/org-museum-related-data.js"}:
         return text
 
     def visit(value):
@@ -82,6 +82,21 @@ def privacy_scan_material(text: str, label: str) -> str:
             raise Invalid("privacy: malformed inline JSON in ai-center.html") from error
         visit(payload)
         return '<script type="application/json"></script>'
+
+    if label == "resources/org-museum-related-data.js":
+        # The publisher emits a fixed JavaScript assignment with JSON data.
+        # Examine the decoded object rather than backslash-escaped JSON bytes.
+        match = re.fullmatch(
+            r"(?s)(/\\*.*?\\*/\\s*)window\\.ORG_MUSEUM_RELATED_DATA=(\\{.*\\});\\s*",
+            text,
+        )
+        if not match:
+            raise Invalid("privacy: malformed related-data output")
+        try:
+            visit(json.loads(match.group(2)))
+        except json.JSONDecodeError as error:
+            raise Invalid("privacy: invalid related-data JSON") from error
+        return match.group(1) + "window.ORG_MUSEUM_RELATED_DATA={};"
 
     return re.sub(
         r"""(?is)<script\b(?=[^>]*\btype\s*=\s*["']application/json["'])[^>]*>(.*?)</script>""",
