@@ -84,19 +84,22 @@ def privacy_scan_material(text: str, label: str) -> str:
         return '<script type="application/json"></script>'
 
     if label == "resources/org-museum-related-data.js":
-        # The publisher emits a fixed JavaScript assignment with JSON data.
-        # Examine the decoded object rather than backslash-escaped JSON bytes.
-        match = re.fullmatch(
-            r"(?s)(/\*.*?\*/\s*)window\.ORG_MUSEUM_RELATED_DATA=(\{.*\});\s*",
-            text,
-        )
-        if not match:
-            raise Invalid("privacy: malformed related-data output")
+        # Parse the fixed JSON assignment without making assumptions about
+        # whitespace or generated comments around its payload.
+        marker = "window.ORG_MUSEUM_RELATED_DATA="
+        offset = text.find(marker)
+        if offset < 0:
+            raise Invalid("privacy: missing related-data assignment")
+        payload_text = text[offset + len(marker):].lstrip()
         try:
-            visit(json.loads(match.group(2)))
+            payload, consumed = json.JSONDecoder().raw_decode(payload_text)
         except json.JSONDecodeError as error:
             raise Invalid("privacy: invalid related-data JSON") from error
-        return match.group(1) + "window.ORG_MUSEUM_RELATED_DATA={};"
+        suffix = payload_text[consumed:]
+        if not suffix.lstrip().startswith(";"):
+            raise Invalid("privacy: invalid related-data terminator")
+        visit(payload)
+        return text[:offset] + marker + "{}" + suffix
 
     return re.sub(
         r"""(?is)<script\b(?=[^>]*\btype\s*=\s*["']application/json["'])[^>]*>(.*?)</script>""",
