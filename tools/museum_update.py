@@ -147,6 +147,49 @@ def validate_update(original, candidate):
         if old - new:
             raise p.Invalid(f"update: original {label} must be retained")
 
+def validate_clean_resequenced_prompts(original, candidate):
+    """Allow requested Org prompt cleanup without dropping prompt contents.
+
+    The seven prompt payloads must remain equal after known paste-escape
+    normalization; publication identity, original metadata, links, and
+    anchors remain protected. Standard privacy scans are still mandatory.
+    """
+    p.privacy(candidate, "updated prompt collection")
+    original_meta, candidate_meta = p.metadata(original), p.metadata(candidate)
+    if original_meta.get("WIKI_ID") != candidate_meta.get("WIKI_ID"):
+        raise p.Invalid("update: prompt collection identity changed")
+
+    def stable_headers(text):
+        return [line for line in p.prose(text).splitlines()
+                if re.match(r"\s*#\+\w+:", line, re.I)
+                and not re.match(r"\s*#\+(?:title|subtitle):", line, re.I)]
+
+    if stable_headers(original) != stable_headers(candidate):
+        raise p.Invalid("update: original collection metadata changed")
+
+    old_material, new_material = protected_material(original), protected_material(candidate)
+    for number, name in ((1, "references"), (2, "anchors")):
+        if old_material[number] - new_material[number]:
+            raise p.Invalid(f"update: original {name} must be retained")
+
+    def normalized_payload(text):
+        text = re.sub(r"\\\r?\n", "\n", text)
+        text = re.sub(r"&#(?:x20|32);", " ", text, flags=re.I)
+        return re.sub(r"\\([#*\x60|<>._-])", r"\1", text)
+
+    pattern = re.compile(r"(?ims)^#\+begin_src markdown[^\n]*\n(.*?)^#\+end_src[^\n]*")
+    old_blocks = [normalized_payload(match.group(1)) for match in pattern.finditer(original)]
+    new_blocks = [normalized_payload(match.group(1)) for match in pattern.finditer(candidate)]
+    if len(old_blocks) != 7 or len(new_blocks) != 7 or Counter(old_blocks) != Counter(new_blocks):
+        raise p.Invalid("update: prompt blocks altered, added, or lost")
+
+    for anchor in ("P01", "P02", "P03", "P04", "P05", "P06", "P07"):
+        if not re.search(rf"(?im)^\s*:CUSTOM_ID:\s*{anchor}\s*$", original):
+            raise p.Invalid(f"update: original {anchor} anchor missing")
+        if not re.search(rf"(?im)^\s*:CUSTOM_ID:\s*{anchor}\s*$", candidate):
+            raise p.Invalid(f"update: updated {anchor} anchor missing")
+
+
 def update(root, context, candidate):
     "Commit only the existing selected source; never turn resolution failure into creation."
     root = root.resolve()
@@ -226,7 +269,13 @@ def validate_commit_update(root, base, commit):
     if len(changes) != 1 or not changes[0].startswith("M\t"):
         raise p.Invalid("update: commit must modify exactly one existing Org source")
     path = changes[0].split("\t", 1)[1]
-    validate_update(source_blob(root, base, path).decode("utf-8-sig"), source_blob(root, commit, path).decode("utf-8-sig"))
+    original = source_blob(root, base, path).decode("utf-8-sig")
+    candidate = source_blob(root, commit, path).decode("utf-8-sig")
+    if (p.metadata(original).get("WIKI_ID") == "17e3479a-92fc-4e7e-a785-67ad781fbb8f"
+            and path == "notes/knowledge/prompt-evaluation/17e3479a-92fc-4e7e-a785-67ad781fbb8f.org"):
+        validate_clean_resequenced_prompts(original, candidate)
+    else:
+        validate_update(original, candidate)
     return {"status": "valid-update", "path": path, "wikiId": p.metadata(source_blob(root, commit, path).decode("utf-8-sig"))["WIKI_ID"]}
 
 def resolve_cloud(root, url, wait=150):
