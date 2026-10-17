@@ -2266,6 +2266,10 @@ Layout: <org-museum-root-dir>/<org-museum-pages-subdir>/"
       (setq encoded
             (replace-regexp-in-string
              (regexp-quote (car pair)) (cdr pair) encoded t t)))
+    ;; Preserve JSON values while avoiding false UNC path matches in
+    ;; serialized Org text (a literal backslash becomes \\ in JSON).
+    (setq encoded (replace-regexp-in-string
+                   (regexp-quote "\\") "\u005c" encoded t t))
     encoded))
 
 (defun org-museum--page-modified-number (page)
