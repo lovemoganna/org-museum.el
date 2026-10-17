@@ -54,6 +54,42 @@ def privacy(text: str, label: str):
         if pattern.search(text):
             raise Invalid(f"privacy: {label} contains a credential or private location (content withheld)")
 
+def privacy_scan_material(text: str, label: str) -> str:
+    """Validate decoded inline JSON before scanning generated HTML text.
+
+    JSON encoding doubles literal backslashes, which can resemble UNC paths
+    even when the original source has no private path. Keep raw HTML checks,
+    and scan every decoded JSON string to preserve the original privacy gate.
+    """
+    if label != "ai-center.html":
+        return text
+
+    def visit(value):
+        if isinstance(value, str):
+            privacy(value, "embedded AI Center JSON")
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                visit(key)
+                visit(item)
+
+    def strip_json(match):
+        try:
+            payload = json.loads(match.group(1))
+        except json.JSONDecodeError as error:
+            raise Invalid("privacy: malformed inline JSON in ai-center.html") from error
+        visit(payload)
+        return '<script type="application/json"></script>'
+
+    return re.sub(
+        r"""(?is)<script\b(?=[^>]*\btype\s*=\s*["']application/json["'])[^>]*>(.*?)</script>""",
+        strip_json,
+        text,
+    )
+
+
 def within(root: Path, relative: str) -> Path:
     if "\\" in relative or "\x00" in relative or ":" in relative:
         raise Invalid("path: unsupported path")
@@ -310,6 +346,9 @@ def build(root: Path, engine: Path, output: Path, emacs: str):
                 text = path.read_text(encoding="utf-8")
                 baseline = root / path.relative_to(candidate)
                 old = baseline.read_text(encoding="utf-8") if baseline.is_file() else ""
+                label = path.relative_to(candidate).as_posix()
+                text = privacy_scan_material(text, label)
+                old = privacy_scan_material(old, label)
                 # Vendor regexes and already-public examples may mention file:
                 # URLs. Preserve existing artifacts; reject any new findings.
                 for pattern in SECRETS:
