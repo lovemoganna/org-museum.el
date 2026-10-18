@@ -57,11 +57,11 @@ class Tests(unittest.TestCase):
         with self.assertRaises(Invalid):
             m.validate_update(BEFORE, AFTER.replace("#+DATE: 2026-10-18", "#+DATE: 2026-10-19"), SCOPE)
     def test_new_image_presentation_attribute_allowed(self):
-        image = "#+ATTR_HTML: :alt Cover :width 100%\\n[[file:../../../note-assets/example/cover.webp]]\\n"
+        image = "#+ATTR_HTML: :alt Cover :width 100%\n[[file:../../../note-assets/example/cover.webp]]\\n"
         m.validate_update(BEFORE, BEFORE.replace("* 主题", image+"* 主题"))
 
     def test_existing_image_attribute_cannot_change(self):
-        original = BEFORE.replace("* 主题", "#+ATTR_HTML: :width 100%\\n* 主题")
+        original = BEFORE.replace("* 主题", "#+ATTR_HTML: :width 100%\n* 主题")
         changed = original.replace("#+ATTR_HTML: :width 100%", "#+ATTR_HTML: :width 50%")
         with self.assertRaises(Invalid):
             m.validate_update(original, changed)

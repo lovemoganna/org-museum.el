@@ -148,12 +148,12 @@ def validate_update(original, candidate, authorized_removals=None):
         for current_line in remaining:
             if current_line == original_line:
                 break
-            if not re.match(r"(?i)^#\\+ATTR_HTML:", current_line):
+            if not re.match(r"(?i)^#\+ATTR_HTML:", current_line):
                 raise p.Invalid("update: original metadata must be retained verbatim")
         else:
             raise p.Invalid("update: original metadata must be retained verbatim")
     for current_line in remaining:
-        if not re.match(r"(?i)^#\\+ATTR_HTML:", current_line):
+        if not re.match(r"(?i)^#\+ATTR_HTML:", current_line):
             raise p.Invalid("update: original metadata must be retained verbatim")
     labels = ("references", "anchors", "heading references", "literal blocks")
     scope = authorized_removals or {}
