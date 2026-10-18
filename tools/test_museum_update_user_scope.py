@@ -28,7 +28,7 @@ AFTER = META + """* 主题
 """
 SCOPE = {"user_directive": "移除与文章主题无关的部分",
          "heading references": ["无关部分"],
-         "references": ["https://example.org/bad][无关来源"]}
+         "references": ["https://example.org/bad"]}
 
 class Tests(unittest.TestCase):
     def test_no_deletion_without_explicit_scope(self):
