@@ -217,7 +217,7 @@ def validate_clean_resequenced_prompts(original, candidate):
             raise p.Invalid(f"update: updated {anchor} anchor missing")
 
 
-def update(root, context, candidate):
+def update(root, context, candidate, authorized_removals=None):
     "Commit only the existing selected source; never turn resolution failure into creation."
     root = root.resolve()
     if context.get("operation") != "update":
@@ -229,7 +229,7 @@ def update(root, context, candidate):
     original = base_raw.decode("utf-8-sig")
     if p.metadata(original).get("WIKI_ID") != context["wikiId"]:
         raise p.Invalid("update: source identity is inconsistent")
-    validate_update(original, candidate)
+    validate_update(original, candidate, authorized_removals)
     with p.sync_lock(root):
         if p.git(root, "branch", "--show-current") != "main" or p.git(root, "diff", "--cached", "--name-only"):
             raise p.Invalid("update: requires main with an empty staging area")
@@ -258,7 +258,11 @@ def update(root, context, candidate):
                     p.validate(checkout)
                     p.git(checkout, "add", "--", path)
                     if p.git(checkout, "diff", "--cached", "--name-only"):
-                        p.git(checkout, "commit", "-m", f"Museum-Update: {context['wikiId']}")
+                        message = f"Museum-Update: {context['wikiId']}"
+                        if authorized_removals is not None:
+                            message += "\n\nMuseum-Update-Authorized-Removals: " + json.dumps(
+                                authorized_removals, ensure_ascii=False, separators=(",", ":"))
+                        p.git(checkout, "commit", "-m", message)
                         head = p.git(checkout, "rev-parse", "HEAD")
                         try:
                             p.git(checkout, "push", "origin", f"{head}:refs/heads/main")
@@ -381,6 +385,7 @@ def main():
     parser.add_argument("--url")
     parser.add_argument("--context", type=Path)
     parser.add_argument("--candidate", type=Path)
+    parser.add_argument("--authorized-removals", type=Path, help="JSON declaration of exact user-authorized deletions")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--wait", type=int, default=0)
     parser.add_argument("--cloud", action="store_true", help="run URL resolution in the existing read-only Actions workflow")
@@ -402,7 +407,8 @@ def main():
             context = json.loads(args.context.read_text(encoding="utf-8-sig"))
             if args.command == "update":
                 if not args.candidate: parser.error("update requires --candidate")
-                result = update(args.root, context, args.candidate.read_text(encoding="utf-8-sig"))
+                scope = json.loads(args.authorized_removals.read_text(encoding="utf-8-sig")) if args.authorized_removals else None
+                result = update(args.root, context, args.candidate.read_text(encoding="utf-8-sig"), scope)
             else:
                 result = publication_status(args.root, context)
             if args.wait:
