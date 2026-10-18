@@ -142,8 +142,19 @@ def validate_update(original, candidate, authorized_removals=None):
     if not before.get("WIKI_ID") or after.get("WIKI_ID") != before["WIKI_ID"]:
         raise p.Invalid("update: original wiki_id must be retained")
     old, new = protected_material(original), protected_material(candidate)
-    if old[0] != new[0]:
-        raise p.Invalid("update: original metadata must be retained verbatim")
+    # Preserve old headers in order, allowing only added presentation directives.
+    remaining = iter(new[0])
+    for original_line in old[0]:
+        for current_line in remaining:
+            if current_line == original_line:
+                break
+            if not re.match(r"(?i)^#\\+ATTR_HTML:", current_line):
+                raise p.Invalid("update: original metadata must be retained verbatim")
+        else:
+            raise p.Invalid("update: original metadata must be retained verbatim")
+    for current_line in remaining:
+        if not re.match(r"(?i)^#\\+ATTR_HTML:", current_line):
+            raise p.Invalid("update: original metadata must be retained verbatim")
     labels = ("references", "anchors", "heading references", "literal blocks")
     scope = authorized_removals or {}
     if authorized_removals is not None:
