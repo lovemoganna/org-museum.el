@@ -135,17 +135,44 @@ def protected_material(text):
     blocks = Counter(match.group(0) for match in re.finditer(r"(?ims)^\s*#\+begin_(src|example|quote)\b[^\n]*\n.*?^\s*#\+end_\1[^\n]*", text))
     return headers, links, anchors, headings, blocks
 
-def validate_update(original, candidate):
+def validate_update(original, candidate, authorized_removals=None):
+    """Respect explicit user edits; protect identity and undeclared content."""
     p.privacy(candidate, "updated note")
     before, after = p.metadata(original), p.metadata(candidate)
     if not before.get("WIKI_ID") or after.get("WIKI_ID") != before["WIKI_ID"]:
         raise p.Invalid("update: original wiki_id must be retained")
-    protected_before, protected_after = protected_material(original), protected_material(candidate)
-    if protected_before[0] != protected_after[0]:
+    old, new = protected_material(original), protected_material(candidate)
+    if old[0] != new[0]:
         raise p.Invalid("update: original metadata must be retained verbatim")
-    for label, old, new in zip(("references", "anchors", "heading references", "literal blocks"), protected_before[1:], protected_after[1:]):
-        if old - new:
-            raise p.Invalid(f"update: original {label} must be retained")
+    labels = ("references", "anchors", "heading references", "literal blocks")
+    scope = authorized_removals or {}
+    if authorized_removals is not None:
+        if not isinstance(authorized_removals, dict) or set(authorized_removals) - {"user_directive", *labels}:
+            raise p.Invalid("update: invalid authorized-removals fields")
+        directive = authorized_removals.get("user_directive")
+        if not isinstance(directive, str) or not directive.strip():
+            raise p.Invalid("update: scope requires a nonempty user directive")
+    for name, former, current in zip(labels, old[1:], new[1:]):
+        allowed_list = scope.get(name, [])
+        if not isinstance(allowed_list, list) or any(not isinstance(value, str) or not value for value in allowed_list):
+            raise p.Invalid(f"update: invalid {name} scope")
+        # Multi-set equality prevents undeclared deletion, including duplicates.
+        if former - current != Counter(allowed_list):
+            raise p.Invalid(f"update: unapproved or mismatched {name} removals")
+
+
+def commit_authorized_removals(root, commit):
+    """Read declared removal scope from an auditable single-line JSON commit trailer."""
+    message = p.git(root, "log", "-1", "--format=%B", commit)
+    found = re.findall(r"(?m)^Museum-Update-Authorized-Removals: (.+)$", message)
+    if not found:
+        return None
+    if len(found) != 1:
+        raise p.Invalid("update: ambiguous removal scope")
+    try:
+        return json.loads(found[0])
+    except (ValueError, TypeError) as error:
+        raise p.Invalid("update: invalid removal-scope JSON") from error
 
 def validate_clean_resequenced_prompts(original, candidate):
     """Allow requested Org prompt cleanup without dropping prompt contents.
@@ -275,7 +302,7 @@ def validate_commit_update(root, base, commit):
             and path == "notes/knowledge/prompt-evaluation/17e3479a-92fc-4e7e-a785-67ad781fbb8f.org"):
         validate_clean_resequenced_prompts(original, candidate)
     else:
-        validate_update(original, candidate)
+        validate_update(original, candidate, commit_authorized_removals(root, commit))
     return {"status": "valid-update", "path": path, "wikiId": p.metadata(source_blob(root, commit, path).decode("utf-8-sig"))["WIKI_ID"]}
 
 def resolve_cloud(root, url, wait=150):
