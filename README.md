@@ -306,6 +306,10 @@ For the configured real wiki, run `M-x org-museum-export-all`. This rebuilds
 the recoverable index and HTML under `exports/html/`; it does not modify the
 source Org pages or the Org-roam database.
 
+## Maintenance and Contributions
+
+Before proposing a feature, fix, or release, follow [MAINTENANCE.md](MAINTENANCE.md) for decision criteria, verification evidence, compatibility checks, and rollback expectations. Documentation-only changes do not require running the entire ERT suite; report which checks were actually performed.
+
 ## Troubleshooting
 
 ### Pages Not Linking Correctly
