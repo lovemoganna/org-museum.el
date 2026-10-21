@@ -40,6 +40,20 @@ else init();
 
 (function(){
 'use strict';
+
+var Visual = (typeof window !== 'undefined' && window.OrgMuseumVisual) ||
+  (typeof require === 'function' ? (function(){
+    try { return require('./org-museum-visual-spec.js'); } catch(_e){ return null; }
+  })() : null);
+if (!Visual) {
+  Visual = {
+    Formatter: {
+      formatNumber: function(v){ return String(v == null ? 0 : v); },
+      formatValueWithUnit: function(v, u){ return String(v) + (u ? ' ' + u : ''); }
+    }
+  };
+}
+
 var raw=JSON.parse(document.getElementById('timeline-data').textContent);
 var pages=(raw.pages||[]).slice().sort(function(a,b){return a.created-b.created||a.title.localeCompare(b.title,'zh-CN');});
 var edges=raw.edges||[],palette=raw.palette||[];
@@ -505,7 +519,7 @@ function renderCalendar(){
 
   var meta=element('span','timeline-calendar-month-count');
   var metaDot=element('span','timeline-calendar-meta-dot');
-  var metaText=element('span','timeline-calendar-meta-text','本月 '+monthNotes.length+' 篇笔记');
+  var metaText=element('span','timeline-calendar-meta-text','本月 '+Visual.Formatter.formatValueWithUnit(monthNotes.length,'篇')+'笔记');
   meta.appendChild(metaDot);
   meta.appendChild(metaText);
 
@@ -626,7 +640,7 @@ function renderCalendar(){
 
     var dayNotes=notesByDate.get(curDStr)||[];
     if(dayNotes.length){
-      var countBadge=element('span','timeline-calendar-day-count',dayNotes.length+' 篇');
+      var countBadge=element('span','timeline-calendar-day-count',Visual.Formatter.formatValueWithUnit(dayNotes.length,'篇'));
       cellHead.appendChild(countBadge);
 
       var notesContainer=element('div','timeline-calendar-cell-notes');

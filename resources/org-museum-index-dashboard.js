@@ -1,6 +1,37 @@
 (function(){
 'use strict';
 
+var Visual = (typeof window !== 'undefined' && window.OrgMuseumVisual) ||
+  (typeof require === 'function' ? (function(){
+    try { return require('./org-museum-visual-spec.js'); } catch(_e){ return null; }
+  })() : null);
+if (!Visual) {
+  Visual = {
+    Formatter: {
+      formatNumber: function(v){ return String(v == null ? 0 : v); },
+      formatPercent: function(v, t){ return (!t ? '0.0%' : ((v/t)*100).toFixed(1)+'%'); },
+      formatValueWithUnit: function(v, u){ return String(v) + (u ? ' ' + u : ''); },
+      formatAxisTick: function(v){ return String(v); }
+    },
+    ChartSpec: {
+      computeAxisScale: function(max){
+        var ceiling = max<=3?3:max<=6?6:max<=10?10:Math.ceil(max/5)*5;
+        return { ceiling: ceiling, ticks: [ceiling, Math.round(ceiling/2), 0] };
+      },
+      computeLabelLayout: function(p){
+        var h = p.barHeight || 0;
+        if (p.value === 0) return { placement: 'hidden' };
+        if (h >= 85) return { placement: 'top-submerged' };
+        return { placement: 'outside' };
+      },
+      buildTooltipText: function(p){
+        return (p.title || '') + (p.items || []).map(function(it){ return ' · ' + it.label + '：' + it.value + (it.unit || '篇'); }).join('');
+      }
+    }
+  };
+}
+
+
 var dataEl=document.getElementById('org-museum-index-data');
 var data={pages:[],generatedAt:''};
 try{data=JSON.parse(dataEl?dataEl.textContent:'{"pages":[]}');}catch(_error){}
@@ -524,7 +555,11 @@ function renderMetrics(){
   [['total',metrics.total],['recent-created',metrics.recentCreated],
    ['recent-updated',metrics.recentUpdated]].forEach(function(item){
     var target=document.querySelector('[data-dashboard-metric="'+item[0]+'"]');
-    if(target)target.textContent=String(item[1]);
+    if(target){
+      target.textContent=String(item[1]);
+      target.setAttribute('data-metric-unit', '篇');
+      target.title=(labelMap[item[0]]||'总笔记')+'：'+Visual.Formatter.formatValueWithUnit(item[1], '篇');
+    }
     if(labelMap[item[0]]){
       var labelEl=document.querySelector('[data-dashboard-metric-label="'+item[0]+'"]');
       if(!labelEl&&target&&target.parentElement){
@@ -565,13 +600,19 @@ function renderTypeChart(){
     var row=button('','dashboard-type-row'+(active?' is-active':''),active);
     row.dataset.chartType=item.value;
     var label=categoryLabel(item.value);
-    row.title=label+' · '+item.count+' 篇';
+    var totalVisible=visibleItems.reduce(function(acc,it){return acc+it.count;},0);
+    var percentStr=Visual.Formatter.formatPercent(item.count, totalVisible);
+    row.title=Visual.ChartSpec.buildTooltipText({
+      title: label,
+      items: [{ label: '数量', value: item.count, unit: '篇', percent: percentStr }]
+    });
     row.setAttribute('aria-label',row.title+'；点击'+(active?'取消':'筛选'));
     var name=document.createElement('span');name.textContent=label;
     var track=document.createElement('span');track.className='dashboard-type-track';
     var fill=document.createElement('i');fill.style.width=(item.count/max*100)+'%';track.appendChild(fill);
     var number=document.createElement('strong');number.textContent=String(item.count);
-    row.appendChild(name);row.appendChild(track);row.appendChild(number);
+    var ratio=document.createElement('span');ratio.className='dashboard-type-ratio';ratio.textContent=percentStr;
+    row.appendChild(name);row.appendChild(track);row.appendChild(number);row.appendChild(ratio);
     row.addEventListener('click',function(){setDimension('category',item.value);});
     typeChart.appendChild(row);
   });
@@ -592,34 +633,51 @@ function renderTrend(){
     return;
   }
   var max=Math.max(1,...bins.map(function(bin){return Math.max(bin.created,bin.updated);}));
-  var ceiling=max<=3?3:max<=6?6:max<=10?10:Math.ceil(max/5)*5;
+  var scaleInfo=Visual.ChartSpec.computeAxisScale(max);
+  var ceiling=scaleInfo.ceiling;
   if(trendAxis){
     trendAxis.textContent='';
-    [ceiling,Math.round(ceiling/2),0].forEach(function(value){
-      var tick=document.createElement('span');tick.textContent=String(value);
+    scaleInfo.ticks.forEach(function(value){
+      var tick=document.createElement('span');tick.textContent=Visual.Formatter.formatAxisTick(value);
       trendAxis.appendChild(tick);
     });
   }
+  var isDense=bins.length>14;
   trendChart.style.gridTemplateColumns='repeat('+bins.length+',minmax(0,1fr))';
   bins.forEach(function(bin,index){
     var selected=state.filters.timeRange&&
       (!state.filters.timeRange.end||bin.start<=state.filters.timeRange.end)&&
       (!state.filters.timeRange.start||bin.end>=state.filters.timeRange.start);
-    var cell=button('','dashboard-trend-bin'+(selected?' is-active':''),Boolean(selected));
+    var cellClass='dashboard-trend-bin'+(selected?' is-active':'')+(isDense?' is-dense-grid':'');
+    var cell=button('',cellClass,Boolean(selected));
     cell.dataset.trendIndex=String(index);
     var text=bin.start===bin.end?bin.start:bin.start+' ~ '+bin.end;
-    cell.title='日期：'+text+' · 新增：'+bin.created+' · 更新：'+bin.updated;
+    cell.title=Visual.ChartSpec.buildTooltipText({
+      title: '日期：'+text,
+      items: [
+        { label: '新增', value: bin.created, unit: '篇' },
+        { label: '更新', value: bin.updated, unit: '篇' }
+      ]
+    });
     cell.setAttribute('aria-label',cell.title+'；点击筛选，拖动选择范围');
     var columns=document.createElement('span');columns.className='dashboard-trend-columns';
 
+    var createdH=bin.created?Math.max(8,Math.round(bin.created/ceiling*100)):0;
+    var createdLayout=Visual.ChartSpec.computeLabelLayout({
+      barHeight: createdH,
+      containerHeight: 110,
+      value: bin.created
+    });
     var createdBar=document.createElement('i');
     createdBar.className='dashboard-trend-created';
-    createdBar.style.height=bin.created?Math.max(8,Math.round(bin.created/ceiling*100))+'%':'0%';
+    createdBar.style.height=createdH?createdH+'%':'0%';
     createdBar.dataset.value=String(bin.created);
     createdBar.dataset.label=String(bin.created);
     createdBar.title='新增：'+bin.created;
     var createdVal=document.createElement('span');
-    createdVal.className='dashboard-trend-value dashboard-trend-label';
+    var createdValClass='dashboard-trend-value dashboard-trend-label'+
+      (createdLayout.placement==='top-submerged'?' is-top-submerged':' is-outside');
+    createdVal.className=createdValClass;
     createdVal.setAttribute('aria-hidden','true');
     createdVal.dataset.value=String(bin.created);
     createdVal.dataset.label=String(bin.created);
@@ -627,14 +685,22 @@ function renderTrend(){
     createdBar.appendChild(createdVal);
     columns.appendChild(createdBar);
 
+    var updatedH=bin.updated?Math.max(8,Math.round(bin.updated/ceiling*100)):0;
+    var updatedLayout=Visual.ChartSpec.computeLabelLayout({
+      barHeight: updatedH,
+      containerHeight: 110,
+      value: bin.updated
+    });
     var updatedBar=document.createElement('i');
     updatedBar.className='dashboard-trend-updated';
-    updatedBar.style.height=bin.updated?Math.max(8,Math.round(bin.updated/ceiling*100))+'%':'0%';
+    updatedBar.style.height=updatedH?updatedH+'%':'0%';
     updatedBar.dataset.value=String(bin.updated);
     updatedBar.dataset.label=String(bin.updated);
     updatedBar.title='更新：'+bin.updated;
     var updatedVal=document.createElement('span');
-    updatedVal.className='dashboard-trend-value dashboard-trend-label';
+    var updatedValClass='dashboard-trend-value dashboard-trend-label'+
+      (updatedLayout.placement==='top-submerged'?' is-top-submerged':' is-outside');
+    updatedVal.className=updatedValClass;
     updatedVal.setAttribute('aria-hidden','true');
     updatedVal.dataset.value=String(bin.updated);
     updatedVal.dataset.label=String(bin.updated);
