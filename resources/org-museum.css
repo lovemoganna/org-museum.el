@@ -3728,7 +3728,8 @@ pre.org-museum-code-block.org-museum-code-expanded {
 
 #org-museum-right-sidebar {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12.5px;
+  line-height: 1.6;
 }
 
 #org-museum-right-sidebar h4 {
@@ -3737,8 +3738,9 @@ pre.org-museum-code-block.org-museum-code-expanded {
   gap: 10px;
   margin: 0 0 18px;
   color: var(--text-main);
-  font-size: 11px;
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .toc-sidebar-header {
@@ -3873,9 +3875,12 @@ pre.org-museum-code-block.org-museum-code-expanded {
 #org-museum-right-sidebar a {
   display: block;
   color: var(--text-muted);
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.55;
   overflow-wrap: anywhere;
   word-break: break-word;
+  padding: 2px 0;
+  transition: color 120ms ease;
 }
 
 #org-museum-right-sidebar a:hover,
@@ -13799,26 +13804,26 @@ html[data-zen-mode="true"] :is(.museum-drawer-panel, .museum-nav-drawer, .relate
   color: var(--museum-text-muted);
 }
 
-/* Dynamic Reading Size & Typography */
+/* Dynamic Reading Size & Typography: Classic 12px Baseline Restored */
 html[data-reading-size="sm"] {
-  --museum-type-body: 13.5px !important;
-  --museum-type-ui: 12px !important;
-  --museum-leading-body: 1.55 !important;
+  --museum-type-body: 11.5px !important;
+  --museum-type-ui: 11px !important;
+  --museum-leading-body: 1.6 !important;
 }
 html[data-reading-size="md"] {
-  --museum-type-body: 15.5px !important;
-  --museum-type-ui: 13px !important;
-  --museum-leading-body: 1.8 !important;
+  --museum-type-body: 12px !important;
+  --museum-type-ui: 12px !important;
+  --museum-leading-body: 1.78 !important;
 }
 html[data-reading-size="lg"] {
-  --museum-type-body: 18px !important;
-  --museum-type-ui: 14.5px !important;
-  --museum-leading-body: 1.85 !important;
+  --museum-type-body: 13.5px !important;
+  --museum-type-ui: 12.5px !important;
+  --museum-leading-body: 1.82 !important;
 }
 html[data-reading-size="xl"] {
-  --museum-type-body: 21px !important;
-  --museum-type-ui: 16px !important;
-  --museum-leading-body: 1.95 !important;
+  --museum-type-body: 15px !important;
+  --museum-type-ui: 13.5px !important;
+  --museum-leading-body: 1.88 !important;
 }
 
 :where(body, p, li, dd, dt, blockquote, .article-container, .museum-md, .related-paper, .related-full, .museum-index-shell, .museum-timeline-shell, .museum-related-shell, .museum-ai-center-shell) {
@@ -13826,27 +13831,27 @@ html[data-reading-size="xl"] {
 }
 
 :is(.article-container, .museum-md, .related-paper, .related-full) :where(p, li, dd, dt, blockquote, .outline-text-2, .outline-text-3, .outline-text-4) {
-  font-size: var(--museum-type-body) !important;
+  font-size: var(--museum-type-body);
 }
 
 :is(.museum-index-entry, .museum-shelf-card, .museum-pathway-card, .dashboard-card, .timeline-card, .related-card) :where(.museum-entry-desc, .pathway-desc, .dashboard-result-desc, .timeline-card-desc, .related-card-desc, p) {
-  font-size: var(--museum-type-body) !important;
+  font-size: var(--museum-type-body);
 }
 
-html[data-reading-size="sm"] :is(.museum-index-entry h3, .museum-pathway-card h3, .timeline-card-title, .dashboard-card h3) { font-size: 13.5px !important; }
-html[data-reading-size="md"] :is(.museum-index-entry h3, .museum-pathway-card h3, .timeline-card-title, .dashboard-card h3) { font-size: 15.5px !important; }
-html[data-reading-size="lg"] :is(.museum-index-entry h3, .museum-pathway-card h3, .timeline-card-title, .dashboard-card h3) { font-size: 18px !important; }
-html[data-reading-size="xl"] :is(.museum-index-entry h3, .museum-pathway-card h3, .timeline-card-title, .dashboard-card h3) { font-size: 21px !important; }
+html[data-reading-size="sm"] :is(.museum-index-entry h3, .museum-pathway-card h3, .timeline-card-title, .dashboard-card h3) { font-size: 13px !important; }
+html[data-reading-size="md"] :is(.museum-index-entry h3, .museum-pathway-card h3, .timeline-card-title, .dashboard-card h3) { font-size: 14px !important; }
+html[data-reading-size="lg"] :is(.museum-index-entry h3, .museum-pathway-card h3, .timeline-card-title, .dashboard-card h3) { font-size: 15.5px !important; }
+html[data-reading-size="xl"] :is(.museum-index-entry h3, .museum-pathway-card h3, .timeline-card-title, .dashboard-card h3) { font-size: 17px !important; }
 
-html[data-reading-size="sm"] :is(.article-container, .museum-md, .related-paper) h2 { font-size: 16px !important; }
-html[data-reading-size="md"] :is(.article-container, .museum-md, .related-paper) h2 { font-size: 18.5px !important; }
-html[data-reading-size="lg"] :is(.article-container, .museum-md, .related-paper) h2 { font-size: 21.5px !important; }
-html[data-reading-size="xl"] :is(.article-container, .museum-md, .related-paper) h2 { font-size: 25px !important; }
+html[data-reading-size="sm"] :is(.article-container, .museum-md, .related-paper) h2 { font-size: 19px !important; }
+html[data-reading-size="md"] :is(.article-container, .museum-md, .related-paper) h2 { font-size: 22px !important; }
+html[data-reading-size="lg"] :is(.article-container, .museum-md, .related-paper) h2 { font-size: 24px !important; }
+html[data-reading-size="xl"] :is(.article-container, .museum-md, .related-paper) h2 { font-size: 26px !important; }
 
-html[data-reading-size="sm"] :is(.article-container, .museum-md, .related-paper) h3 { font-size: 14px !important; }
-html[data-reading-size="md"] :is(.article-container, .museum-md, .related-paper) h3 { font-size: 16px !important; }
-html[data-reading-size="lg"] :is(.article-container, .museum-md, .related-paper) h3 { font-size: 18.5px !important; }
-html[data-reading-size="xl"] :is(.article-container, .museum-md, .related-paper) h3 { font-size: 21.5px !important; }
+html[data-reading-size="sm"] :is(.article-container, .museum-md, .related-paper) h3 { font-size: 16px !important; }
+html[data-reading-size="md"] :is(.article-container, .museum-md, .related-paper) h3 { font-size: 18px !important; }
+html[data-reading-size="lg"] :is(.article-container, .museum-md, .related-paper) h3 { font-size: 20px !important; }
+html[data-reading-size="xl"] :is(.article-container, .museum-md, .related-paper) h3 { font-size: 22px !important; }
 
 /* Dynamic Reading Width */
 html[data-reading-width="980"] {

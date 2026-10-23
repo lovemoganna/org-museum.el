@@ -950,7 +950,7 @@
       var t = (doc && doc.dataset.readingTone) || "default";
       var l = (doc && doc.dataset.readingLine) || "standard";
 
-      var sizeLabels = { sm: "紧凑 13.5px", md: "标准 15.5px", lg: "适度 18px", xl: "放大 21px" };
+      var sizeLabels = { sm: "精简 11.5px", md: "标准 12px", lg: "适度 13.5px", xl: "放大 15px" };
       var fontLabels = { sans: "现代黑体", serif: "人文宋体" };
       var toneLabels = { default: "默认基调", warm: "护眼暖杏", slate: "柔和冷灰" };
       var lineLabels = { compact: "紧凑 1.55", standard: "标准 1.8", relaxed: "宽松 2.15" };

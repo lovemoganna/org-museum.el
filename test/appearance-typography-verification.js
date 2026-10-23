@@ -12,8 +12,8 @@ assert(css.includes('html[data-reading-size="sm"]'), 'CSS has data-reading-size=
 assert(css.includes('html[data-reading-size="md"]'), 'CSS has data-reading-size="md"');
 assert(css.includes('html[data-reading-size="lg"]'), 'CSS has data-reading-size="lg"');
 assert(css.includes('html[data-reading-size="xl"]'), 'CSS has data-reading-size="xl"');
-assert(css.includes('--museum-type-body: 13.5px !important;'), 'sm size token exists');
-assert(css.includes('--museum-type-body: 21px !important;'), 'xl size token exists');
+assert(css.includes('--museum-type-body: 11.5px !important;'), 'sm size token exists');
+assert(css.includes('--museum-type-body: 15px !important;'), 'xl size token exists');
 assert(css.includes('.museum-entry-desc'), 'Affects note entry descriptions');
 assert(css.includes('.pathway-desc'), 'Affects pathway descriptions');
 console.log('✓ Dynamic Reading Sizes correctly defined');
