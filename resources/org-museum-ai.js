@@ -614,6 +614,9 @@
         if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
           e.preventDefault();
           sendCurrentMessage();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          setOpen(false, true);
         }
       });
       chatInput.addEventListener("input", function () {
@@ -774,10 +777,8 @@
 
 
     renderChat();
-    var savedOpen = null;
-    try { savedOpen = localStorage.getItem("copilot_sidebar_open"); } catch (_) {}
-    var shouldOpen = savedOpen === "true";
-    setOpen(shouldOpen, false);
+    // Articles always open with the AI chat panel hidden.
+    setOpen(false, false);
     if (toc) {
       var tocButtons = all("[data-toc-toggle]");
       var hoverTimer;

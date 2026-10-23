@@ -2324,8 +2324,19 @@ When DOTTED is non-nil, use YYYY.MM.DD; otherwise use YYYY-MM-DD."
 (defun org-museum--category-label (category)
   "Return the configured display label for CATEGORY."
   (or (cdr (assoc-string category org-museum-category-label-alist t))
-      (and (equal category "uncategorized") "其他笔记")
-      category))
+      (and (equal (downcase (or category "")) "uncategorized") "其他笔记")
+      (pcase (downcase (or category ""))
+        ("ail" "AI 辅助学习")
+        ("ai" "AI 智能")
+        ("ontology" "知识本体建模")
+        ("sql" "SQL 数据分析")
+        ("emacs" "Emacs 生态")
+        ("lisp" "Lisp 过程抽象")
+        ("theme" "界面主题设计")
+        ("crypto" "智能与密码")
+        ("vibe" "Vibe Coding")
+        ("data" "数据工程")
+        (_ category))))
 
 (defun org-museum--graph-semantic-category (page)
   "Return a meaningful graph category for PAGE, or the empty string.
@@ -3560,6 +3571,45 @@ tables retain their native markup."
       (insert-file-contents org-file)
       (max 1 (ceiling (/ (float (buffer-size)) 500))))))
 
+(defun org-museum--article-learning-hub-html (page out-file)
+  "Return the learning completion and next-step actions hub HTML for PAGE."
+  (let* ((shared-root (org-museum--shared-root))
+         (related-href (org-museum--relative-path
+                        (expand-file-name "related.html" shared-root) out-file)))
+    (format
+     (concat
+      "<section class=\"museum-next-learning-hub\" aria-label=\"学习闭环与下一步行动\">\n"
+      "  <div class=\"learning-hub-header\">\n"
+      "    <span class=\"hub-badge\">🎯 本课研读闭环</span>\n"
+      "    <h3 class=\"hub-title\">本篇学习任务是否已掌握？</h3>\n"
+      "  </div>\n"
+      "  <p class=\"hub-desc\">知识需要主动提取与关联实践。点击下方卡片，检验本篇掌握度或探索相连知识：</p>\n"
+      "  <div class=\"learning-hub-actions\">\n"
+      "    <button type=\"button\" class=\"hub-action-card\" data-hub-action=\"quiz\" title=\"让 AI 助教针对当前笔记出 3 道自测思考题\">\n"
+      "      <span class=\"action-icon\">📝</span>\n"
+      "      <div class=\"action-info\">\n"
+      "        <strong>生成本篇自测题</strong>\n"
+      "        <small>AI 助教提炼 3 道核心概念题检测理解深度</small>\n"
+      "      </div>\n"
+      "    </button>\n"
+      "    <button type=\"button\" class=\"hub-action-card\" data-hub-action=\"mark-studied\" title=\"标记本篇笔记已研读掌握\">\n"
+      "      <span class=\"action-icon hub-studied-check\">✓</span>\n"
+      "      <div class=\"action-info\">\n"
+      "        <strong data-hub-studied-text>标记为已研读</strong>\n"
+      "        <small data-hub-studied-hint>记录学习足迹，点亮本课掌握徽章</small>\n"
+      "      </div>\n"
+      "    </button>\n"
+      "    <a class=\"hub-action-card\" href=\"%s\" title=\"进入关联阅读对读模式\">\n"
+      "      <span class=\"action-icon\">🔗</span>\n"
+      "      <div class=\"action-info\">\n"
+      "        <strong>对比关联笔记</strong>\n"
+      "        <small>并排双栏阅读，构建网状认知</small>\n"
+      "      </div>\n"
+      "    </a>\n"
+      "  </div>\n"
+      "</section>\n")
+     (org-museum--html-escape related-href t))))
+
 (defun org-museum--article-meta-html (page out-file org-file)
   "Return the article metadata rail for PAGE."
   (let* ((shared-root (org-museum--shared-root))
@@ -3572,6 +3622,7 @@ tables retain their native markup."
       "  <summary>文章信息</summary>\n"
       "<aside class=\"museum-article-meta\" aria-label=\"文章元数据\">\n"
       "  <a class=\"article-category\" href=\"%s?category=%s#recent-updates\">%s</a>%s\n"
+      "  <span class=\"museum-studied-badge\" data-studied-badge hidden>✓ 已掌握</span>\n"
       "  <dl>\n"
       "    <div><dt>修改日期</dt><dd><time datetime=\"%s\">%s</time></dd></div>\n"
       "    <div><dt>阅读时间</dt><dd>约 %d 分钟</dd></div>\n"
@@ -3617,6 +3668,7 @@ tables retain their native markup."
       "<div id=\"museum-article-identity\" class=\"museum-article-identity\" hidden>"
       "<a href=\"%s\" class=\"museum-identity-title\">%s</a>"
       "<span class=\"museum-identity-meta\">%s%s</span>"
+      "<span class=\"museum-studied-badge\" data-identity-studied-badge hidden>✓ 已掌握</span>"
       "<span class=\"museum-identity-divider\" aria-hidden=\"true\">·</span>"
       "<span class=\"museum-identity-section\" data-current-section "
       "aria-live=\"polite\">文章开头</span>"
@@ -3927,8 +3979,11 @@ Applicable scope: org-museum--postprocess-html."
                         (org-museum--page-assets-html page out-file)))
          (knowledge-html (when (fboundp 'org-museum-knowledge--page-html)
                            (org-museum-knowledge--page-html page out-file)))
+         (learning-hub-html (when page
+                              (org-museum--article-learning-hub-html page out-file)))
          (appended  (concat (or knowledge-html "") (or assets-html "")
-                            (or nav-html "") (or graph-html ""))))
+                            (or nav-html "") (or graph-html "")
+                            (or learning-hub-html ""))))
     (goto-char (point-max))
     (cond
      ((re-search-backward "</div>\\([\n\r\t ]*\\)</body>" nil t)
@@ -6395,6 +6450,103 @@ Interactive calls run in an isolated background Emacs process."
     (sort cats (lambda (a b) (string< (car a) (car b))))))
 
 
+(defun org-museum--learning-settings-html ()
+  "Return the shared learning controls used by every exported page."
+  (concat
+   "<div class=\"museum-settings-tab-panel\" data-settings-panel=\"learning\" role=\"tabpanel\" aria-label=\"学习与认知辅助设置\" hidden>\n"
+   "        <div class=\"museum-settings-section\">\n"
+   "          <div class=\"museum-settings-section-title\">入门辅导与认知支持</div>\n"
+   "          <label class=\"museum-settings-toggle-row\">\n"
+   "            <div class=\"museum-toggle-text\">\n"
+   "              <span class=\"toggle-title\">💡 零基础概念浅释 (Beginner Mode)</span>\n"
+   "              <span class=\"toggle-desc\">在专业术语旁标注入门释义，浅白解读双链、草稿、抽屉与拓扑关系</span>\n"
+   "            </div>\n"
+   "            <input type=\"checkbox\" class=\"museum-switch-input\" data-beginner-mode-toggle checked>\n"
+   "          </label>\n"
+   "          <label class=\"museum-settings-toggle-row\">\n"
+   "            <div class=\"museum-toggle-text\">\n"
+   "              <span class=\"toggle-title\">🔍 双链悬浮速览卡片 (Hover Preview)</span>\n"
+   "              <span class=\"toggle-desc\">鼠标移至笔记链接即可速览目标标题，免去频繁跳页与上下文迷失</span>\n"
+   "            </div>\n"
+   "            <input type=\"checkbox\" class=\"museum-switch-input\" data-hover-preview-toggle checked>\n"
+   "          </label>\n"
+   "          <label class=\"museum-settings-toggle-row\">\n"
+   "            <div class=\"museum-toggle-text\">\n"
+   "              <span class=\"toggle-title\">🔢 代码行号与结构对照 (Code Line Numbers)</span>\n"
+   "              <span class=\"toggle-desc\">代码块清晰展示左侧行号，方便对照教程逐行理解与向 AI 提问</span>\n"
+   "            </div>\n"
+   "            <input type=\"checkbox\" class=\"museum-switch-input\" data-code-lineno-toggle checked>\n"
+   "          </label>\n"
+   "          <label class=\"museum-settings-toggle-row\">\n"
+   "            <div class=\"museum-toggle-text\">\n"
+   "              <span class=\"toggle-title\">🧠 渐进式主动回忆 (Active Recall 自测)</span>\n"
+   "              <span class=\"toggle-desc\">将笔记中的核心重点挖空模糊，悬停或轻触时显现，强化记忆提取</span>\n"
+   "            </div>\n"
+   "            <input type=\"checkbox\" class=\"museum-switch-input\" data-active-recall-toggle>\n"
+   "          </label>\n"
+   "        </div>\n"
+   "        <div class=\"museum-settings-section\">\n"
+   "          <div class=\"museum-settings-section-title\">随身笔记概念速查词典</div>\n"
+   "          <details class=\"museum-glossary-details\">\n"
+   "            <summary>📖 点击展开核心术语白话释义 (Pocket Glossary)</summary>\n"
+   "            <div class=\"museum-glossary-list\">\n"
+   "              <div class=\"glossary-item\">\n"
+   "                <span class=\"glossary-term\">📎 双向链接 (Bi-directional Links)</span>\n"
+   "                <p class=\"glossary-def\">笔记互相引用的超链接网络。正向链接指向深入分支，反向链接回溯来源，无需死板的目录层级。</p>\n"
+   "              </div>\n"
+   "              <div class=\"glossary-item\">\n"
+   "                <span class=\"glossary-term\">🗂️ 属性抽屉 (Properties Drawer)</span>\n"
+   "                <p class=\"glossary-def\">笔记顶部的元数据保险盒，记录创建时间、唯一编号（ID）与分类标签，用于构建知识网络。</p>\n"
+   "              </div>\n"
+   "              <div class=\"glossary-item\">\n"
+   "                <span class=\"glossary-term\">📝 草稿演练 (Interactive Practice)</span>\n"
+   "                <p class=\"glossary-def\">内容仍在整理与验证的笔记状态。网页提供阅读与源码查看；代码需在相应执行环境中运行。</p>\n"
+   "              </div>\n"
+   "              <div class=\"glossary-item\">\n"
+   "                <span class=\"glossary-term\">🕸️ 知识图谱 (Knowledge Graph)</span>\n"
+   "                <p class=\"glossary-def\">知识库的宏观星空全景图。节点越大表示引用越密集，连线密集处即为知识枢纽。</p>\n"
+   "              </div>\n"
+   "            </div>\n"
+   "          </details>\n"
+   "        </div>\n"
+   "        <div class=\"museum-settings-section\">\n"
+   "          <div class=\"museum-settings-section-title\">新手实战学习任务卡</div>\n"
+   "          <div class=\"museum-quest-card\" data-learning-quest-card>\n"
+   "            <div class=\"quest-card-header\">\n"
+   "              <span class=\"quest-card-badge\">🌱 今日实战路线</span>\n"
+   "              <span class=\"quest-progress-text\" data-quest-progress-text>已完成 0 / 3 项</span>\n"
+   "            </div>\n"
+   "            <div class=\"quest-list\">\n"
+   "              <label class=\"quest-item\" data-quest-item=\"explore_links\">\n"
+   "                <input type=\"checkbox\" data-quest-checkbox=\"explore_links\">\n"
+   "                <span class=\"quest-title\">1. 建立直觉：在正文中悬浮速览一个双链卡片</span>\n"
+   "              </label>\n"
+   "              <label class=\"quest-item\" data-quest-item=\"ai_dialogue\">\n"
+   "                <input type=\"checkbox\" data-quest-checkbox=\"ai_dialogue\">\n"
+   "                <span class=\"quest-title\">2. 助教互动：使用「零基础助教」提问一个概念</span>\n"
+   "              </label>\n"
+   "              <label class=\"quest-item\" data-quest-item=\"active_recall\">\n"
+   "                <input type=\"checkbox\" data-quest-checkbox=\"active_recall\">\n"
+   "                <span class=\"quest-title\">3. 主动巩固：开启主动回忆并点击揭晓一个重点</span>\n"
+   "              </label>\n"
+   "            </div>\n"
+   "          </div>\n"
+   "        </div>\n"
+   "        <div class=\"museum-settings-section\">\n"
+   "          <div class=\"museum-settings-section-title\">新手向导与快捷键速查</div>\n"
+   "          <div class=\"museum-ai-action-row\">\n"
+   "            <button type=\"button\" class=\"museum-action-btn\" data-restore-guides title=\"重新激活全站各页面的入门学习向导横幅\">🔄 重新激活全站新手引导</button>\n"
+   "          </div>\n"
+   "          <div class=\"museum-shortcuts-grid\" aria-label=\"核心快捷键速查\">\n"
+   "            <div class=\"shortcut-item\"><kbd>/</kbd><span>全局搜索</span></div>\n"
+   "            <div class=\"shortcut-item\"><kbd>Esc</kbd><span>关闭弹窗/抽屉</span></div>\n"
+   "            <div class=\"shortcut-item\"><kbd>g g</kbd><span>正文回到顶部</span></div>\n"
+   "            <div class=\"shortcut-item\"><kbd>j / k</kbd><span>正文切换章节</span></div>\n"
+   "          </div>\n"
+   "        </div>\n"
+   "      </div>\n"
+))
+
 (defun org-museum--build-topbar (out-file &optional kind)
   "Return the shared top navigation for OUT-FILE.
 KIND is one of `home', `article', `timeline', `graph', or `related'."
@@ -6426,10 +6578,21 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
           (settings-ai-section
            (concat
             "        <div class=\"museum-settings-section museum-settings-ai-section\">\n"
-            "          <div class=\"museum-settings-section-title\">模型设置</div>\n"
+            "          <div class=\"museum-settings-section-title\">模型设置与服务预设</div>\n"
+            "          <div class=\"museum-settings-field\">\n"
+            "            <label>快速预设（一键填入常用服务）\n"
+            "              <select data-ai-preset-select aria-label=\"快速预设服务\">\n"
+            "                <option value=\"\">-- 选择常用服务或自定义 --</option>\n"
+            "                <option value=\"lmstudio\">LM Studio (本地 127.0.0.1:1234)</option>\n"
+            "                <option value=\"ollama\">Ollama (本地 127.0.0.1:11434)</option>\n"
+            "                <option value=\"siliconflow\">SiliconFlow 硅基流动 (DeepSeek 云端)</option>\n"
+            "                <option value=\"openai\">OpenAI 官方 API</option>\n"
+            "              </select>\n"
+            "            </label>\n"
+            "          </div>\n"
             "          <form data-browser-config class=\"museum-settings-config-form\">\n"
             "            <div class=\"museum-settings-field\">\n"
-            "              <label>接入方式<select name=\"provider\">\n"
+            "              <label>接入协议<select name=\"provider\">\n"
             "                <option value=\"compatible\">兼容 OpenAI 的 API / LM Studio</option>\n"
             "                <option value=\"ollama\">Ollama</option>\n"
             "              </select></label>\n"
@@ -6438,8 +6601,15 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
             "              <label>服务地址<input name=\"endpoint\" type=\"url\" required placeholder=\"http://127.0.0.1:1234/v1\"></label>\n"
             "            </div>\n"
             "            <div class=\"museum-settings-field\">\n"
-            "              <label>API 密钥（本机服务可留空）<input name=\"key\" type=\"password\" autocomplete=\"off\" spellcheck=\"false\" placeholder=\"留空或输入密钥\"></label>\n"
-            "              <small class=\"museum-settings-note\">密钥仅在当前页面有效，不写入笔记。</small>\n"
+            "              <label>API 密钥（本机服务可留空）\n"
+            "                <div class=\"museum-settings-input-group\">\n"
+            "                  <input name=\"key\" type=\"password\" autocomplete=\"off\" spellcheck=\"false\" placeholder=\"留空或输入 API Key\">\n"
+            "                  <button type=\"button\" class=\"museum-key-eye-btn\" data-toggle-key-visibility title=\"显示/隐藏密钥\" aria-label=\"显示或隐藏密钥\">👁️</button>\n"
+            "                </div>\n"
+            "              </label>\n"
+            "              <div class=\"museum-settings-sub-toggle\">\n"
+            "                <label><input type=\"checkbox\" data-remember-key> 在此浏览器安全保存密钥</label>\n"
+            "              </div>\n"
             "            </div>\n"
             "            <div class=\"museum-ai-action-row\"><button type=\"submit\" data-browser-models>读取模型列表</button></div>\n"
             "            <div class=\"museum-settings-field\">\n"
@@ -6459,29 +6629,28 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
             "            <div class=\"museum-ai-action-row\">\n"
             "              <button type=\"button\" data-browser-load>加载并测试模型</button>\n"
             "              <button type=\"button\" data-browser-cancel-load hidden>取消加载</button>\n"
+            "              <button type=\"button\" class=\"museum-settings-sub-btn\" data-browser-quick-test title=\"向当前模型发送一条简短打招呼测试\">⚡ 一键测试问候</button>\n"
             "            </div>\n"
             "            <div class=\"museum-settings-status-box\">\n"
             "              <span class=\"museum-settings-status-indicator\" aria-hidden=\"true\"></span>\n"
-            "              <p data-browser-connection role=\"status\" aria-live=\"polite\">尚未连接模型</p>\n"
+            "              <div class=\"museum-settings-status-content\">\n"
+            "                <span class=\"museum-settings-status-label\">连接状态</span>\n"
+            "                <p data-browser-connection role=\"status\" aria-live=\"polite\">尚未连接模型</p>\n"
+            "              </div>\n"
             "            </div>\n"
             "            <details class=\"museum-settings-details\">\n"
-            "              <summary>回答偏好设置</summary>\n"
+            "              <summary>助教角色与系统提示词</summary>\n"
+            "              <div class=\"prompt-preset-row\">\n"
+            "                <span class=\"prompt-preset-label\">角色模板：</span>\n"
+            "                <button type=\"button\" class=\"prompt-preset-btn\" data-prompt-preset=\"beginner\">🎓 零基础助教</button>\n"
+            "                <button type=\"button\" class=\"prompt-preset-btn\" data-prompt-preset=\"socratic\">💡 启发导师</button>\n"
+            "                <button type=\"button\" class=\"prompt-preset-btn\" data-prompt-preset=\"summary\">📝 重点提炼</button>\n"
+            "              </div>\n"
             "              <div class=\"museum-settings-field\">\n"
-            "                <label>系统提示词<textarea name=\"system\" rows=\"3\">依据提供的资料回答，引用笔记标题，区分原文事实与推断；资料不足时明确说明。使用中文。</textarea></label>\n"
+            "                <label>系统提示词<textarea name=\"system\" rows=\"3\">依据提供的资料回答，引用笔记标题，区分原文事实与推断；资料不足时明确说明。使用中文，尽量用通俗易懂的语言帮助初学者理解。</textarea></label>\n"
             "              </div>\n"
             "            </details>\n"
             "          </form>\n"
-            "          <details class=\"museum-settings-details museum-ai-local-tools\">\n"
-            "            <summary>本地保存与同步</summary>\n"
-            "            <p class=\"museum-settings-note\">会话与结论保存在此浏览器；确认后可同步到 Emacs。</p>\n"
-            "            <div class=\"museum-ai-action-row\">\n"
-            "              <button type=\"button\" data-browser-backup>导出知识库</button>\n"
-            "              <button type=\"button\" data-browser-org-export>导出 Org</button>\n"
-            "              <button type=\"button\" data-browser-sync-preview>预览同步</button>\n"
-            "            </div>\n"
-            "            <label class=\"museum-settings-file-label\">导入知识库备份<input type=\"file\" data-browser-import accept=\"application/json,.json\"></label>\n"
-            "            <div data-browser-sync-result></div>\n"
-            "          </details>\n"
             "        </div>\n"))
           (settings-control
            (concat
@@ -6490,23 +6659,123 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
             "</summary>"
             "    <div class=\"museum-settings-panel has-ai\">\n"
             "      <div class=\"museum-settings-tabs\" role=\"tablist\" aria-label=\"设置类别\">\n"
-            "        <button type=\"button\" class=\"museum-settings-tab-btn is-active\" data-settings-tab=\"appearance\" role=\"tab\" aria-selected=\"true\" tabindex=\"0\">外观</button>\n"
-            "        <button type=\"button\" class=\"museum-settings-tab-btn\" data-settings-tab=\"ai\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\">AI 模型</button>\n"
+            "        <button type=\"button\" class=\"museum-settings-tab-btn is-active\" data-settings-tab=\"appearance\" role=\"tab\" aria-selected=\"true\" tabindex=\"0\"><span class=\"tab-icon\">🎨</span> 外观排版</button>\n"
+            "        <button type=\"button\" class=\"museum-settings-tab-btn\" data-settings-tab=\"learning\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\"><span class=\"tab-icon\">📚</span> 学习辅助</button>\n"
+            "        <button type=\"button\" class=\"museum-settings-tab-btn\" data-settings-tab=\"ai\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\"><span class=\"tab-icon\">🤖</span> AI 助教</button>\n"
+            "        <button type=\"button\" class=\"museum-settings-tab-btn\" data-settings-tab=\"data\" role=\"tab\" aria-selected=\"false\" tabindex=\"-1\"><span class=\"tab-icon\">💾</span> 数据备份</button>\n"
             "      </div>\n"
-            "      <div class=\"museum-settings-tab-panel\" data-settings-panel=\"appearance\">\n"
+            "      <div class=\"museum-settings-tab-panel\" data-settings-panel=\"appearance\" role=\"tabpanel\" aria-label=\"外观与排版设置\">\n"
             "        <div class=\"museum-settings-section\">\n"
-            "          <div class=\"museum-settings-section-title\">外观主题</div>\n"
-            "          <div class=\"museum-theme-segmented\" role=\"group\">\n"
-            "            <button type=\"button\" class=\"museum-theme-segment-btn\" data-theme-system aria-pressed=\"true\">跟随系统</button>\n"
-            "            <button type=\"button\" class=\"museum-theme-segment-btn museum-theme-toggle\" "
-            "data-theme-toggle aria-label=\"切换为深色主题\">\n"
+            "          <div class=\"museum-settings-section-title\">阅读场景推荐预设</div>\n"
+            "          <div class=\"museum-theme-segmented museum-settings-segmented-3\" role=\"group\" aria-label=\"场景预设推荐\">\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn\" data-preset-scene=\"eyecare\" title=\"护眼长读：暖杏纸张 + 18px + 人文宋体 + 宽松行距\">☕ 护眼长读</button>\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn\" data-preset-scene=\"standard\" title=\"标准通读：默认基调 + 15.5px + 现代黑体 + 标准行距\">💡 标准通读</button>\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn\" data-preset-scene=\"dense\" title=\"密集对照：柔和冷灰 + 13.5px + 现代黑体 + 栏宽 1180px\">💻 密集对照</button>\n"
+            "          </div>\n"
+            "        </div>\n"
+            "        <div class=\"museum-settings-section\">\n"
+            "          <div class=\"museum-settings-section-title\">界面主题与护眼色调</div>\n"
+            "          <div class=\"museum-theme-segmented\" role=\"group\" aria-label=\"主题切换\">\n"
+            "            <button type=\"button\" class=\"museum-theme-segment-btn\" data-theme-system aria-pressed=\"true\"><span class=\"museum-theme-icon-sys\" aria-hidden=\"true\"></span>跟随系统</button>\n"
+            "            <button type=\"button\" class=\"museum-theme-segment-btn museum-theme-toggle\" data-theme-toggle aria-label=\"切换为深色主题\">\n"
             "              <span aria-hidden=\"true\" data-theme-icon data-theme-icon-state=\"moon\"></span>\n"
             "              <span data-theme-label>深色</span></button>\n"
             "          </div>\n"
+            "          <div class=\"museum-theme-segmented museum-settings-segmented-3\" role=\"group\" aria-label=\"阅读纸张色调\">\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn is-active\" data-reading-tone=\"default\" aria-pressed=\"true\" title=\"明亮通透纸张\">默认基调</button>\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn\" data-reading-tone=\"warm\" aria-pressed=\"false\" title=\"羊皮纸暖杏色，温润护眼\">护眼暖杏</button>\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn\" data-reading-tone=\"slate\" aria-pressed=\"false\" title=\"低饱和柔和冷灰\">柔和冷灰</button>\n"
+            "          </div>\n"
+            "        </div>\n"
+            "        <div class=\"museum-settings-section\">\n"
+            "          <div class=\"museum-settings-section-title\">阅读字号</div>\n"
+            "          <div class=\"museum-theme-segmented museum-settings-segmented-4\" role=\"group\" aria-label=\"正文字号选择\">\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn\" data-reading-size=\"sm\" aria-pressed=\"false\" title=\"紧凑字号 13.5px\">紧凑</button>\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn is-active\" data-reading-size=\"md\" aria-pressed=\"true\" title=\"标准字号 15.5px\">标准</button>\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn\" data-reading-size=\"lg\" aria-pressed=\"false\" title=\"适度放大 18px\">适度</button>\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn\" data-reading-size=\"xl\" aria-pressed=\"false\" title=\"清晰特大 21px\">放大</button>\n"
+            "          </div>\n"
+            "        </div>\n"
+            "        <div class=\"museum-settings-section\">\n"
+            "          <div class=\"museum-settings-section-title\">阅读栏宽</div>\n"
+            "          <div class=\"museum-theme-segmented museum-settings-segmented-4\" role=\"group\" aria-label=\"正文宽度选择\">\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn\" data-reading-width=\"980\" aria-pressed=\"false\" title=\"紧凑阅读 980px\">980</button>\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn\" data-reading-width=\"1024\" aria-pressed=\"false\" title=\"标准阅读 1024px\">1024</button>\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn\" data-reading-width=\"1180\" aria-pressed=\"false\" title=\"宽幅阅读 1180px\">1180</button>\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn is-active\" data-reading-width=\"1320\" aria-pressed=\"true\" title=\"超宽阅读 1320px\">1320</button>\n"
+            "          </div>\n"
+            "        </div>\n"
+            "        <div class=\"museum-settings-section\">\n"
+            "          <div class=\"museum-settings-section-title\">字体偏好</div>\n"
+            "          <div class=\"museum-theme-segmented\" role=\"group\" aria-label=\"字体族选择\">\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn is-active\" data-reading-font=\"sans\" aria-pressed=\"true\">现代黑体 (Sans)</button>\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn\" data-reading-font=\"serif\" aria-pressed=\"false\">人文宋体 (Serif)</button>\n"
+            "          </div>\n"
+            "        </div>\n"
+            "        <div class=\"museum-settings-section\">\n"
+            "          <div class=\"museum-settings-section-title\">行距与信息密度</div>\n"
+            "          <div class=\"museum-theme-segmented museum-settings-segmented-3\" role=\"group\" aria-label=\"行距选择\">\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn\" data-reading-line=\"compact\" aria-pressed=\"false\" title=\"紧凑行距 1.55\">紧凑 1.55</button>\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn is-active\" data-reading-line=\"standard\" aria-pressed=\"true\" title=\"标准行距 1.8\">标准 1.8</button>\n"
+            "            <button type=\"button\" class=\"museum-settings-segment-btn\" data-reading-line=\"relaxed\" aria-pressed=\"false\" title=\"松弛行距 2.15，降低认知负担\">宽松 2.15</button>\n"
+            "          </div>\n"
+            "        </div>\n"
+            "        <div class=\"museum-settings-section\">\n"
+            "          <div class=\"museum-settings-section-title\">专注阅读沉浸模式</div>\n"
+            "          <label class=\"museum-settings-toggle-row\">\n"
+            "            <div class=\"museum-toggle-text\">\n"
+            "              <span class=\"toggle-title\">🎯 专注阅读沉浸模式 (Zen Mode)</span>\n"
+            "              <span class=\"toggle-desc\">淡化顶栏与周边视觉噪点，按 Esc 或快捷键 z 随时唤回</span>\n"
+            "            </div>\n"
+            "            <input type=\"checkbox\" class=\"museum-switch-input\" data-zen-mode-toggle>\n"
+            "          </label>\n"
+            "        </div>\n"
+            "        <div class=\"museum-settings-section\">\n"
+            "          <div class=\"museum-settings-preview-card\" data-reading-preview aria-label=\"即时排版预览效果\">\n"
+            "            <div class=\"preview-card-header\">\n"
+            "              <span class=\"preview-tag\">即时排版预览</span>\n"
+            "              <span class=\"preview-metrics\" data-preview-metrics>标准 · 15.5px · 现代黑体</span>\n"
+            "            </div>\n"
+            "            <p class=\"preview-sample-text\" data-preview-sample>「工欲善其事，必先利其器。」笔记是思考的脚手架，让零散认知逐步生长为互联网络。</p>\n"
+            "          </div>\n"
             "        </div>\n"
             "      </div>\n"
-            "      <div class=\"museum-settings-tab-panel\" data-settings-panel=\"ai\" hidden>\n"
+            (org-museum--learning-settings-html)
+            "      <div class=\"museum-settings-tab-panel\" data-settings-panel=\"ai\" role=\"tabpanel\" aria-label=\"AI 模型与助教设置\" hidden>\n"
             settings-ai-section
+            "      </div>\n"
+            "      <div class=\"museum-settings-tab-panel\" data-settings-panel=\"data\" role=\"tabpanel\" aria-label=\"存储与重置\" hidden>\n"
+            "        <div class=\"museum-settings-section\">\n"
+            "          <div class=\"museum-settings-section-title\">本地存储与学习记录</div>\n"
+            "          <div class=\"museum-storage-card\">\n"
+            "            <div class=\"storage-metric-row\"><span class=\"storage-label\">本地知识库缓存</span><strong class=\"storage-val\" data-storage-count>0 项记录</strong></div>\n"
+            "            <div class=\"storage-metric-row\"><span class=\"storage-label\">占用浏览器空间</span><strong class=\"storage-val\" data-storage-size>~0 KB</strong></div>\n"
+            "            <div class=\"storage-metric-row\"><span class=\"storage-label\">对读学习进度</span><strong class=\"storage-val\" data-storage-progress>0 组已研读</strong></div>\n"
+            "            <div class=\"storage-metric-row\"><span class=\"storage-label\">API 密钥本地存储</span><strong class=\"storage-val\" data-storage-key-status>未保存</strong></div>\n"
+            "          </div>\n"
+            "        </div>\n"
+            "        <div class=\"museum-settings-section\">\n"
+            "          <div class=\"museum-settings-section-title\">数据导出与同步</div>\n"
+            "          <p class=\"museum-settings-note\">在浏览器中探索的会话、学习笔记心得与增补关系均保存在本机，可导出或同步到 Emacs。</p>\n"
+            "          <div class=\"museum-ai-action-row\">\n"
+            "            <button type=\"button\" data-browser-backup>导出知识库备份</button>\n"
+            "            <button type=\"button\" data-copy-backup title=\"复制备份 JSON 到剪贴板\">复制备份数据</button>\n"
+            "            <button type=\"button\" data-browser-org-export>导出 Org 笔记</button>\n"
+            "            <button type=\"button\" data-browser-sync-preview>预览同步到 Emacs</button>\n"
+            "          </div>\n"
+            "          <label class=\"museum-settings-file-label\">导入知识库备份文件\n"
+            "            <input type=\"file\" data-browser-import accept=\"application/json,.json\">\n"
+            "          </label>\n"
+            "          <div data-browser-sync-result class=\"museum-sync-result-box\"></div>\n"
+            "        </div>\n"
+            "        <div class=\"museum-settings-section museum-danger-zone\">\n"
+            "          <div class=\"museum-settings-section-title\">重置与安全兜底</div>\n"
+            "          <p class=\"museum-settings-note\">如果不小心改乱了排版或希望重新体验初始设置，可选择分级安全重置。</p>\n"
+            "          <div class=\"museum-reset-row\">\n"
+            "            <button type=\"button\" class=\"museum-reset-appearance-btn\" data-reset-appearance-only title=\"仅重置字体、排版与主题，保留学习记录与密钥\">重置排版样式 (保留学习记录)</button>\n"
+            "            <button type=\"button\" class=\"museum-reset-danger-btn\" data-reset-all-settings title=\"完全清空本地缓存，恢复初始状态\">恢复出厂预设 (清除全部)</button>\n"
+            "          </div>\n"
+            "        </div>\n"
             "      </div>\n"
             "    </div></details>\n")))
     (format
@@ -6576,20 +6845,28 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
 
 (defun org-museum--build-index-entry-html (page out-file index)
   "Return one recent index entry for PAGE relative to OUT-FILE at INDEX."
-  (let ((tags (org-museum-page-tags page)))
+  (let* ((tags (org-museum-page-tags page))
+         (desc (or (org-museum-page-description page) ""))
+         (status (downcase (or (org-museum-page-status page) "published")))
+         (is-pub (org-museum--published-page-p page))
+         (cat-raw (org-museum-page-category page))
+         (cat-label (org-museum--category-label cat-raw)))
     (format
      (concat
       "<article class=\"museum-index-entry\" data-page-id=\"%s\" "
       "data-category=\"%s\" data-status=\"%s\">\n"
       "  <div class=\"museum-entry-meta\"><span>%02d</span><time datetime=\"%s\">%s</time>%s</div>\n"
       "  <h3><a href=\"%s\">%s</a>%s</h3>\n"
+      (if (not (string-empty-p (string-trim desc)))
+          (format "  <p class=\"museum-entry-desc\">%s</p>\n"
+                  (org-museum--html-escape desc))
+        "")
       "  <button type=\"button\" class=\"museum-entry-category\" "
       "data-category-link=\"%s\" aria-pressed=\"false\">%s</button>\n"
       "</article>\n")
      (org-museum--html-escape (org-museum-page-id page) t)
-     (org-museum--html-escape (org-museum-page-category page) t)
-     (org-museum--html-escape
-      (downcase (or (org-museum-page-status page) "published")) t)
+     (org-museum--html-escape cat-raw t)
+     (org-museum--html-escape status t)
      index
      (org-museum--format-page-date page)
      (org-museum--format-page-date page)
@@ -6607,12 +6884,11 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
      (org-museum--html-escape
       (org-museum--page-href (org-museum-page-id page) out-file) t)
      (org-museum--html-escape (org-museum-page-title page))
-     (if (org-museum--published-page-p page)
+     (if is-pub
          ""
-       "<span class=\"museum-status-badge\">草稿</span>")
-     (org-museum--html-escape (org-museum-page-category page) t)
-     (org-museum--html-escape
-      (org-museum--category-label (org-museum-page-category page))))))
+       "<span class=\"museum-status-badge is-draft\" title=\"内容演进中，支持互动练习与代码执行\">草稿</span>")
+     (org-museum--html-escape cat-raw t)
+     (org-museum--html-escape cat-label))))
 
 
 (defun org-museum--script-index ()
@@ -6657,9 +6933,40 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
      (org-museum--generate-sidebar-html out-file)
      "<main id=\"main-content\" class=\"museum-index-shell\" tabindex=\"-1\">\n"
      "  <div class=\"museum-index-intro\">\n"
-     "    <div><p class=\"museum-index-kicker\">ORG MUSEUM / 索引</p>"
-     "<h1>内容索引</h1><p>搜索、筛选与图表联动，逐步缩小笔记范围。</p></div>\n"
+     "    <div class=\"museum-index-intro-text\"><p class=\"museum-index-kicker\">ORG MUSEUM / 知识库索引</p>"
+     "<h1>内容索引</h1><p>面向零基础与进阶学习者的系统化知识索引，支持全文检索、图谱联动与多维探索。</p></div>\n"
      "  </div>\n"
+     "  <div id=\"index-study-tip\" class=\"museum-study-guide\" role=\"note\" aria-label=\"知识库新手导航\">"
+     "<div class=\"study-guide-content\"><span class=\"study-guide-badge\">🌟 新手第一站</span>"
+     "<span class=\"study-guide-text\">从下方<strong>推荐学习路径</strong>挑一条主线开始；研读时善用顶部的<strong>时间</strong>（查沿革）、<strong>图谱</strong>（看脉络）、<strong>关联阅读</strong>（双篇对照）与 <strong>AI 中心</strong>（即问即答）。</span></div>"
+     "<button type=\"button\" class=\"study-guide-dismiss\" id=\"index-guide-dismiss\" aria-label=\"关闭新手提示\">✕</button></div>\n"
+     "  <section id=\"learning-pathways\" class=\"museum-learning-pathways\" aria-labelledby=\"learning-pathways-title\">\n"
+     "    <div class=\"museum-section-heading\"><h2 id=\"learning-pathways-title\">推荐学习路径 · 零基础入门</h2>"
+     "<span class=\"pathways-subtitle\">系统化循序渐进，快速掌握核心技能与实践任务</span></div>\n"
+     "    <div class=\"museum-pathway-grid\">\n"
+     "      <article class=\"museum-pathway-card\" data-pathway=\"duckdb\">\n"
+     "        <div class=\"pathway-head\"><span class=\"pathway-badge\">数据分析入门</span><span class=\"pathway-count\">8 篇实战</span></div>\n"
+     "        <h3>DuckDB 极速实战路线</h3>\n"
+     "        <p>从环境最小运行、表建模，到 11 个实战分析模块与窗口函数进阶。</p>\n"
+     "        <div class=\"pathway-steps\"><span class=\"step-pill\">00 最小入门</span><span class=\"step-arrow\">→</span><span class=\"step-pill\">11 模块实战</span><span class=\"step-arrow\">→</span><span class=\"step-pill\">SQL 速查</span></div>\n"
+     "        <div class=\"pathway-footer\"><a href=\"pages/sql/duckdb.html\" class=\"pathway-start-btn\">从第 1 篇开始 →</a><button type=\"button\" class=\"pathway-filter-btn\" data-filter-tag=\"sql\">筛选此类笔记</button></div>\n"
+     "      </article>\n"
+     "      <article class=\"museum-pathway-card\" data-pathway=\"org-babel\">\n"
+     "        <div class=\"pathway-head\"><span class=\"pathway-badge\">可计算笔记</span><span class=\"pathway-count\">3 篇核心</span></div>\n"
+     "        <h3>Org Babel 执行与工程体系</h3>\n"
+     "        <p>让笔记成为可执行、可复用、可验证的工程化知识系统。</p>\n"
+     "        <div class=\"pathway-steps\"><span class=\"step-pill\">01 执行基础</span><span class=\"step-arrow\">→</span><span class=\"step-pill\">02 组合工程化</span><span class=\"step-arrow\">→</span><span class=\"step-pill\">03 验证与排错</span></div>\n"
+     "        <div class=\"pathway-footer\"><a href=\"pages/Emacs/Org/org-babel-01-execution-foundations.html\" class=\"pathway-start-btn\">从第 1 篇开始 →</a><button type=\"button\" class=\"pathway-filter-btn\" data-filter-tag=\"Babel\">筛选此类笔记</button></div>\n"
+     "      </article>\n"
+     "      <article class=\"museum-pathway-card\" data-pathway=\"ontology\">\n"
+     "        <div class=\"pathway-head\"><span class=\"pathway-badge\">知识建模</span><span class=\"pathway-count\">6 篇架构</span></div>\n"
+     "        <h3>本体论与知识图谱建模</h3>\n"
+     "        <p>从业务问题推导概念边界，用三节点约束反例验证模型，建立可信任的知识治理标准。</p>\n"
+     "        <div class=\"pathway-steps\"><span class=\"step-pill\">概念边界</span><span class=\"step-arrow\">→</span><span class=\"step-pill\">关系与反例</span><span class=\"step-arrow\">→</span><span class=\"step-pill\">证据与治理</span></div>\n"
+     "        <div class=\"pathway-footer\"><a href=\"pages/ontology/ontology-concept-boundaries.html\" class=\"pathway-start-btn\">从第 1 篇开始 →</a><button type=\"button\" class=\"pathway-filter-btn\" data-filter-tag=\"ontology\">筛选此类笔记</button></div>\n"
+     "      </article>\n"
+     "    </div>\n"
+     "  </section>\n"
      "  <div class=\"museum-index-search-wrap\">\n"
      "  <label class=\"museum-index-search\">"
      "<span class=\"sr-only\">搜索索引</span>"
@@ -6731,8 +7038,10 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
      recent-html
      "    </div>\n"
      "    <div id=\"index-search-list\" hidden></div>\n"
-     "    <p id=\"index-search-empty\" class=\"museum-search-empty\" hidden>"
-     "当前条件没有匹配笔记。可以逐项移除条件，或清除全部筛选。</p>\n"
+     "    <div id=\"index-search-empty\" class=\"museum-search-empty\" hidden>\n"
+     "      <p>当前条件没有匹配笔记。可以逐项移除条件，或一键重置：</p>\n"
+     "      <button type=\"button\" class=\"museum-empty-reset-btn\" data-index-reset>清除全部筛选条件</button>\n"
+     "    </div>\n"
      "    <p id=\"index-results-live\" class=\"sr-only\" role=\"status\" "
      "aria-live=\"polite\"></p>\n"
      "  </section>\n"
@@ -8474,6 +8783,23 @@ window.addEventListener('pageshow',startReadingSession);
       (princ "    <input type=\"search\" id=\"org-museum-search-input\" placeholder=\"筛选标题…\" aria-label=\"筛选页面\">\n")
       (princ "  </div>\n")
       (princ "  <p class=\"museum-empty-copy\" data-sidebar-search-empty role=\"status\" hidden>没有匹配的笔记。请调整或清空搜索。</p>\n")
+      (princ "  <div class=\"sidebar-starter-section\">\n")
+      (princ "    <div class=\"sidebar-starter-header\"><span class=\"starter-tag\">推荐新手起点</span></div>\n")
+      (princ "    <div class=\"sidebar-starter-pills\">\n")
+      (princ (format "      <a class=\"sidebar-starter-pill\" href=\"%s\"><span>🦆</span> DuckDB 实战入门</a>\n"
+                     (replace-regexp-in-string "\\\\" "/"
+                                               (org-museum--relative-path
+                                                (expand-file-name "pages/sql/duckdb.html" shared-root) out-file))))
+      (princ (format "      <a class=\"sidebar-starter-pill\" href=\"%s\"><span>⚡</span> Org Babel 计算笔记</a>\n"
+                     (replace-regexp-in-string "\\\\" "/"
+                                               (org-museum--relative-path
+                                                (expand-file-name "pages/Emacs/Org/org-babel-01-execution-foundations.html" shared-root) out-file))))
+      (princ (format "      <a class=\"sidebar-starter-pill\" href=\"%s\"><span>🏛</span> 概念边界与本体建模</a>\n"
+                     (replace-regexp-in-string "\\\\" "/"
+                                               (org-museum--relative-path
+                                                (expand-file-name "pages/ontology/ontology-concept-boundaries.html" shared-root) out-file))))
+      (princ "    </div>\n")
+      (princ "  </div>\n")
       (princ (org-museum--sidebar-fx-controls))
       (if (null cats)
           (princ "  <p class=\"sidebar-empty\">索引为空。请先运行 org-museum-index-build。</p>\n")
@@ -8844,20 +9170,50 @@ function pageMeta(page){
   var meta=element('div','related-page-meta');
   meta.appendChild(element('span','related-category',page.categoryLabel||page.category||'未分类'));
   meta.appendChild(element('time','',page.modifiedDate||''));
+  var textLen = (page.contentHtml||'').replace(/<[^>]+>/g,'').length;
+  var estMin = Math.max(1, Math.round(textLen / 350));
+  meta.appendChild(element('span','related-readtime','⏱ 约 '+estMin+' 分钟'));
   (page.tags||[]).forEach(function(tag){meta.appendChild(element('span','related-tag','#'+tag));});
   return meta;
 }
-function summaryContent(page){
+function summaryContent(page, side){
   var root=element('div','related-summary');
-  var summary=element('section','related-summary-block');
+  var summary=element('section','related-summary-block related-summary-prose');
   summary.appendChild(element('h2','', '摘要'));
   summary.appendChild(element('p','',page.description||'暂无可用摘要。'));root.appendChild(summary);
-  var outline=element('section','related-summary-block');outline.appendChild(element('h2','','大纲'));
+  var outline=element('section','related-summary-block related-summary-outline');
+  outline.appendChild(element('h2','','章节大纲（点击可直达正文）'));
   var list=element('ol','related-outline');
-  (page.headings||[]).forEach(function(item){list.appendChild(element('li','',item.title||''));});
-  if(!(page.headings||[]).length)list.appendChild(element('li','related-muted','暂无章节标题'));
+  var headings = page.headings||[];
+  if(headings.length){
+    headings.forEach(function(item, idx){
+      var li=element('li','');
+      var btn=element('button','outline-jump-btn',item.title||'');
+      btn.type='button';
+      btn.title='点击跳转至完整正文此章节';
+      btn.onclick=function(){
+        updateMode('full',true);
+        setTimeout(function(){
+          var panel=document.querySelector('[data-related-panel=\"'+side+'\"]');
+          if(!panel||typeof panel.querySelectorAll!=='function')return;
+          var heads=Array.from(panel.querySelectorAll('h2, h3, h4'));
+          var targetHead=heads.find(function(h){return (h.textContent||'').trim()===(item.title||'').trim();})||heads[idx];
+          if(targetHead){
+            targetHead.scrollIntoView({behavior:'smooth',block:'start'});
+            targetHead.classList.add('heading-jump-highlight');
+            setTimeout(function(){targetHead.classList.remove('heading-jump-highlight');},2000);
+          }
+        },60);
+      };
+      li.appendChild(btn);
+      list.appendChild(li);
+    });
+  } else {
+    list.appendChild(element('li','related-muted','暂无章节标题'));
+  }
   outline.appendChild(list);root.appendChild(outline);
-  var excerpts=element('section','related-summary-block');excerpts.appendChild(element('h2','','内容摘录'));
+  var excerpts=element('section','related-summary-block related-summary-excerpts');
+  excerpts.appendChild(element('h2','','核心内容摘录'));
   (page.excerpts||[]).forEach(function(text){excerpts.appendChild(element('p','',text));});
   if(!(page.excerpts||[]).length)excerpts.appendChild(element('p','related-muted','暂无更多摘录。'));
   root.appendChild(excerpts);return root;
@@ -8889,17 +9245,45 @@ function setActivePane(value){
   });
 }
 function renderPanel(side,page){
-  var panel=document.querySelector('[data-related-panel=\"'+side+'\"]');panel.textContent='';
+  var panel=document.querySelector('[data-related-panel=\"'+side+'\"]');if(!panel)return;panel.textContent='';
   var progress=element('div','related-reading-progress');progress.setAttribute('aria-hidden','true');
   progress.appendChild(element('span',''));panel.appendChild(progress);
   var badge=element('span','related-role',side==='source'?'源笔记（出链）':'目标笔记（入链）');
-  var heading=element('div','related-paper-heading');heading.appendChild(badge);
+  var heading=element('div','related-paper-heading');
+  var headingTop=element('div','related-paper-heading-top');
+  headingTop.appendChild(badge);
+  var topOpen=element('a','related-card-open','新标签打开 ↗');
+  topOpen.href=themed(page.href);
+  topOpen.target='_blank';
+  topOpen.title='在新标签页中打开完整笔记独立页面';
+  headingTop.appendChild(topOpen);
+  heading.appendChild(headingTop);
   heading.appendChild(element('h1','related-page-title',page.title));panel.appendChild(heading);
   panel.appendChild(pageMeta(page));
   if(mode==='full'){
     var full=element('div','related-full article-container');full.innerHTML=page.contentHtml||'';
     panel.appendChild(full);
-  }else panel.appendChild(summaryContent(page));
+    if(typeof panel.querySelectorAll==='function'){
+      panel.querySelectorAll('pre').forEach(function(pre){
+        if(pre.querySelector('.code-copy-btn'))return;
+        var btn=element('button','code-copy-btn','复制代码');
+        btn.type='button';btn.setAttribute('aria-label','复制代码');
+        btn.onclick=function(ev){
+          ev.stopPropagation();
+          var codeEl=pre.querySelector('code');
+          var codeText=codeEl?codeEl.innerText:pre.innerText;
+          if(navigator.clipboard&&navigator.clipboard.writeText){
+            navigator.clipboard.writeText(codeText).then(function(){
+              btn.textContent='已复制 ✓';
+              btn.classList.add('is-copied');
+              setTimeout(function(){btn.textContent='复制代码';btn.classList.remove('is-copied');},2000);
+            });
+          }
+        };
+        pre.appendChild(btn);
+      });
+    }
+  }else panel.appendChild(summaryContent(page, side));
   var open=element('a','related-open','打开完整笔记');open.href=themed(page.href);panel.appendChild(open);
   bindPanelScroll(panel,side==='source'?0:1);
 }
@@ -8907,8 +9291,10 @@ function updateMode(nextMode,push){
   document.querySelectorAll('.related-paper').forEach(function(panel,index){positions[mode][index]=panel.scrollTop;});
   mode=nextMode;document.body.dataset.relatedMode=mode;
   if(push)setUrl(mode);
-  document.getElementById('related-open-source').href=themed(source.href);
-  document.getElementById('related-open-target').href=themed(target.href);
+  var srcBtn=document.getElementById('related-open-source');
+  if(srcBtn)srcBtn.href=themed(source.href);
+  var tgtBtn=document.getElementById('related-open-target');
+  if(tgtBtn)tgtBtn.href=themed(target.href);
   document.querySelectorAll('button[data-related-mode]').forEach(function(button){
     var active=button.dataset.relatedMode===mode;button.classList.toggle('is-active',active);
     button.setAttribute('aria-pressed',active?'true':'false');
@@ -8922,6 +9308,33 @@ function updateMode(nextMode,push){
     if(!code.dataset.highlighted&&(!lang||hljs.getLanguage(lang)))hljs.highlightElement(code);
     else if(lang&&!hljs.getLanguage(lang))code.classList.add('no-highlight');
   });
+}
+function getCompletedPairs(){
+  try{return JSON.parse(localStorage.getItem('org-museum-related-completed')||'[]');}catch(e){return [];}
+}
+function isPairCompleted(sId,tId){
+  if(!sId||!tId)return false;
+  var list=getCompletedPairs();
+  return list.indexOf(sId+'::'+tId)>=0||list.indexOf(tId+'::'+sId)>=0;
+}
+function togglePairCompleted(sId,tId){
+  if(!sId||!tId)return false;
+  var list=getCompletedPairs();
+  var k1=sId+'::'+tId,k2=tId+'::'+sId;
+  var idx=list.indexOf(k1);
+  if(idx<0)idx=list.indexOf(k2);
+  if(idx>=0){list.splice(idx,1);}else{list.push(k1);}
+  try{localStorage.setItem('org-museum-related-completed',JSON.stringify(list));}catch(e){}
+  return list.indexOf(k1)>=0||list.indexOf(k2)>=0;
+}
+function updateCompleteBtnState(btn,done){
+  if(!btn)return;
+  btn.classList.toggle('is-completed',done);
+  btn.setAttribute('aria-pressed',done?'true':'false');
+  var icon=btn.querySelector('.complete-icon');
+  var text=btn.querySelector('.complete-text');
+  if(icon)icon.textContent=done?'✓':'○';
+  if(text)text.textContent=done?'已研读 ✓':'标记已读';
 }
 function renderDetail(){
   if(!links(source,target)&&links(target,source)){var swap=source;source=target;target=swap;}
@@ -8951,28 +9364,66 @@ function renderDetail(){
     };
   }
   var both=links(source,target)&&links(target,source);
-  document.getElementById('related-kind').textContent=both?'显式 Org 双向链接':'显式 Org 链接';
-  document.getElementById('related-direction').textContent=both?'源 ↔ 目标':'源 → 目标';
+  var sameCat=(source.categoryLabel||source.category)===(target.categoryLabel||target.category);
+  var nexusTag=document.getElementById('related-nexus-tag');
+  if(nexusTag)nexusTag.textContent=sameCat?'同主题进阶':'跨领域关联';
+  var kindEl=document.getElementById('related-kind');
+  if(kindEl)kindEl.textContent=both?'显式 Org 双向链接':'显式 Org 链接';
+  var dirEl=document.getElementById('related-direction');
+  if(dirEl)dirEl.textContent=both?'源 ↔ 目标':'源 → 目标';
   var swapButton=document.getElementById('related-swap');
-  swapButton.hidden=!both;swapButton.addEventListener('click',function(){
-    var value=source;source=target;target=value;setUrl(mode);
-    document.getElementById('related-open-source').href=themed(source.href);
-    document.getElementById('related-open-target').href=themed(target.href);
-    renderPanel('source',source);renderPanel('target',target);
-    setActivePane(activePane);
-  });
+  if(swapButton){
+    swapButton.hidden=!both;
+    if(!swapButton.dataset.bound){
+      swapButton.dataset.bound='true';
+      swapButton.addEventListener('click',function(){
+        var value=source;source=target;target=value;setUrl(mode);
+        var srcBtn=document.getElementById('related-open-source');
+        if(srcBtn)srcBtn.href=themed(source.href);
+        var tgtBtn=document.getElementById('related-open-target');
+        if(tgtBtn)tgtBtn.href=themed(target.href);
+        renderPanel('source',source);renderPanel('target',target);
+        setActivePane(activePane);
+        var doneNow=isPairCompleted(source.id,target.id);
+        var cBtn=document.getElementById('related-mark-completed');
+        if(cBtn)updateCompleteBtnState(cBtn,doneNow);
+      });
+    }
+  }
+  var completeBtn=document.getElementById('related-mark-completed');
+  if(completeBtn&&source&&target){
+    var isDone=isPairCompleted(source.id,target.id);
+    updateCompleteBtnState(completeBtn,isDone);
+    if(!completeBtn.dataset.bound){
+      completeBtn.dataset.bound='true';
+      completeBtn.addEventListener('click',function(){
+        if(!source||!target)return;
+        var next=togglePairCompleted(source.id,target.id);
+        updateCompleteBtnState(completeBtn,next);
+      });
+    }
+  }
   document.querySelectorAll('button[data-related-mode]').forEach(function(button){
-    button.addEventListener('click',function(){updateMode(button.dataset.relatedMode,true);});
+    if(!button.dataset.bound){
+      button.dataset.bound='true';
+      button.addEventListener('click',function(){updateMode(button.dataset.relatedMode,true);});
+    }
   });
   document.querySelectorAll('button[data-related-pane]').forEach(function(button){
-    button.addEventListener('click',function(){setActivePane(button.dataset.relatedPane);});
+    if(!button.dataset.bound){
+      button.dataset.bound='true';
+      button.addEventListener('click',function(){setActivePane(button.dataset.relatedPane);});
+    }
   });
   var syncButton=document.querySelector('[data-related-sync]');
-  if(syncButton)syncButton.addEventListener('click',function(){
-    syncScroll=!syncScroll;syncButton.classList.toggle('is-active',syncScroll);
-    syncButton.setAttribute('aria-pressed',syncScroll?'true':'false');
-    syncButton.textContent=syncScroll?'同步滚动：开':'同步滚动：关';
-  });
+  if(syncButton&&!syncButton.dataset.bound){
+    syncButton.dataset.bound='true';
+    syncButton.addEventListener('click',function(){
+      syncScroll=!syncScroll;syncButton.classList.toggle('is-active',syncScroll);
+      syncButton.setAttribute('aria-pressed',syncScroll?'true':'false');
+      syncButton.textContent=syncScroll?'同步滚动：开':'同步滚动：关';
+    });
+  }
   updateMode(mode,false);
 }
 var currentGroupMode='category';
@@ -8987,8 +9438,14 @@ function createRelatedCard(info){
   link.dataset.sourceCat=info.catFrom;
   link.dataset.targetCat=info.catTo;
 
+  var isDone = isPairCompleted(from.id, to.id);
+  if(isDone) link.classList.add('is-completed');
+
   var cardHeader=element('div','related-index-card-header');
   cardHeader.appendChild(element('span','related-index-number','#'+String(info.position+1).padStart(2,'0')));
+  if(isDone){
+    cardHeader.appendChild(element('span','related-completed-badge','✓ 已研读'));
+  }
   cardHeader.appendChild(element('small','',info.isBidirectional?'双向显式链接':'显式链接'));
   link.appendChild(cardHeader);
 
@@ -9064,8 +9521,11 @@ function applyFilters(){
 
   if(matchedStatus){
     var total=(data.edges||[]).length;
+    var doneCount=0;
+    (data.edges||[]).forEach(function(e){if(isPairCompleted(e.source,e.target))doneCount++;});
+    var doneSummary=doneCount>0?' · 已完成 '+doneCount+' 组研读':'';
     if(query||cat!=='all'){
-      matchedStatus.textContent='匹配 '+visibleTotal+' 组关联（共 '+total+' 组）';
+      matchedStatus.textContent='匹配 '+visibleTotal+' 组关联（共 '+total+' 组）'+doneSummary;
     } else {
       var catSet=new Set();
       (data.edges||[]).forEach(function(e){
@@ -9073,7 +9533,7 @@ function applyFilters(){
         if(f)catSet.add(f.categoryLabel||f.category||'未分类');
         if(t)catSet.add(t.categoryLabel||t.category||'未分类');
       });
-      matchedStatus.textContent='共 '+total+' 组显式关联 · 覆盖 '+catSet.size+' 个主题分类';
+      matchedStatus.textContent='共 '+total+' 组显式关联 · 覆盖 '+catSet.size+' 个主题分类'+doneSummary;
     }
   }
 }
@@ -9406,26 +9866,45 @@ if(relationValid())renderDetail();else renderIndex();
      "    <p id=\"related-empty\" class=\"museum-empty-copy\" hidden>当前还没有可对读的显式关系。</p>\n"
      "  </section>\n"
      "  <section id=\"related-detail\" class=\"related-detail\" hidden>\n"
-     "    <div class=\"related-modebar\" role=\"group\" aria-label=\"对读内容密度\">"
-     "<button type=\"button\" data-related-mode=\"summary\" aria-pressed=\"true\">摘要对读</button>"
-     "<button type=\"button\" data-related-mode=\"full\" aria-pressed=\"false\">完整正文</button>"
-     "<button type=\"button\" data-related-sync aria-pressed=\"false\">同步滚动：关</button>"
-     "<a id=\"related-open-source\" href=\"#\">打开源笔记</a>"
-     "<a id=\"related-back-shelf\" href=\"related.html\">← 关系书架</a>"
-     "<a href=\"graph.html\">返回知识图谱</a>"
-     "<a id=\"related-open-target\" href=\"#\">打开目标笔记</a>"
-     "<span class=\"related-mobile-segments\" role=\"group\" aria-label=\"移动端对读区域\">"
-     "<button type=\"button\" data-related-pane=\"source\" aria-pressed=\"true\">源笔记</button>"
-     "<button type=\"button\" data-related-pane=\"relation\" aria-pressed=\"false\">关系</button>"
-     "<button type=\"button\" data-related-pane=\"target\" aria-pressed=\"false\">目标笔记</button></span></div>\n"
+     "    <div class=\"related-modebar\" role=\"group\" aria-label=\"对读工作台\">\n"
+     "      <div class=\"related-modebar-left\">\n"
+     "        <a id=\"related-back-shelf\" class=\"related-bar-btn related-back-btn\" href=\"related.html\" title=\"返回关系书架 (快捷键 Esc)\">← 关系书架</a>\n"
+     "        <div class=\"related-density-group\" role=\"group\" aria-label=\"对读内容密度\">\n"
+     "          <button type=\"button\" data-related-mode=\"summary\" class=\"is-active\" aria-pressed=\"true\" title=\"摘要对读 (快捷键 S)\">摘要对读</button>\n"
+     "          <button type=\"button\" data-related-mode=\"full\" aria-pressed=\"false\" title=\"完整正文 (快捷键 S)\">完整正文</button>\n"
+     "        </div>\n"
+     "        <button type=\"button\" class=\"related-sync-btn\" data-related-sync aria-pressed=\"false\" title=\"双栏同步滚动 (快捷键 Y)\">同步滚动：关</button>\n"
+     "      </div>\n"
+     "      <div class=\"related-modebar-center\">\n"
+     "        <div class=\"related-nexus-capsule\" role=\"status\" aria-label=\"关联关系信息\">\n"
+     "          <span id=\"related-nexus-tag\" class=\"related-nexus-tag\">关联对读</span>\n"
+     "          <strong id=\"related-kind\" class=\"related-nexus-kind\">显式 Org 链接</strong>\n"
+     "          <span id=\"related-direction\" class=\"related-direction-pill\">源 → 目标</span>\n"
+     "          <button type=\"button\" id=\"related-swap\" class=\"related-swap-btn\" hidden title=\"交换源与目标视角 (快捷键 X)\"><span>⇄</span> 交换视角</button>\n"
+     "        </div>\n"
+     "      </div>\n"
+     "      <div class=\"related-modebar-right\">\n"
+     "        <button type=\"button\" id=\"related-mark-completed\" class=\"related-complete-btn\" title=\"标记此关联组已完成研读\">\n"
+     "          <span class=\"complete-icon\">○</span> <span class=\"complete-text\">标记已读</span>\n"
+     "        </button>\n"
+     "        <a id=\"related-open-source\" class=\"related-bar-btn\" href=\"#\" target=\"_blank\" title=\"在新标签打开源笔记完整页\">源笔记 ↗</a>\n"
+     "        <a id=\"related-open-target\" class=\"related-bar-btn\" href=\"#\" target=\"_blank\" title=\"在新标签打开目标笔记完整页\">目标笔记 ↗</a>\n"
+     "        <a id=\"related-to-graph\" class=\"related-bar-btn\" href=\"graph.html\" title=\"在知识图谱中查看此关联\">图谱定位</a>\n"
+     "      </div>\n"
+     "      <span class=\"related-mobile-segments\" role=\"group\" aria-label=\"移动端对读区域\">\n"
+     "        <button type=\"button\" data-related-pane=\"source\" aria-pressed=\"true\">源笔记</button>\n"
+     "        <button type=\"button\" data-related-pane=\"relation\" aria-pressed=\"false\">关系</button>\n"
+     "        <button type=\"button\" data-related-pane=\"target\" aria-pressed=\"false\">目标笔记</button>\n"
+     "      </span>\n"
+     "    </div>\n"
      "    <div class=\"related-reading-grid\">\n"
      "      <article class=\"related-paper\" data-related-panel=\"source\" aria-label=\"源笔记\"></article>\n"
-     "      <aside class=\"related-bridge\" aria-label=\"关系方向\">"
-     "<strong id=\"related-kind\">显式 Org 链接</strong><span aria-hidden=\"true\">→</span>"
-     "<p id=\"related-direction\">源 → 目标</p>"
-     "<button type=\"button\" id=\"related-swap\" hidden title=\"交换源与目标方向 (快捷键 X)\">交换方向</button>"
-     "<a id=\"related-bridge-back\" href=\"related.html\">← 关系书架</a>"
-     "<a href=\"graph.html\">返回知识图谱</a></aside>\n"
+     "      <aside class=\"related-bridge\" aria-label=\"关系方向\" hidden>\n"
+     "        <strong id=\"related-kind-bridge\">显式 Org 链接</strong><span aria-hidden=\"true\">→</span>\n"
+     "        <p id=\"related-direction-bridge\">源 → 目标</p>\n"
+     "        <a id=\"related-bridge-back\" href=\"related.html\">← 关系书架</a>\n"
+     "        <a href=\"graph.html\">返回知识图谱</a>\n"
+     "      </aside>\n"
      "      <article class=\"related-paper\" data-related-panel=\"target\" aria-label=\"目标笔记\"></article>\n"
      "    </div>\n"
      "  </section>\n</main>\n"
@@ -9638,7 +10117,89 @@ function revealWithinViewport(node,mobile){if(!node||typeof node.getBoundingClie
 
 function relationshipList(page){var root=element('div','timeline-focus-relations');var ids=new Set([].concat(page.linksTo||[],page.linkedFrom||[]));if(!ids.size){root.appendChild(element('p','timeline-focus-empty','暂无显式 Org 链接'));return root;}ids.forEach(function(id){var other=pageMap.get(id);if(!other)return;var out=(page.linksTo||[]).includes(id),back=(page.linkedFrom||[]).includes(id);var row=element('div','timeline-focus-relation');row.appendChild(element('span','',out&&back?'双向':out?'出链':'入链'));row.appendChild(element('b','',other.title));root.appendChild(row);});return root;}
 
-function detailContent(page,compact){var list=visiblePages(),at=visibleIndex(page,list),root=element('div',compact?'timeline-mobile-detail-content':'timeline-focus-content');root.appendChild(element('p','timeline-preview-kicker',intervalText(page)));root.appendChild(element('h2','',page.title));var meta=element('dl','timeline-preview-meta');[['主题',page.categoryLabel||page.category||'未分类'],['状态',page.status==='draft'?'草稿':'已发布'],['创建',page.createdDate],['更新',page.modifiedDate]].forEach(function(row){var wrap=element('div','');wrap.appendChild(element('dt','',row[0]));wrap.appendChild(element('dd','',row[1]));meta.appendChild(wrap);});root.appendChild(meta);root.appendChild(element('p','timeline-preview-summary',page.description||'暂无可用简介。'));var tags=element('div','timeline-preview-tags');(page.tags||[]).forEach(function(tag){tags.appendChild(element('span','','#'+tag));});root.appendChild(tags);root.appendChild(relationshipList(page));var nav=element('div','timeline-focus-nav');var previous=element('button','timeline-previous','上一篇');previous.type='button';previous.disabled=at<=0;previous.addEventListener('click',function(){navigateRelative(-1);});var next=element('button','timeline-next','下一篇');next.type='button';next.disabled=at<0||at>=list.length-1;next.addEventListener('click',function(){navigateRelative(1);});var close=element('button','timeline-return',compact?'收起详情':'返回时间线');close.type='button';close.addEventListener('click',clearFocus);nav.appendChild(previous);nav.appendChild(next);nav.appendChild(close);root.appendChild(nav);var actions=element('div','timeline-preview-actions');var open=element('a','timeline-open-note','打开笔记');open.href=themed(page.href);actions.appendChild(open);var href=relatedHref(page);if(href){var related=element('a','','关联阅读');related.href=href;actions.appendChild(related);}root.appendChild(actions);return root;}
+function getReviewedSet(){
+  try{
+    var raw=localStorage.getItem('org-museum-timeline-reviewed');
+    return new Set(raw?JSON.parse(raw):[]);
+  }catch(_e){return new Set();}
+}
+function toggleReviewed(id){
+  try{
+    var set=getReviewedSet();
+    if(set.has(id))set.delete(id);
+    else set.add(id);
+    localStorage.setItem('org-museum-timeline-reviewed',JSON.stringify(Array.from(set)));
+  }catch(_e){}
+}
+
+function detailContent(page,compact){
+  var list=visiblePages(),at=visibleIndex(page,list),root=element('div',compact?'timeline-mobile-detail-content':'timeline-focus-content');
+  root.appendChild(element('p','timeline-preview-kicker',intervalText(page)));
+  root.appendChild(element('h2','',page.title));
+  var estWords=(page.description||'').length*8+420;
+  var readMins=Math.max(1,Math.round(estWords/350));
+  var days=daysBetween(page);
+  var budgetWrap=element('div','timeline-focus-budget');
+  budgetWrap.appendChild(element('span','timeline-reading-budget','📖 约 '+readMins+' 分钟阅读'));
+  if(days>0||(page.createdDate&&page.modifiedDate&&page.createdDate!==page.modifiedDate)){
+    budgetWrap.appendChild(element('span','timeline-evolution-tag','🌱 历经 '+days+' 天演进'));
+  }
+  root.appendChild(budgetWrap);
+  var meta=element('dl','timeline-preview-meta');
+  [['主题',page.categoryLabel||page.category||'未分类'],['状态',page.status==='draft'?'草稿':'已发布'],['创建',page.createdDate],['更新',page.modifiedDate]].forEach(function(row){
+    var wrap=element('div','');
+    wrap.appendChild(element('dt','',row[0]));
+    wrap.appendChild(element('dd','',row[1]));
+    meta.appendChild(wrap);
+  });
+  root.appendChild(meta);
+  root.appendChild(element('p','timeline-preview-summary',page.description||'暂无可用简介。'));
+  var tags=element('div','timeline-preview-tags');
+  (page.tags||[]).forEach(function(tag){tags.appendChild(element('span','','#'+tag));});
+  root.appendChild(tags);
+  root.appendChild(relationshipList(page));
+  var isRev=getReviewedSet().has(page.id);
+  var revBtn=element('button','timeline-review-btn'+(isRev?' is-reviewed':''),isRev?'✓ 已完成时序复盘':'○ 标记时序复盘');
+  revBtn.type='button';
+  revBtn.setAttribute('aria-pressed',isRev?'true':'false');
+  revBtn.title=isRev?'已完成时序复盘，点击取消标记':'标记此笔记已通过时间流完成回顾';
+  revBtn.addEventListener('click',function(e){
+    if(e&&e.stopPropagation)e.stopPropagation();
+    toggleReviewed(page.id);
+    applyFocus();
+    renderTimelineStats(visiblePages());
+    if(state.view==='calendar')renderCalendar();
+  });
+  root.appendChild(revBtn);
+  var nav=element('div','timeline-focus-nav');
+  var previous=element('button','timeline-previous','上一篇');
+  previous.type='button';
+  previous.disabled=at<=0;
+  previous.title='上一篇 (快捷键 ←)';
+  previous.addEventListener('click',function(){navigateRelative(-1);});
+  var next=element('button','timeline-next','下一篇');
+  next.type='button';
+  next.disabled=at<0||at>=list.length-1;
+  next.title='下一篇 (快捷键 →)';
+  next.addEventListener('click',function(){navigateRelative(1);});
+  var close=element('button','timeline-return',compact?'收起详情':'返回时间线');
+  close.type='button';
+  close.addEventListener('click',clearFocus);
+  nav.appendChild(previous);nav.appendChild(next);nav.appendChild(close);
+  root.appendChild(nav);
+  var actions=element('div','timeline-preview-actions');
+  var open=element('a','timeline-open-note','打开笔记');
+  open.href=themed(page.href);
+  actions.appendChild(open);
+  var href=relatedHref(page);
+  if(href){var related=element('a','','关联阅读');related.href=href;actions.appendChild(related);}
+  var graphA=element('a','timeline-open-graph','图谱定位');
+  graphA.href=themed('graph.html?focus='+encodeURIComponent(page.id));
+  graphA.title='在知识图谱中查看该笔记的网状位置';
+  actions.appendChild(graphA);
+  root.appendChild(actions);
+  return root;
+}
 
 function focusButton(id){
   if(state.view==='calendar'&&calendarView){
@@ -9673,7 +10234,8 @@ function scheduleTimelineUpdate(options){
     var node=page&&focusButton(page.id);
     if(coordinator.focusControl&&node&&typeof node.focus==='function')node.focus({preventScroll:true});
     if(coordinator.scrollFocus&&page){
-      if(innerWidth<=820||timelineListMode)revealWithinViewport(node,true);
+      if(state.view==='calendar'&&innerWidth<=820&&!mobileDetail.hidden)revealWithinViewport(mobileDetail,false);
+      else if(innerWidth<=820||timelineListMode)revealWithinViewport(node,true);
       else if(!focusCard.hidden)revealWithinViewport(focusCard,false);
     }
     coordinator.scrollFocus=false;
@@ -9822,17 +10384,125 @@ function applyDateInputs(){
   render();
 }
 
+function renderTimelineStats(list){
+  list=list||visiblePages();
+  var spanVal=document.getElementById('timeline-val-span');
+  var evoVal=document.getElementById('timeline-val-evolution');
+  var netVal=document.getElementById('timeline-val-network');
+  var revVal=document.getElementById('timeline-val-reviewed');
+  var catVal=document.getElementById('timeline-val-topcat');
+  if(!spanVal)return;
+  if(!list.length){
+    spanVal.textContent='-- 天';
+    if(evoVal)evoVal.textContent='0%';
+    if(netVal)netVal.textContent='0%';
+    if(revVal)revVal.textContent='0 / 0';
+    if(catVal)catVal.textContent='--';
+    return;
+  }
+  var minMs=Infinity,maxMs=-Infinity;
+  var evolvedCount=0,connectedCount=0;
+  var catCounts={};
+  var revSet=getReviewedSet();
+  var revCount=0;
+
+  list.forEach(function(p){
+    var cMs=p.created?p.created*1000:Date.parse(p.createdDate+'T00:00:00Z');
+    var mMs=p.modified?p.modified*1000:Date.parse(p.modifiedDate+'T00:00:00Z');
+    if(Number.isFinite(cMs)){
+      if(cMs<minMs)minMs=cMs;
+      if(cMs>maxMs)maxMs=cMs;
+    }
+    if(Number.isFinite(mMs)&&mMs>maxMs)maxMs=mMs;
+
+    if(daysBetween(p)>0||(p.createdDate&&p.modifiedDate&&p.createdDate!==p.modifiedDate)){
+      evolvedCount++;
+    }
+    if(relationCount(p)>0){
+      connectedCount++;
+    }
+    if(revSet.has(p.id)){
+      revCount++;
+    }
+    var cat=p.categoryLabel||p.category||'未分类';
+    catCounts[cat]=(catCounts[cat]||0)+1;
+  });
+
+  var spanDays=minMs<Infinity&&maxMs>-Infinity?Math.max(1,Math.round((maxMs-minMs)/86400000)+1):1;
+  spanVal.textContent=spanDays+' 天';
+  if(evoVal)evoVal.textContent=Math.round((evolvedCount/list.length)*100)+'%';
+  if(netVal)netVal.textContent=Math.round((connectedCount/list.length)*100)+'%';
+  if(revVal)revVal.textContent=revCount+' / '+list.length;
+
+  var topCat='综合';
+  var maxCatCount=0;
+  for(var c in catCounts){
+    if(catCounts[c]>maxCatCount){
+      maxCatCount=catCounts[c];
+      topCat=c;
+    }
+  }
+  if(catVal)catVal.textContent=topCat;
+}
+
+function bindCanvasToolbar(){
+  var zoomIn=document.getElementById('timeline-zoom-in');
+  var zoomOut=document.getElementById('timeline-zoom-out');
+  var zoomReset=document.getElementById('timeline-zoom-reset');
+  var jumpOldest=document.getElementById('timeline-jump-oldest');
+  var jumpLatest=document.getElementById('timeline-jump-latest');
+  var exploreRandom=document.getElementById('timeline-explore-random');
+  if(zoomIn)zoomIn.addEventListener('click',function(){timelineZoomBy(1.3);});
+  if(zoomOut)zoomOut.addEventListener('click',function(){timelineZoomBy(0.77);});
+  if(zoomReset)zoomReset.addEventListener('click',function(){timelineZoomReset();});
+  if(jumpOldest)jumpOldest.addEventListener('click',function(){
+    var list=visiblePages();
+    if(list.length)setFocus(list[0],true,true);
+  });
+  if(jumpLatest)jumpLatest.addEventListener('click',function(){
+    var list=visiblePages();
+    if(list.length)setFocus(list[list.length-1],true,true);
+  });
+  if(exploreRandom)exploreRandom.addEventListener('click',function(){
+    var list=visiblePages();
+    if(!list.length)return;
+    var idx=Math.floor(Math.random()*list.length);
+    setFocus(list[idx],true,true);
+  });
+}
+
 function renderIsolated(){
   if(!isolatedList)return;
   isolatedList.textContent='';
   var isolated=visiblePages().filter(function(page){return relationCount(page)===0;});
-  isolated.forEach(function(page){
-    var button=element('button','',page.title);
-    button.type='button';
-    button.style.setProperty('--timeline-color',color(page));
-    button.addEventListener('click',function(){setFocus(page,true);});
-    isolatedList.appendChild(button);
-  });
+  if(!isolated.length){
+    var emptyCopy=element('p','museum-empty-copy','当前范围内所有笔记均已建立关联，无孤立节点。');
+    isolatedList.appendChild(emptyCopy);
+  }else{
+    isolated.forEach(function(page){
+      var item=element('div','timeline-isolated-item');
+      item.style.setProperty('--timeline-color',color(page));
+      var button=element('button','timeline-isolated-btn',page.title);
+      button.type='button';
+      button.title='选定孤立笔记：'+page.title;
+      button.addEventListener('click',function(){setFocus(page,true);});
+      item.appendChild(button);
+
+      var actions=element('div','timeline-isolated-actions');
+      var relatedA=element('a','timeline-isolated-link','对读串联 ↗');
+      relatedA.href=themed('related.html?source='+encodeURIComponent(page.id));
+      relatedA.title='前往对读页面为该笔记建立关联';
+      actions.appendChild(relatedA);
+
+      var graphA=element('a','timeline-isolated-link','图谱 ↗');
+      graphA.href=themed('graph.html?focus='+encodeURIComponent(page.id));
+      graphA.title='在图谱中寻找可连接的概念';
+      actions.appendChild(graphA);
+
+      item.appendChild(actions);
+      isolatedList.appendChild(item);
+    });
+  }
   var isolatedCount=document.getElementById('timeline-isolated-count');
   if(isolatedCount)isolatedCount.textContent=String(isolated.length).padStart(2,'0');
 }
@@ -9927,7 +10597,7 @@ function applyMobileFocus(page){
     return;
   }
   var entry=mobileItems.get(page.id);
-  if(!entry){
+  if(!entry&&state.view!=='calendar'){
     mobileDetail.hidden=true;
     return;
   }
@@ -9936,7 +10606,8 @@ function applyMobileFocus(page){
     mobileDetail.dataset.list=mobileListSignature;
     mobileDetail.replaceChildren(detailContent(page,true));
   }
-  entry.item.appendChild(mobileDetail);
+  if(state.view==='calendar')calendarView.appendChild(mobileDetail);
+  else entry.item.appendChild(mobileDetail);
   mobileDetail.hidden=false;
 }
 
@@ -9948,6 +10619,7 @@ var timelineListMode=false;
 // Calendar Mode Implementation
 // -------------------------------------------------------------
 var calYear=0,calMonth=0;
+var expandedCalendarDays=new Set();
 function initCalDate(){
   if(state.from&&/^\\d{4}-\\d{2}/.test(state.from)){
     calYear=parseInt(state.from.slice(0,4),10);
@@ -10097,7 +10769,10 @@ function renderCalendar(){
     var isToday=curDStr===todayStr;
     var dayOfWeek=(startDayOfWeek+d-1)%7;
     var isWeekend=dayOfWeek===5||dayOfWeek===6;
-    var cellClass='timeline-calendar-cell is-current-month'+(isToday?' is-today':'')+(isWeekend?' is-weekend':'');
+    var dayNotes=notesByDate.get(curDStr)||[];
+    var noteCount=dayNotes.length;
+    var densityClass=noteCount===0?'':noteCount===1?' has-notes-low':noteCount===2?' has-notes-mid':' has-notes-high';
+    var cellClass='timeline-calendar-cell is-current-month'+(isToday?' is-today':'')+(isWeekend?' is-weekend':'')+densityClass;
     var cell=element('div',cellClass);
     cell.dataset.date=curDStr;
 
@@ -10111,26 +10786,31 @@ function renderCalendar(){
     cellHead.appendChild(dayNumWrap);
     cell.appendChild(cellHead);
 
-    var dayNotes=notesByDate.get(curDStr)||[];
     if(dayNotes.length){
       var countBadge=element('span','timeline-calendar-day-count',dayNotes.length+' 篇');
       cellHead.appendChild(countBadge);
 
       var notesContainer=element('div','timeline-calendar-cell-notes');
-      dayNotes.slice(0,3).forEach(function(p){
-        var btn=element('button','timeline-calendar-note-item');
+      var expanded=expandedCalendarDays.has(curDStr);
+      dayNotes.slice(0,expanded?dayNotes.length:3).forEach(function(p){
+        var isRev=getReviewedSet().has(p.id);
+        var btn=element('button','timeline-calendar-note-item'+(isRev?' is-reviewed':''));
         btn.type='button';
         btn.dataset.id=p.id;
         btn.style.setProperty('--note-color',color(p));
-        btn.setAttribute('title',p.title);
+        btn.setAttribute('title',p.title+(isRev?' (已复盘)':''));
         if(state.focus===p.id){
           btn.classList.add('is-focused');
           btn.setAttribute('aria-pressed','true');
         }
-        var dot=element('span','timeline-calendar-note-dot');
+        var dot=element('span','timeline-calendar-note-dot'+(isRev?' is-reviewed-dot':''));
         var noteTitle=element('span','timeline-calendar-note-title',p.title);
         btn.appendChild(dot);
         btn.appendChild(noteTitle);
+        if(isRev){
+          var revIcon=element('span','timeline-calendar-rev-icon','✓');
+          btn.appendChild(revIcon);
+        }
         btn.addEventListener('click',function(e){
           if(e&&typeof e.stopPropagation==='function')e.stopPropagation();
           setFocus(p,true);
@@ -10142,7 +10822,17 @@ function renderCalendar(){
         notesContainer.appendChild(btn);
       });
       if(dayNotes.length>3){
-        var morePill=element('span','timeline-calendar-note-more','+ '+(dayNotes.length-3)+' 篇');
+        var morePill=element('button','timeline-calendar-note-more',expanded?'收起':' + '+(dayNotes.length-3)+' 篇');
+        morePill.type='button';morePill.dataset.date=curDStr;
+        morePill.setAttribute('aria-expanded',String(expanded));
+        morePill.setAttribute('aria-label',curDStr+(expanded?' 收起笔记':' 展开全部 '+dayNotes.length+' 篇笔记'));
+        morePill.addEventListener('click',function(){
+          var date=this.dataset.date;
+          if(expandedCalendarDays.has(date))expandedCalendarDays.delete(date);else expandedCalendarDays.add(date);
+          renderCalendar();
+          var toggle=document.querySelector('.timeline-calendar-cell[data-date=\"'+date+'\"] .timeline-calendar-note-more');
+          if(toggle)toggle.focus({preventScroll:true});
+        });
         notesContainer.appendChild(morePill);
       }
       cell.appendChild(notesContainer);
@@ -10165,6 +10855,7 @@ function renderCalendar(){
   }
 
   calendarView.appendChild(grid);
+  if(state.focus)applyMobileFocus(pageMap.get(state.focus));
 }
 
 function switchView(nextView, writeHistory){
@@ -10181,6 +10872,8 @@ function switchView(nextView, writeHistory){
   }
   if(calendarView)calendarView.hidden=!isCal;
   if(canvas)canvas.hidden=isCal;
+  var toolbar=document.querySelector('.timeline-canvas-toolbar');
+  if(toolbar)toolbar.hidden=isCal;
   if(mobileList)mobileList.hidden=isCal;
   var legend=document.querySelector('.timeline-legend');
   if(legend)legend.hidden=isCal;
@@ -10552,6 +11245,7 @@ function render(message){
   applyFocus();
   applyMobileFocus(selected);
   renderIsolated();
+  renderTimelineStats(list);
   var totalEl=document.getElementById('timeline-total');
   if(totalEl)totalEl.textContent=String(pages.length).padStart(2,'0');
   announce(notice,!!notice);
@@ -10699,6 +11393,7 @@ window.addEventListener('popstate',function(event){
   else if(event.state&&Number.isFinite(event.state.scrollY))requestAnimationFrame(function(){scrollToPosition(event.state.scrollY);});
 });
 
+bindCanvasToolbar();
 renderFilters();
 switchView(state.view,false);
 render();
@@ -10729,15 +11424,22 @@ if(state.focus){
    "<main id=\"main-content\" class=\"museum-timeline-shell\" tabindex=\"-1\">\n"
    "  <header class=\"timeline-hero\"><p>时间阅读</p><h1>知识的长河</h1><span>按创建时间浏览已发布笔记，在选择中展开知识的更新轨迹</span></header>\n"
    "  <section class=\"timeline-scope-bar\" aria-label=\"当前时间范围\"><button id=\"timeline-filter-toggle\" class=\"timeline-filter-toggle\" type=\"button\" aria-expanded=\"false\" aria-controls=\"timeline-filter-sheet\">筛选</button><div id=\"timeline-view-selector\" class=\"timeline-view-selector\" role=\"group\" aria-label=\"视图模式\"><button type=\"button\" data-view=\"timeline\" class=\"is-active\" aria-pressed=\"true\">时间轴</button><button type=\"button\" data-view=\"calendar\" aria-pressed=\"false\">日历</button></div><strong class=\"timeline-scope-label\">当前范围</strong><span id=\"timeline-scope-summary\">已发布笔记</span><span>/ <b id=\"timeline-total\">00</b></span><p id=\"timeline-match-status\" role=\"status\" aria-live=\"polite\">0 个时间节点</p></section>\n"
+   "  <div id=\"timeline-stats-bar\" class=\"timeline-stats-bar\" role=\"region\" aria-label=\"时序沉淀里程碑\">\n"
+   "    <span class=\"timeline-stat-pill\" id=\"timeline-stat-span\" title=\"当前可见笔记跨越的自然时间跨度\"><span class=\"stat-icon\" aria-hidden=\"true\">📅</span><span class=\"stat-label\">时间跨度</span><strong class=\"stat-val\" id=\"timeline-val-span\">-- 天</strong></span>\n"
+   "    <span class=\"timeline-stat-pill\" id=\"timeline-stat-evolution\" title=\"经历了后续更新与迭代深化的笔记比例\"><span class=\"stat-icon\" aria-hidden=\"true\">🌱</span><span class=\"stat-label\">知识演进率</span><strong class=\"stat-val\" id=\"timeline-val-evolution\">--%</strong></span>\n"
+   "    <span class=\"timeline-stat-pill\" id=\"timeline-stat-network\" title=\"已与其它笔记建立互联双链的比例\"><span class=\"stat-icon\" aria-hidden=\"true\">🕸️</span><span class=\"stat-label\">网络联结率</span><strong class=\"stat-val\" id=\"timeline-val-network\">--%</strong></span>\n"
+   "    <span class=\"timeline-stat-pill\" id=\"timeline-stat-reviewed\" title=\"当前已完成时序复盘的笔记比例\"><span class=\"stat-icon\" aria-hidden=\"true\">✓</span><span class=\"stat-label\">复盘进度</span><strong class=\"stat-val\" id=\"timeline-val-reviewed\">0 / --</strong></span>\n"
+   "    <span class=\"timeline-stat-pill\" id=\"timeline-stat-topcat\" title=\"当前范围内记录最集中的主题领域\"><span class=\"stat-icon\" aria-hidden=\"true\">🏷️</span><span class=\"stat-label\">核心主题</span><strong class=\"stat-val\" id=\"timeline-val-topcat\">--</strong></span>\n"
+   "  </div>\n"
    "  <div id=\"timeline-filter-backdrop\" class=\"timeline-filter-backdrop\" hidden></div>\n"
    "  <aside id=\"timeline-filter-sheet\" class=\"timeline-filter-sheet\" aria-label=\"时间轴筛选\" aria-modal=\"false\" data-open=\"false\" role=\"dialog\" tabindex=\"-1\"><div class=\"timeline-filter-sheet-head\"><div><strong>筛选时间轨迹</strong><span id=\"timeline-filter-result\" role=\"status\" aria-live=\"polite\">0 个时间节点</span></div><button id=\"timeline-filter-close\" class=\"timeline-filter-close\" type=\"button\">完成</button></div><section class=\"timeline-filter-section-grain\" aria-label=\"展示刻度\"><h3>时间维度</h3><div id=\"timeline-grain-selector\" class=\"timeline-grain-selector-wrapper\"><div id=\"timeline-grain-filters\" class=\"timeline-filter-list timeline-grain-options\" role=\"group\"><button type=\"button\" data-grain=\"day\" class=\"is-active\" aria-pressed=\"true\">天维度 (默认)</button><button type=\"button\" data-grain=\"month\" aria-pressed=\"false\">月维度</button><button type=\"button\" data-grain=\"year\" aria-pressed=\"false\">年维度</button></div></div></section><section class=\"timeline-filter-section-time\" aria-label=\"按时间范围筛选\"><h3>时间范围</h3><div id=\"timeline-time-filters\" class=\"timeline-filter-list timeline-date-shortcuts\"></div><div class=\"timeline-date-fields\"><label>从<input type=\"date\" id=\"timeline-date-start\" aria-label=\"开始日期\"></label><label>到<input type=\"date\" id=\"timeline-date-end\" aria-label=\"结束日期\" aria-describedby=\"timeline-date-feedback\"></label><button type=\"button\" id=\"timeline-date-clear\" class=\"timeline-date-clear\" hidden>清除</button></div><p id=\"timeline-date-feedback\" class=\"timeline-date-feedback\" role=\"alert\" hidden></p></section><section class=\"timeline-filter-section-category\"><h3>主题</h3><div id=\"timeline-category-filters\" class=\"timeline-filter-list\"></div></section><section class=\"timeline-filter-section-status\"><h3>数据边界</h3><p id=\"timeline-status-filters\" class=\"timeline-filter-note\">当前时间轴仅展示已发布笔记。</p></section></aside>\n"
    "  <div class=\"timeline-layout\">\n"
    "    <section class=\"timeline-workspace\" aria-label=\"知识时间轴\">\n"
    "      <div class=\"timeline-legend\"><span>● 创建</span><span>○ 选择后显示更新</span><span>↗ 显式 Org 链接</span></div>\n"
-   "      <div id=\"timeline-canvas\"><div id=\"timeline-svg\"></div><div id=\"timeline-tooltip\" role=\"tooltip\" hidden></div></div>\n"
+   "      <div id=\"timeline-canvas\"><div id=\"timeline-svg\"></div><div id=\"timeline-tooltip\" role=\"tooltip\" hidden></div><div class=\"timeline-canvas-toolbar\" role=\"toolbar\" aria-label=\"时间轴画布控制\"><button type=\"button\" class=\"timeline-tool-btn\" id=\"timeline-zoom-in\" title=\"放大时间轴 (+)\" aria-label=\"放大时间轴\"><span aria-hidden=\"true\">＋</span></button><button type=\"button\" class=\"timeline-tool-btn\" id=\"timeline-zoom-out\" title=\"缩小时间轴 (-)\" aria-label=\"缩小时间轴\"><span aria-hidden=\"true\">－</span></button><button type=\"button\" class=\"timeline-tool-btn\" id=\"timeline-zoom-reset\" title=\"复位时间轴 (1:1)\" aria-label=\"复位时间轴\"><span>1:1</span></button><span class=\"timeline-tool-divider\" aria-hidden=\"true\"></span><button type=\"button\" class=\"timeline-tool-btn timeline-tool-text-btn\" id=\"timeline-jump-oldest\" title=\"跳转至最早记录\" aria-label=\"跳转至最早记录\"><span>最早</span></button><button type=\"button\" class=\"timeline-tool-btn timeline-tool-text-btn\" id=\"timeline-jump-latest\" title=\"跳转至最新记录\" aria-label=\"跳转至最新记录\"><span>最新</span></button><button type=\"button\" class=\"timeline-tool-btn timeline-tool-text-btn\" id=\"timeline-explore-random\" title=\"随机漫游一条笔记\" aria-label=\"随机漫游一条笔记\"><span>🎲 漫游</span></button></div></div>\n"
    "      <ol id=\"timeline-mobile-list\"></ol>\n"
    "      <div id=\"timeline-calendar-view\" class=\"timeline-calendar-view\" hidden></div>\n"
-   "      <details class=\"timeline-isolated\"><summary>孤立笔记 <span id=\"timeline-isolated-count\">00</span></summary><div id=\"timeline-isolated-list\"></div></details>\n"
+   "      <details class=\"timeline-isolated\"><summary>孤立笔记 <span id=\"timeline-isolated-count\">00</span></summary><p class=\"timeline-isolated-intro\">💡 <strong>零基础认知</strong>：孤立笔记是尚未与其它笔记建立链接的单点记录。知识在互联中生长——点击「对读串联」或「图谱定位」，把单点想法编织入知识体系。</p><div id=\"timeline-isolated-list\"></div></details>\n"
    "    </section>\n"
    "    <aside id=\"timeline-focus-card\" class=\"timeline-focus-card\" aria-label=\"当前笔记\" tabindex=\"-1\" hidden></aside>\n"
    "  </div>\n</main>\n"
@@ -12790,7 +13492,9 @@ document.addEventListener('keydown',function(e){
   if(!readingShortcutBlocked(e)&&e.key==='z'){e.preventDefault();toggleZen();}
 });
 function toggleZen(){
-  var enabled=document.body.classList.toggle('zen-mode');
+  var enabled=document.documentElement.dataset.zenMode!=='true';
+  if(window.orgMuseumSetZen)window.orgMuseumSetZen(enabled);
+  else document.body.classList.toggle('zen-mode',enabled);
   var button=document.querySelector('[data-reading-zen]');
   if(button){button.setAttribute('aria-pressed',String(enabled));button.textContent=enabled?'退出专注':'专注阅读';}
   if(enabled)updZ();
@@ -13058,8 +13762,49 @@ function initHeadingAnchors(){
   });
 }
 
+function initLearningHub(){
+  var hub=document.querySelector('.museum-next-learning-hub');
+  if(!hub)return;
+  var mark=hub.querySelector('[data-hub-action=\"mark-studied\"]');
+  var quiz=hub.querySelector('[data-hub-action=\"quiz\"]');
+  var pageId=document.body.dataset.pageId;
+  function studiedPages(){
+    try{var list=JSON.parse(localStorage.getItem('org-museum-studied-pages')||'[]');return Array.isArray(list)?list:[];}
+    catch(_error){return [];}
+  }
+  function syncStudied(){
+    if(!mark)return;
+    var studied=studiedPages().includes(pageId);
+    mark.classList.toggle('is-studied',studied);mark.setAttribute('aria-pressed',String(studied));
+    var label=mark.querySelector('[data-hub-studied-text]');
+    var hint=mark.querySelector('[data-hub-studied-hint]');
+    if(label)label.textContent=studied?'已研读掌握':'标记为已研读';
+    if(hint)hint.textContent=studied?'已记录学习足迹，点击可取消':'记录学习足迹，点亮本课掌握徽章';
+  }
+  if(mark)mark.addEventListener('click',function(){
+    if(!pageId)return;
+    var list=studiedPages(),position=list.indexOf(pageId);
+    if(position<0)list.push(pageId);else list.splice(position,1);
+    try{localStorage.setItem('org-museum-studied-pages',JSON.stringify(list));}
+    catch(_error){var hint=mark.querySelector('[data-hub-studied-hint]');if(hint)hint.textContent='无法保存，请检查浏览器存储权限';return;}
+    syncStudied();
+  });
+  if(quiz)quiz.addEventListener('click',function(){
+    var panel=document.getElementById('museum-ai-panel');
+    var trigger=document.querySelector('[data-ai-toggle]');
+    if(!panel||!trigger)return;
+    if(panel.getAttribute('aria-hidden')!=='false')trigger.click();
+    var input=panel.querySelector('[data-ai-chat-input]');
+    var title=document.querySelector('h1.title');
+    if(input){input.value='请根据当前笔记《'+(title?title.textContent.trim():document.title)+'》，生成 3 道渐进式自测题，先给题目，再给参考答案与解析。';input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();}
+  });
+  window.addEventListener('storage',function(event){if(event.key==='org-museum-studied-pages')syncStudied();});
+  syncStudied();
+}
+
 window.addEventListener('load',function(){
   initReadingActions();
+  initLearningHub();
   initHeadingAnchors();
   initScrollSpy();
   initCodeBlocks();
@@ -13327,6 +14072,15 @@ if(!moveTOC()){
 function init(){
   var inp=document.getElementById('org-museum-search-input');if(!inp)return;
   var empty=document.querySelector('[data-sidebar-search-empty]');
+  if(inp.addEventListener){
+    inp.addEventListener('keydown',function(e){
+      if(e.key==='Escape'&&this.value){
+        e.stopPropagation();
+        this.value='';
+        this.dispatchEvent(new Event('input'));
+      }
+    });
+  }
   inp.addEventListener('input',function(){
     var t=this.value.toLowerCase().trim();
     var matches=0;
@@ -13357,6 +14111,16 @@ function init(){
     });
     if(empty)empty.hidden=!t||matches>0;
   });
+  try {
+    var curFile = (location.pathname||'').split('/').pop() || 'index.html';
+    document.querySelectorAll('#org-museum-sidebar .sidebar-category li a').forEach(function(a){
+      var targetFile = (a.getAttribute('href')||'').split('/').pop();
+      if(targetFile && targetFile === curFile){
+        a.parentElement.classList.add('is-current-page');
+        a.setAttribute('aria-current', 'page');
+      }
+    });
+  } catch(e) {}
 }
 if(document.readyState==='loading')
   document.addEventListener('DOMContentLoaded',init);

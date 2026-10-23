@@ -51,7 +51,7 @@ var clearButton=document.querySelector('[data-clear-index-filters]');
 var resetLink=document.querySelector('[data-index-reset]');
 var dynamicFilters=document.getElementById('index-dynamic-filters');
 var filterPanel=document.querySelector('details.dashboard-filter-panel');
-if(filterPanel&&typeof window.matchMedia==='function'&&window.matchMedia('(max-width: 760px)').matches)
+if(filterPanel&&typeof window.matchMedia==='function'&&window.matchMedia('(max-width: 900px)').matches)
   filterPanel.open=false;
 var typeChart=document.getElementById('index-type-chart');
 var typeExpand=document.getElementById('index-type-expand');
@@ -773,6 +773,20 @@ function renderResults(){
       }
       row.appendChild(header);
 
+      var descText=page.description||(match.context?match.context:'');
+      if(!descText&&Array.isArray(page.headings)&&page.headings.length){
+        var headingTitles=page.headings.slice(0,3).map(function(h){
+          return h.title?h.title.replace(/^\d+[\.\s]*/,''):'';
+        }).filter(Boolean);
+        if(headingTitles.length)descText='包含章节：'+headingTitles.join(' · ');
+      }
+      if(descText){
+        var descEl=document.createElement('p');
+        descEl.className='dashboard-result-desc';
+        descEl.textContent=descText;
+        row.appendChild(descEl);
+      }
+
       var meta=document.createElement('div');meta.className='dashboard-result-meta';
       var categoryVal=page.category||'';
       var topic=document.createElement(categoryVal?'button':'span');
@@ -1098,9 +1112,10 @@ if(search){
           return;
         }
       }
+      event.preventDefault();
       closeSuggest();
-      var firstLink=resultList&&resultList.querySelector('a[href]');
-      if(firstLink){event.preventDefault();firstLink.click();}
+      if(heading&&typeof heading.focus==='function'){heading.focus();}
+      return;
     }else if(event.key==='Escape'){
       event.preventDefault();
       if(suggestEl&&!suggestEl.hidden){
@@ -1136,9 +1151,11 @@ document.addEventListener('keydown',function(event){
   }
 });
 if(clearButton)clearButton.addEventListener('click',clearAll);
-if(resetLink)resetLink.addEventListener('click',function(event){
-  event.preventDefault();clearAll();
-  var target=document.getElementById('recent-updates');if(target)target.scrollIntoView({block:'start'});
+document.querySelectorAll('[data-index-reset]').forEach(function(btn){
+  btn.addEventListener('click',function(event){
+    event.preventDefault();clearAll();
+    var target=document.getElementById('recent-updates');if(target)target.scrollIntoView({block:'start'});
+  });
 });
 if(sortControl)sortControl.addEventListener('change',function(){state.sort=sortControl.value;update('push',false);});
 if(typeExpand)typeExpand.addEventListener('click',function(){
@@ -1291,13 +1308,24 @@ function renderResume(records){
   if(resumeCount)resumeCount.textContent='/ '+count(records.length);
   if(!records.length){
     var box=document.createElement('div');box.className='resume-empty-state';
-    var title=document.createElement('strong');title.textContent='还没有有效阅读轨迹';
+    var title=document.createElement('strong');title.textContent='推荐从新手入门开始';
     var copy=document.createElement('small');
-    copy.textContent='停留 30 秒或阅读超过 3% 后，才会保存最近位置。';
+    copy.textContent='停留 30 秒或阅读超过 3% 后会自动保留阅读进度。新手推荐首选：';
     box.appendChild(title);box.appendChild(copy);
-    if(state.sourceData.length){var start=document.createElement('a');
-      start.href=state.sourceData.slice().sort(function(a,b){return (b.modified||0)-(a.modified||0);})[0].href;
-      start.textContent='从全部笔记开始 →';box.appendChild(start);}
+    var recWrap=document.createElement('div');recWrap.className='resume-recommendations';
+    var recDuck=document.createElement('a');
+    recDuck.className='resume-rec-link';
+    recDuck.href=window.orgMuseumThemeUrl?window.orgMuseumThemeUrl('pages/sql/duckdb.html'):'pages/sql/duckdb.html';
+    recDuck.innerHTML='<span class="rec-tag">SQL</span><strong>00 DuckDB 最小入门</strong> →';
+    var recOrg=document.createElement('a');
+    recOrg.className='resume-rec-link';
+    recOrg.href=window.orgMuseumThemeUrl?window.orgMuseumThemeUrl('pages/Emacs/Org/org-babel-01-execution-foundations.html'):'pages/Emacs/Org/org-babel-01-execution-foundations.html';
+    recOrg.innerHTML='<span class="rec-tag">Org</span><strong>Org Babel 01 执行基础</strong> →';
+    recWrap.appendChild(recDuck);recWrap.appendChild(recOrg);
+    box.appendChild(recWrap);
+    var allLink=document.createElement('a');allLink.className='resume-all-link';
+    allLink.href='#recent-updates';allLink.textContent='浏览全部笔记列表 ↓';
+    box.appendChild(allLink);
     resumeList.appendChild(box);resume.hidden=false;return;
   }
   records.forEach(function(record,index){
@@ -1340,6 +1368,14 @@ document.addEventListener('click',function(e){
   if(catBtn&&catBtn.dataset&&catBtn.dataset.categoryLink){
     e.preventDefault();
     setDimension('category',catBtn.dataset.categoryLink);
+    return;
+  }
+  var tagBtn=e.target&&e.target.closest?e.target.closest('[data-filter-tag]'):null;
+  if(tagBtn&&tagBtn.dataset&&tagBtn.dataset.filterTag){
+    e.preventDefault();
+    setDimension('tags',tagBtn.dataset.filterTag);
+    var head=document.getElementById('recent-updates')||document.getElementById('index-results-heading');
+    if(head&&typeof head.scrollIntoView==='function')head.scrollIntoView({behavior:'smooth'});
   }
 });
 readUrl();validateFilters();writeUrl('replace');render();

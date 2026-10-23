@@ -6,7 +6,6 @@ const vm = require('node:vm');
 
 const root = path.join(__dirname, '..');
 const cssPath = path.join(root, 'resources', 'org-museum.css');
-const timelineJsPath = path.join(root, 'dist', 'resources', 'org-museum-timeline.js');
 const timelineHtmlPath = path.join(root, 'dist', 'timeline.html');
 
 console.log('--- TEST 1: Timeline HTML markup contract ---');
@@ -50,10 +49,10 @@ assert(css.includes('.timeline-calendar-note-item'), 'Missing .timeline-calendar
 console.log('✓ Timeline CSS contracts verified');
 
 console.log('--- TEST 3: Timeline JS Runtime Behavior ---');
-const scriptCode = fs.readFileSync(timelineJsPath, 'utf8');
+const scriptCode = require('./org-museum-generated-runtime-test.js').timeline;
 
 // Build a lightweight DOM environment for testing
-function createTimelineEnv(initialUrl = 'https://example.test/timeline.html') {
+function createTimelineEnv(initialUrl = 'https://example.test/timeline.html', extraOctoberNotes = 0, viewportWidth = 1024) {
   const listeners = {};
   const elements = {};
 
@@ -156,7 +155,7 @@ function createTimelineEnv(initialUrl = 'https://example.test/timeline.html') {
       dispatchEvent: (evt) => {
         evt.target = evt.target || el;
         const handlers = (el._handlers && el._handlers[evt.type]) || [];
-        handlers.forEach(h => h(evt));
+        handlers.forEach(h => h.call(el, evt));
         if (el.parentElement && typeof el.parentElement.dispatchEvent === 'function') {
           el.parentElement.dispatchEvent(evt);
         }
@@ -241,6 +240,9 @@ function createTimelineEnv(initialUrl = 'https://example.test/timeline.html') {
     edges: []
   };
 
+  for (let index = 0; index < extraOctoberNotes; index++) {
+    sampleData.pages.push({...sampleData.pages[2], id: 'oct-extra-' + index, title: 'October extra ' + index});
+  }
   const docEls = {
     'timeline-data': { textContent: JSON.stringify(sampleData) },
     'org-museum-global-search': makeEl('input', 'org-museum-global-search'),
@@ -317,7 +319,7 @@ function createTimelineEnv(initialUrl = 'https://example.test/timeline.html') {
       setTimeout: setTimeout,
       clearTimeout: clearTimeout,
       performance: { now: () => Date.now() },
-      innerWidth: 1024,
+      innerWidth: viewportWidth,
       innerHeight: 768,
       CSS: { escape: s => s }
     },
@@ -580,6 +582,34 @@ assert.equal(restoredCalBtn.className.includes('is-active'), true, 'Calendar but
 assert.equal(envCalendar.docEls['timeline-calendar-view'].hidden, false, 'Calendar view should be visible on url restoration');
 assert.equal(envCalendar.docEls['timeline-canvas'].hidden, true, 'Canvas should be hidden on url restoration');
 console.log('✓ Calendar view URL bookmarking and initial loading verified');
+
+// A crowded date must keep every real note reachable, beyond the first three.
+const crowded = createTimelineEnv('https://example.test/timeline.html?view=calendar', 4);
+const calendar = crowded.docEls['timeline-calendar-view'];
+assert.equal(calendar.querySelectorAll('.timeline-calendar-note-item').length, 3);
+let more = calendar.querySelector('.timeline-calendar-note-more');
+assert.equal(more.tagName, 'BUTTON');
+assert.equal(more.getAttribute('aria-expanded'), 'false');
+more.click();
+assert.equal(calendar.querySelectorAll('.timeline-calendar-note-item').length, 5);
+more = calendar.querySelector('.timeline-calendar-note-more');
+assert.equal(more.getAttribute('aria-expanded'), 'true');
+calendar.querySelectorAll('.timeline-calendar-note-item').at(-1).click();
+assert.equal(crowded.getUrl().searchParams.get('focus'), 'oct-extra-3');
+calendar.querySelector('.timeline-calendar-note-more').click();
+assert.equal(calendar.querySelectorAll('.timeline-calendar-note-item').length, 3);
+console.log('✓ Crowded calendar dates expand, inspect hidden notes, and collapse');
+
+require('node:test')('Mobile calendar selection exposes the shared note details after its animation frame', async () => {
+  const mobileCalendar = createTimelineEnv('https://example.test/timeline.html?view=calendar', 4, 390);
+  const mobileCalendarView = mobileCalendar.docEls['timeline-calendar-view'];
+  mobileCalendarView.querySelector('.timeline-calendar-note-more').click();
+  mobileCalendarView.querySelectorAll('.timeline-calendar-note-item').at(-1).click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const mobileCalendarDetail = mobileCalendarView.querySelector('.timeline-mobile-detail');
+  assert(mobileCalendarDetail && !mobileCalendarDetail.hidden, 'Calendar selection must expose the shared note details on mobile');
+  assert.equal(mobileCalendarDetail.dataset.pageId, 'oct-extra-3');
+});
 
 console.log('ALL TIMELINE TIME & GRAIN FILTER TESTS PASSED!');
 console.log('========================================');

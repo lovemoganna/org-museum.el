@@ -177,20 +177,31 @@
       var url=URL.createObjectURL(new Blob([text],{type:type||'application/json;charset=utf-8'})), link=document.createElement('a');
       link.href=url; link.download=name; link.click(); setTimeout(function () { URL.revokeObjectURL(url); },1000);
     }
+    function workspaceFeedback(message, failed) {
+      connection.textContent = message;
+      var result = one('[data-browser-sync-result]');
+      if (result) {
+        result.setAttribute('role', failed ? 'alert' : 'status');
+        result.textContent = message;
+      }
+    }
     var backupBtn = one('[data-browser-backup]');
+    [backupBtn, one('[data-browser-import]'), one('[data-browser-org-export]'), one('[data-browser-sync-preview]')].forEach(function (control) {
+      if (control) control.dataset.workspaceOwned = 'true';
+    });
     if (backupBtn) backupBtn.addEventListener('click', async function () {
-      try { var state=await workspace.exportData(); download('org-museum-browser-workspace.json',JSON.stringify(state,null,2)); connection.textContent='已导出全部会话、结论、关系与本地增补。'; }
-      catch (error) { connection.textContent=error.message; }
+      try { var state=await workspace.exportData(); download('org-museum-browser-workspace.json',JSON.stringify(state,null,2)); workspaceFeedback('已导出全部会话、结论、关系与本地增补。'); }
+      catch (error) { workspaceFeedback(error.message, true); }
     });
     var orgExportBtn = one('[data-browser-org-export]');
     if (orgExportBtn) orgExportBtn.addEventListener('click', async function () {
-      try { var state=await workspace.exportData(); if (!state.patches.length) throw new Error('尚无已确认的本地 Org 增补'); download('org-museum-confirmed-additions.org',state.patches.map(function (p) { return '# 来源笔记：'+p.targetPageId+'\n# 原文版本：'+p.baseHash+'\n'+p.org; }).join('\n\n'),'text/plain;charset=utf-8'); connection.textContent='已导出经确认的 Org 增补；原笔记尚未修改。'; }
-      catch (error) { connection.textContent=error.message; }
+      try { var state=await workspace.exportData(); if (!state.patches.length) throw new Error('尚无已确认的本地 Org 增补'); download('org-museum-confirmed-additions.org',state.patches.map(function (p) { return '# 来源笔记：'+p.targetPageId+'\n# 原文版本：'+p.baseHash+'\n'+p.org; }).join('\n\n'),'text/plain;charset=utf-8'); workspaceFeedback('已导出经确认的 Org 增补；原笔记尚未修改。'); }
+      catch (error) { workspaceFeedback(error.message, true); }
     });
     var importInput = one('[data-browser-import]');
     if (importInput) importInput.addEventListener('change', async function (event) {
-      try { var file=event.target.files[0]; if (!file) return; if (file.size>20*1024*1024) throw new Error('备份过大，请分批导入'); await workspace.importData(JSON.parse(await file.text())); connection.textContent='备份已合并，现有记录未被覆盖。'; window.dispatchEvent(new CustomEvent('org-museum-ai-channel-change')); }
-      catch (error) { connection.textContent=error.message; } finally { event.target.value=''; }
+      try { var file=event.target.files[0]; if (!file) return; if (file.size>20*1024*1024) throw new Error('备份过大，请分批导入'); await workspace.importData(JSON.parse(await file.text())); workspaceFeedback('备份已合并，现有记录未被覆盖。'); window.dispatchEvent(new CustomEvent('org-museum-ai-channel-change')); }
+      catch (error) { workspaceFeedback('备份导入失败：'+error.message, true); } finally { event.target.value=''; }
     });
     var syncPreviewBtn = one('[data-browser-sync-preview]');
     if (syncPreviewBtn) syncPreviewBtn.addEventListener('click', async function () {
@@ -203,7 +214,7 @@
         var confirm=document.createElement('button'); confirm.type='button'; confirm.textContent='确认同步到 Emacs';
         confirm.addEventListener('click',async function () { confirm.disabled=true; try { var result=await emacsApi('browser-sync-confirm',{transactionId:resultToken}); await workspace.acknowledge(result); connection.textContent=result.message; area.replaceChildren(); window.dispatchEvent(new CustomEvent('org-museum-ai-channel-change')); } catch (error) { confirm.disabled=false; connection.textContent=error.message; } });
         var resultToken=result.transactionId; area.appendChild(confirm);
-      } catch (error) { connection.textContent=error.message; }
+      } catch (error) { workspaceFeedback(error.message, true); }
     });
     function displaySources() {
       var holder = one('[data-browser-sources]');

@@ -187,7 +187,7 @@ Empty string: quick-chat is deprecated in favor of unified conversation workspac
       "<div data-ai-directions></div></section>"
       "<section class=\"museum-ai-sediment\"><h3>建议沉淀</h3>"
       "<div data-ai-proposals></div><div data-ai-sediment-preview></div></section>"
-      "<form data-ai-message-form><label for=\"museum-ai-followup\">继续讨论或自由追问</label>"
+      "<form data-ai-message-form><label for=\"museum-ai-followup\">继续讨论或自由追问</label><div class=\"prompt-starter-row\" role=\"group\" aria-label=\"快捷提问推荐\"><span class=\"prompt-starter-label\">💡 启发提问：</span><button type=\"button\" class=\"prompt-starter-pill\" data-prompt-text=\"请用通俗的大白话和生活中的类比，解释这篇笔记的核心概念。\">通俗比喻解释</button><button type=\"button\" class=\"prompt-starter-pill\" data-prompt-text=\"针对选中的笔记，零基础学习者应该分哪几个阶段循序渐进掌握？\">学习步骤规划</button><button type=\"button\" class=\"prompt-starter-pill\" data-prompt-text=\"初学者在实践这篇笔记的内容时，最容易踩哪几个坑？如何避免？\">常见避坑指南</button><button type=\"button\" class=\"prompt-starter-pill\" data-prompt-text=\"请为这篇笔记生成 3 道主动回忆（Active Recall）自测填空题，帮我检验理解。\">生成自测习题</button></div>"
       "<div class=\"museum-ai-reference\" data-ai-reference hidden></div>"
       "<textarea id=\"museum-ai-followup\" data-ai-followup rows=\"3\" placeholder=\"输入你想进一步弄清的问题\"></textarea>"
       "<button type=\"submit\">发送问题</button></form></div>"

@@ -71,7 +71,7 @@ async (page) => {
   if (await syntax.getAttribute('aria-pressed') !== 'true' || !(await page.locator('.museum-org-view').isVisible())) throw Error('Org view did not open');
   await syntax.click();
   if (await syntax.getAttribute('aria-pressed') !== 'false') throw Error('Reading view did not recover');
-  await page.locator('[data-ai-toggle]').click();
+  await page.keyboard.press('Control+i');
   if (await page.locator('#museum-ai-panel').getAttribute('aria-hidden') === 'true') throw Error('AI drawer did not open');
   await page.locator('[data-ai-close]').click();
   if (await page.locator('#museum-ai-panel').getAttribute('aria-hidden') !== 'true') throw Error('AI drawer did not close');
