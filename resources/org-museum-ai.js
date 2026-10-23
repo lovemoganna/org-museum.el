@@ -686,6 +686,13 @@
       document.body.classList.toggle("museum-ai-open", open);
       panel.inert = !open;
       panel.setAttribute("aria-hidden", String(!open));
+      if (open) {
+        panel.removeAttribute("hidden");
+        panel.style.display = "flex";
+      } else {
+        panel.setAttribute("hidden", "");
+        panel.style.display = "none";
+      }
       if (trigger) trigger.setAttribute("aria-expanded", String(open));
       if (userAction) {
         try { localStorage.setItem("copilot_sidebar_open", String(open)); } catch (_) {}
