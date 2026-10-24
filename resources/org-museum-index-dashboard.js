@@ -959,12 +959,19 @@ function closeSuggest(){
   if(suggestEl){
     suggestEl.hidden=true;
     suggestEl.textContent='';
+    suggestEl.setAttribute('role','listbox');
   }
   selectedSuggestIndex=-1;
-  if(search)search.setAttribute('aria-expanded','false');
+  if(search){
+    search.setAttribute('aria-expanded','false');
+    search.removeAttribute('aria-activedescendant');
+  }
 }
 
 function updateSuggestSelection(items){
+  var active=items[selectedSuggestIndex];
+  if(active)search.setAttribute('aria-activedescendant',active.getAttribute('id'));
+  else search.removeAttribute('aria-activedescendant');
   items.forEach(function(item,i){
     var isSel=i===selectedSuggestIndex;
     item.classList.toggle('is-selected',isSel);
@@ -980,10 +987,13 @@ function renderSuggest(){
   var query=search.value.trim().toLocaleLowerCase();
   if(!query){closeSuggest();return;}
   var matches=state.filteredData.slice(0,7);
+  search.removeAttribute('aria-activedescendant');
   suggestEl.textContent='';
   if(!matches.length){
+    suggestEl.setAttribute('role','status');
     var emptyLi=document.createElement('li');
     emptyLi.className='museum-index-suggest-item';
+    emptyLi.setAttribute('role','presentation');
     emptyLi.style.pointerEvents='none';
     var emptyCopy=document.createElement('span');
     emptyCopy.className='museum-index-suggest-context';
@@ -991,15 +1001,17 @@ function renderSuggest(){
     emptyLi.appendChild(emptyCopy);
     suggestEl.appendChild(emptyLi);
     suggestEl.hidden=false;
-    search.setAttribute('aria-expanded','true');
+    search.setAttribute('aria-expanded','false');
     selectedSuggestIndex=-1;
     return;
   }
   selectedSuggestIndex=-1;
+  suggestEl.setAttribute('role','listbox');
   matches.forEach(function(page,idx){
     var li=document.createElement('li');
     li.className='museum-index-suggest-item';
     li.setAttribute('role','option');
+    li.setAttribute('aria-selected','false');
     li.setAttribute('id','suggest-item-'+idx);
     li.dataset.index=String(idx);
 
@@ -1042,6 +1054,7 @@ function renderSuggest(){
 
   var footer=document.createElement('li');
   footer.className='museum-index-suggest-footer';
+  footer.setAttribute('role','presentation');
   footer.innerHTML='<span>共找到 '+state.filteredData.length+' 篇笔记 · ↑↓ 键导航 · Enter 打开</span><span>Esc 关闭</span>';
   suggestEl.appendChild(footer);
 
@@ -1095,7 +1108,7 @@ if(search){
     }else if(event.key==='ArrowUp'){
       if(items.length>0&&!suggestEl.hidden){
         event.preventDefault();
-        selectedSuggestIndex=(selectedSuggestIndex-1+items.length)%items.length;
+        selectedSuggestIndex=selectedSuggestIndex<0?items.length-1:(selectedSuggestIndex-1+items.length)%items.length;
         updateSuggestSelection(items);
         return;
       }

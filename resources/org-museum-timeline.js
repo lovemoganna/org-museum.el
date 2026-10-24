@@ -94,6 +94,7 @@ var grainSelector=document.getElementById('timeline-grain-selector');
 var grainFilters=document.getElementById('timeline-grain-filters');
 var viewSelector=document.getElementById('timeline-view-selector');
 var calendarView=document.getElementById('timeline-calendar-view');
+var calendarDetail=document.getElementById('timeline-calendar-detail');
 
 var params=new URLSearchParams(location.search);
 if('scrollRestoration' in history)history.scrollRestoration='manual';
@@ -663,7 +664,7 @@ function applyMobileFocus(page){
     mobileDetail.dataset.list=mobileListSignature;
     mobileDetail.replaceChildren(detailContent(page,true));
   }
-  if(state.view==='calendar')calendarView.appendChild(mobileDetail);
+  if(state.view==='calendar')calendarDetail.appendChild(mobileDetail);
   else entry.item.appendChild(mobileDetail);
   mobileDetail.hidden=false;
 }
@@ -928,6 +929,7 @@ function switchView(nextView, writeHistory){
     });
   }
   if(calendarView)calendarView.hidden=!isCal;
+  if(calendarDetail)calendarDetail.hidden=!isCal;
   if(canvas)canvas.hidden=isCal;
   var toolbar=document.querySelector('.timeline-canvas-toolbar');
   if(toolbar)toolbar.hidden=isCal;
@@ -1322,7 +1324,8 @@ function setFilterOpen(open,returnFocus){
     filterSheet.dataset.open=filterOpen?'true':'false';
     filterSheet.setAttribute('role',mobile?'dialog':'region');
     filterSheet.setAttribute('aria-hidden',mobile&&!filterOpen?'true':'false');
-    filterSheet.setAttribute('aria-modal',filterOpen?'true':'false');
+    if(mobile&&filterOpen)filterSheet.setAttribute('aria-modal','true');
+    else filterSheet.removeAttribute('aria-modal');
     filterSheet.inert=mobile&&!filterOpen;
   }
   if(filterToggle)filterToggle.setAttribute('aria-expanded',filterOpen?'true':'false');

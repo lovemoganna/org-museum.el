@@ -127,6 +127,7 @@ loopbackCuration.window.orgMuseumCuration.openRelation({sourceId:'source',source
 assert.match(loopbackCuration.dialog.innerHTML,/>预览差异<\/button>/);
 assert.match(loopbackCuration.nodes.guidance.textContent,/浏览器中生成写入前差异/);
 function themeFixture(url,stored,blocked=false,homeHref=null,media=null){
+ const documentListeners=[];
  const listeners={},button={setAttribute(){},querySelector(){return null;},addEventListener(e,f){this[e]=f;}};
  const systemButton={setAttribute(){},addEventListener(e,f){this[e]=f;}};
  const returnLink={href:'',textContent:''};
@@ -134,14 +135,19 @@ function themeFixture(url,stored,blocked=false,homeHref=null,media=null){
   if(selector==='.museum-wordmark[href]'&&homeHref)return {getAttribute(){return homeHref;}};
   if(selector==='[data-reading-return]')return returnLink;
   return null;
- },querySelectorAll(selector){return selector==='[data-theme-toggle]'?[button]:selector==='[data-theme-system]'?[systemButton]:[];},readyState:'complete',addEventListener(){}};
+ },querySelectorAll(selector){return selector==='[data-theme-toggle]'?[button]:selector==='[data-theme-system]'?[systemButton]:[];},readyState:'complete',addEventListener(type,fn){documentListeners.push({type,fn});}};
  const window={addEventListener(e,f){listeners[e]=f;}};
  if(media) window.matchMedia=()=>media;
  const store={getItem(){if(blocked)throw Error('blocked');return stored;},setItem(k,v){stored=v;}};
  const history={state:null,replaced:'',replaceState(_state,_title,next){this.replaced=String(next);}};
  const context={window,document,localStorage:store,URL,location:new URL(url),history};vm.runInNewContext(themeSource,context);
- return {document,window,button,systemButton,listeners,history,returnLink};
+ return {document,window,button,systemButton,listeners,history,returnLink,context,documentListeners};
 }
+const duplicateTheme=themeFixture('https://example.test/index.html','dark');
+const bindingsBefore=duplicateTheme.documentListeners.length;
+assert(bindingsBefore>0);
+vm.runInNewContext(themeSource,duplicateTheme.context);
+assert.equal(duplicateTheme.documentListeners.length,bindingsBefore,'Loading another theme URL version must not bind duplicate handlers');
 // Real URL transitions: nested exports, local files, filtering, and untrusted returns.
 for(const rootUrl of ['https://example.test/wiki/','file:///C:/notes/dist/']){
  const home=themeFixture(rootUrl+'index.html?q=DuckDB&category=Sql&tag=duckdb&status=draft&from=2026-09-01&to=2026-09-30&sort=title-asc',null,true,'index.html');

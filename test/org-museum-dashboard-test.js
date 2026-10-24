@@ -91,7 +91,7 @@ const initialPages = [
   }
 ];
 
-function createMockEnvironment(pages, customGeneratedAt) {
+function createMockEnvironment(pages, customGeneratedAt, withSuggestions = false) {
   const elements = new Map();
   const listeners = new Map();
 
@@ -145,6 +145,7 @@ function createMockEnvironment(pages, customGeneratedAt) {
       }
     }
     setAttribute(name, val) { this.attributes.set(name, String(val)); }
+    removeAttribute(name) { this.attributes.delete(name); }
     setCustomValidity(message) { this.validationMessage = message; }
     getAttribute(name) { return this.attributes.get(name) || (this[name] !== undefined ? this[name] : null); }
     focus() {}
@@ -164,8 +165,9 @@ function createMockEnvironment(pages, customGeneratedAt) {
     querySelectorAll(sel) {
       const results = [];
       function match(node) {
-        if (!node) return;
-        if (sel === 'a[href]' && (node.tagName === 'A' || node.attributes.has('href'))) results.push(node);
+        if (!node || !node.classList) return;
+        if (sel === '.museum-index-suggest-item[role="option"]' && node.classList.contains('museum-index-suggest-item') && node.getAttribute('role') === 'option') results.push(node);
+        else if (sel === 'a[href]' && (node.tagName === 'A' || node.attributes.has('href'))) results.push(node);
         else if (sel.startsWith('.') && node.classList.contains(sel.slice(1))) results.push(node);
         else if (sel.startsWith('[data-facet-expand="') && node.dataset.facetExpand === sel.slice(20, -2)) results.push(node);
         else if (sel.startsWith('[data-dashboard-metric="') && node.attributes.get('data-dashboard-metric') === sel.slice(24, -2)) results.push(node);
@@ -191,6 +193,7 @@ function createMockEnvironment(pages, customGeneratedAt) {
   });
 
   const search = register('org-museum-global-search', 'input');
+  if (withSuggestions) register('museum-index-suggest', 'ul');
   const resultList = register('index-search-list');
   const empty = register('index-search-empty');
   const heading = register('index-results-heading');
@@ -257,6 +260,7 @@ function createMockEnvironment(pages, customGeneratedAt) {
       return [];
     },
     createElement: (tag) => new MockElement(tag),
+    createTextNode: (text) => ({textContent: text}),
     addEventListener: (evt, fn) => {
       if (!listeners.has(evt)) listeners.set(evt, []);
       listeners.get(evt).push(fn);
@@ -698,3 +702,36 @@ console.log('✓ Category button in search results is interactive and synchroniz
 console.log('\n========================================');
 console.log('ALL DASHBOARD INTEGRATION TESTS PASSED!');
 console.log('========================================');
+
+// Exercise the real combobox event handlers and their accessible selection state.
+const suggestEnv = createMockEnvironment(initialPages, undefined, true);
+const suggestInput = suggestEnv.search;
+const suggestList = suggestEnv.elements.get('museum-index-suggest');
+function typeSuggest(value) {
+  suggestInput.value = value;
+  suggestInput.listeners.get('input').forEach(fn => fn({}));
+}
+function suggestKey(key) {
+  suggestInput.listeners.get('keydown').forEach(fn => fn({key, preventDefault() {}}));
+}
+typeSuggest('DuckDB');
+let options = suggestList.querySelectorAll('.museum-index-suggest-item[role="option"]');
+assert(options.length >= 2);
+assert.equal(suggestList.querySelector('.museum-index-suggest-footer').getAttribute('role'), 'presentation');
+suggestKey('ArrowUp');
+assert.equal(suggestInput.getAttribute('aria-activedescendant'), options.at(-1).getAttribute('id'), 'First ArrowUp must announce the last suggestion');
+suggestKey('ArrowDown');
+assert.equal(suggestInput.getAttribute('aria-activedescendant'), options[0].getAttribute('id'), 'ArrowDown wraps to and announces the first suggestion');
+assert.equal(options[0].getAttribute('aria-selected'), 'true');
+suggestKey('Escape');
+assert.equal(suggestInput.getAttribute('aria-activedescendant'), null, 'Closing removes the active descendant');
+assert.equal(suggestInput.getAttribute('aria-expanded'), 'false');
+typeSuggest('DuckDB');suggestKey('ArrowDown');typeSuggest('not-a-note');
+assert.equal(suggestInput.getAttribute('aria-activedescendant'), null, 'Replacing options must not leave a stale descendant');
+assert.equal(suggestList.children[0].getAttribute('role'), 'presentation');
+assert.equal(suggestList.getAttribute('role'), 'status');
+assert.equal(suggestInput.getAttribute('aria-expanded'), 'false');
+typeSuggest('DuckDB');
+assert.equal(suggestList.getAttribute('role'), 'listbox');
+assert.equal(suggestInput.getAttribute('aria-expanded'), 'true');
+console.log('PASS: combobox active descendant, initial ArrowUp, wrap, close and empty-result reset');

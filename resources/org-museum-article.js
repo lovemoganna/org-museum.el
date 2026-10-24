@@ -205,20 +205,6 @@ function initCodeBlocks(){
     var m=pre.className.match(/(?:^|\s)src-([^\s]+)/);
     return langMap[m?m[1]:'text']||(m?m[1]:'plaintext');
   }
-  function copyText(text,done,fail){
-    if(navigator.clipboard&&navigator.clipboard.writeText){
-      navigator.clipboard.writeText(text).then(done,function(){fallback();});
-    }else{fallback();}
-    function fallback(){
-      var ta=document.createElement('textarea');
-      ta.value=text;ta.setAttribute('readonly','');
-      ta.style.position='fixed';ta.style.left='-9999px';
-      document.body.appendChild(ta);ta.select();
-      var copied=false;
-      try{copied=document.execCommand('copy')===true;}catch(e){copied=false;}
-      document.body.removeChild(ta);(copied?done:fail)();
-    }
-  }
   blocks.forEach(function(pre){
     if(pre.dataset.orgMuseumCodeReady==='1')return;
     pre.dataset.orgMuseumCodeReady='1';
@@ -239,42 +225,7 @@ function initCodeBlocks(){
     code.setAttribute('data-language',lang);
     codeBlocks.push(pre);
     if(lang!=='plaintext')codes.push(code);
-    var lineCount=(code.textContent||'').replace(/\r?\n$/,'').split(/\r?\n/).length;
-    var isLong=lineCount>18||code.getBoundingClientRect().height>320;
-    var lbl=document.createElement('span');lbl.className='code-lang-label';
-    lbl.textContent=(lang==='plaintext'?'TEXT':lang).toUpperCase();
-    var btn=document.createElement('button');btn.className='code-copy-btn';btn.textContent='复制';
-    btn.type='button';
-    btn.setAttribute('aria-label','复制代码');
-    btn.onclick=function(){
-      copyText(code.innerText||code.textContent,function(){
-        btn.textContent='已复制';btn.classList.add('copied');
-        setTimeout(function(){btn.textContent='复制';btn.classList.remove('copied');},2000);
-      },function(){
-        btn.textContent='复制失败';btn.classList.remove('copied');
-        setTimeout(function(){btn.textContent='复制';},2500);
-      });
-    };
-    pre.insertBefore(lbl,pre.firstChild);
-    if(isLong){
-      pre.classList.add('org-museum-code-collapsed');
-      var toggle=document.createElement('button');
-      toggle.className='code-copy-btn code-toggle-btn';
-      toggle.type='button';
-      toggle.textContent='展开';
-      toggle.setAttribute('aria-label','展开代码块');
-      toggle.setAttribute('aria-expanded','false');
-      toggle.onclick=function(){
-        var expanded=pre.classList.toggle('org-museum-code-expanded');
-        pre.classList.toggle('org-museum-code-collapsed',!expanded);
-      toggle.textContent=expanded?'收起':'展开';
-      toggle.setAttribute('aria-label',expanded?'收起代码块':'展开代码块');
-      toggle.setAttribute('aria-expanded',expanded?'true':'false');
-      scheduleCodeScrollAccess();
-      };
-      pre.insertBefore(toggle,lbl.nextSibling);
-      pre.insertBefore(btn,toggle.nextSibling);
-    }else pre.insertBefore(btn,lbl.nextSibling);
+    window.orgMuseumPrepareCodeBlock(pre,code,lang);
   });
   var codeAccessFrame=0;
   function syncCodeScrollAccess(){

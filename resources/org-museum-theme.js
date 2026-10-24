@@ -1,6 +1,75 @@
 (function () {
   "use strict";
 
+  // Older Org HTML_HEAD settings may reference another version of this file.
+  if (window.orgMuseumThemeBootstrapped) return;
+  window.orgMuseumThemeBootstrapped = true;
+
+  // Shared controls for article and dynamically inserted related-reading code.
+  var codeSequence = 0;
+  window.orgMuseumPrepareCodeBlock = function (pre, code, language) {
+    if (pre.dataset.codeControlsReady === '1') return;
+    pre.dataset.codeControlsReady = '1';
+    if (!code) {
+      code = document.createElement('code');
+      code.innerHTML = pre.innerHTML;
+      pre.replaceChildren(code);
+    }
+    if (!code.id) {
+      do { code.id = 'museum-code-body-' + (++codeSequence); }
+      while (document.getElementById(code.id) && document.getElementById(code.id) !== code);
+    }
+    pre.classList.add('org-museum-code-block', 'org-museum-code-collapsed');
+    code.classList.add('org-museum-code');
+    code.hidden = true;
+    var label = document.createElement('span');
+    label.className = 'code-lang-label';
+    label.textContent = (language || 'code').toUpperCase();
+    var toggle = document.createElement('button');
+    toggle.type = 'button'; toggle.className = 'code-copy-btn code-toggle-btn';
+    toggle.textContent = '展开';
+    toggle.setAttribute('aria-label', '展开代码块');
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.setAttribute('aria-controls', code.id);
+    toggle.onclick = function () {
+      var expanded = code.hidden;
+      code.hidden = !expanded;
+      pre.classList.toggle('org-museum-code-expanded', expanded);
+      pre.classList.toggle('org-museum-code-collapsed', !expanded);
+      toggle.textContent = expanded ? '收起' : '展开';
+      toggle.setAttribute('aria-label', expanded ? '收起代码块' : '展开代码块');
+      toggle.setAttribute('aria-expanded', String(expanded));
+    };
+    var copy = document.createElement('button');
+    copy.type = 'button'; copy.className = 'code-copy-btn'; copy.textContent = '复制';
+    copy.setAttribute('aria-label', '复制代码');
+    copy.setAttribute('aria-live', 'polite');
+    copy.onclick = function () {
+      // textContent preserves the authored text even while hidden or wrapped.
+      var text = code.textContent;
+      function feedback(ok) {
+        copy.textContent = ok ? '已复制' : '复制失败';
+        copy.setAttribute('aria-label', ok ? '已复制代码' : '复制失败，请重试');
+        setTimeout(function () { copy.textContent = '复制'; copy.setAttribute('aria-label', '复制代码'); }, 2000);
+      }
+      function fallback() {
+        var input = document.createElement('textarea');
+        input.value = text; input.setAttribute('readonly', '');
+        input.style.position = 'fixed'; input.style.left = '-9999px';
+        document.body.appendChild(input); input.select();
+        var ok = false;
+        try { ok = document.execCommand('copy') === true; } catch (_) {}
+        input.remove(); copy.focus(); feedback(ok);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { feedback(true); }, fallback);
+      } else fallback();
+    };
+    pre.insertBefore(label, code);
+    pre.insertBefore(toggle, code);
+    pre.insertBefore(copy, code);
+  };
+
   var key = "org-museum-theme";
   var systemScheme = typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: dark)") : null;
 
@@ -1443,16 +1512,57 @@
     });
   }
 
+  var recallTargets = new Map();
+  var recallSelector = ".article-container :is(strong,b,.org-bold,.museum-cloze), .related-paper :is(strong,b,.org-bold,.museum-cloze), .museum-md :is(strong,b,.org-bold,.museum-cloze)";
+
+  function syncRecallState(target) {
+    var revealed = target.classList.contains("is-revealed");
+    target.setAttribute("aria-pressed", String(revealed));
+    target.setAttribute("aria-label", revealed ? "隐藏重点内容：" + target.textContent.trim() : "显示重点内容");
+  }
+
+  function syncActiveRecallTargets() {
+    var active = document.documentElement && document.documentElement.dataset.activeRecall === "true";
+    var targets = active ? Array.from(document.querySelectorAll(recallSelector)).filter(function (target) {
+      return !target.closest("button, a, pre, code, summary, [contenteditable], .museum-next-learning-hub, .museum-study-guide") &&
+        !(target.parentElement && target.parentElement.closest("strong,b,.org-bold,.museum-cloze"));
+    }) : [];
+    var current = new Set(targets);
+    recallTargets.forEach(function (saved, target) {
+      if (current.has(target)) return;
+      Object.keys(saved.attributes).forEach(function (name) {
+        var value = saved.attributes[name];
+        if (value === null) target.removeAttribute(name);
+        else target.setAttribute(name, value);
+      });
+      target.classList.toggle("is-revealed", saved.revealed);
+      target.removeAttribute("data-museum-recall");
+      recallTargets.delete(target);
+    });
+    targets.forEach(function (target) {
+      if (recallTargets.has(target)) return;
+      var attributes = {};
+      ["role", "tabindex", "aria-label", "aria-pressed"].forEach(function (name) { attributes[name] = target.getAttribute(name); });
+      recallTargets.set(target, {attributes: attributes, revealed: target.classList.contains("is-revealed")});
+      target.setAttribute("data-museum-recall", "");
+      target.setAttribute("role", "button");
+      target.setAttribute("tabindex", "0");
+      syncRecallState(target);
+    });
+  }
+
   function initActiveRecall() {
     if (typeof document === "undefined" || !document.body || typeof document.addEventListener !== "function") return;
-    document.addEventListener("click", function (e) {
+    function activate(e) {
       if (document.documentElement && document.documentElement.dataset.activeRecall !== "true") return;
-      var cloze = e.target && e.target.closest && e.target.closest("strong, b, .org-bold, .museum-cloze");
+      var cloze = e.target && e.target.closest && e.target.closest("[data-museum-recall]");
       if (!cloze) return;
-      if (!cloze.closest(".article-container, .related-paper, .museum-md") ||
-          cloze.closest("button, a, .museum-next-learning-hub, .museum-study-guide")) return;
-      if (cloze.closest(".museum-settings-panel") || cloze.closest(".museum-topbar") || cloze.closest("#museum-ai-panel")) return;
+      if (e.type === "keydown") {
+        if (e.isComposing || e.repeat || (e.key !== "Enter" && e.key !== " ")) return;
+        e.preventDefault();
+      }
       cloze.classList.toggle("is-revealed");
+      syncRecallState(cloze);
       try {
         var quests = JSON.parse(localStorage.getItem("org-museum-learning-quests") || "{}");
         if (!quests.active_recall) {
@@ -1462,7 +1572,17 @@
           if (m && m._updateQuestsUI) m._updateQuestsUI();
         }
       } catch (_) {}
-    });
+    }
+    document.addEventListener("click", activate);
+    document.addEventListener("keydown", activate);
+    syncActiveRecallTargets();
+    var main = typeof MutationObserver === "function" && document.getElementById("main-content");
+    if (main) {
+      new MutationObserver(function (records) {
+        if (document.documentElement.dataset.activeRecall !== "true") return;
+        if (records.some(function (record) { return record.addedNodes.length || record.removedNodes.length; })) syncActiveRecallNotice();
+      }).observe(main, {childList: true, subtree: true});
+    }
   }
 
   function bindControls() {
@@ -1557,15 +1677,20 @@
   }
 
   function syncActiveRecallNotice() {
+    syncActiveRecallTargets();
     var isArticle = !!(
       (typeof document.querySelector === "function" && document.querySelector(".article-container")) ||
+      (typeof document.querySelector === "function" && document.querySelector(".related-paper, .museum-md")) ||
       (typeof document.querySelector === "function" && document.querySelector("#content.museum-article-layout")) ||
       (typeof document.querySelector === "function" && document.querySelector("#main-scroll"))
     );
-    if (!isArticle) return;
+    var notice = typeof document.getElementById === "function" ? document.getElementById("active-recall-notice") : null;
+    if (!isArticle) {
+      if (notice) notice.hidden = true;
+      return;
+    }
 
     var isActive = document.documentElement && document.documentElement.dataset.activeRecall === "true";
-    var notice = typeof document.getElementById === "function" ? document.getElementById("active-recall-notice") : null;
 
     if (isActive) {
       if (!notice && typeof document.createElement === "function") {
@@ -1576,10 +1701,11 @@
           notice.setAttribute("role", "status");
           notice.setAttribute("aria-live", "polite");
         }
-        notice.innerHTML = '<span class="recall-icon">🧠</span><span class="recall-msg"><strong>自测模式生效中</strong>：重点概念已模糊处理，轻触或悬停可逐一揭示。</span><button type="button" class="recall-exit-btn" aria-label="关闭自测模式">退出自测</button>';
+        notice.innerHTML = '<span class="recall-icon">🧠</span><span class="recall-msg"><strong>自测模式生效中</strong>：轻触、悬停或用 Tab 聚焦后按 Enter / 空格揭示重点。</span><button type="button" class="recall-exit-btn" aria-label="关闭自测模式">退出自测</button>';
 
         var targetContainer = (typeof document.querySelector === "function" ? document.querySelector("#museum-article-identity") : null) ||
                               (typeof document.querySelector === "function" ? document.querySelector("#main-scroll") : null) ||
+                              (typeof document.getElementById === "function" ? document.getElementById("main-content") : null) ||
                               document.body;
         if (targetContainer && targetContainer.parentNode && targetContainer.id === "museum-article-identity") {
           targetContainer.parentNode.insertBefore(notice, targetContainer.nextSibling);

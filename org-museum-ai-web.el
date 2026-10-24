@@ -22,13 +22,6 @@ _PAGE is the current note object, OUT-FILE is the target HTML file path."
                          (format "%s?pageId=%s" base-href (url-hexify-string page-id))
                        base-href)))
     (concat
-     "<button type=\"button\" class=\"museum-ai-trigger\" data-ai-toggle "
-     "aria-label=\"打开 AI Copilot (Ctrl+I)\" title=\"打开 AI Copilot (Ctrl+I)\">\n"
-     "  <span class=\"museum-ai-trigger-icon\" aria-hidden=\"true\"></span>\n"
-     "  <span class=\"museum-ai-trigger-text\">AI Copilot</span>\n"
-     "  <span class=\"museum-ai-trigger-dot\" data-ai-trigger-dot data-state=\"idle\" aria-hidden=\"true\"></span>\n"
-     "  <kbd class=\"museum-ai-trigger-shortcut\" data-ai-trigger-shortcut>Ctrl+I</kbd>\n"
-     "</button>\n"
      "<aside id=\"museum-ai-panel\" class=\"museum-ai-panel museum-ai-sidebar\" "
      "aria-label=\"AI Copilot 协作面板\" aria-hidden=\"true\" inert hidden style=\"display: none;\">"
      "<header class=\"museum-ai-copilot-header\">"

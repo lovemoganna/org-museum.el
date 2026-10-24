@@ -267,6 +267,7 @@ function createTimelineEnv(initialUrl = 'https://example.test/timeline.html', ex
     'timeline-grain-filters': makeEl('div', 'timeline-grain-filters'),
     'timeline-view-selector': makeEl('div', 'timeline-view-selector'),
     'timeline-calendar-view': makeEl('div', 'timeline-calendar-view'),
+    'timeline-calendar-detail': makeEl('div', 'timeline-calendar-detail'),
     'timeline-time-filters': makeEl('div', 'timeline-time-filters'),
     'timeline-date-start': makeEl('input', 'timeline-date-start'),
     'timeline-date-end': makeEl('input', 'timeline-date-end'),
@@ -606,10 +607,22 @@ require('node:test')('Mobile calendar selection exposes the shared note details 
   mobileCalendarView.querySelector('.timeline-calendar-note-more').click();
   mobileCalendarView.querySelectorAll('.timeline-calendar-note-item').at(-1).click();
   await new Promise(resolve => setTimeout(resolve, 0));
-  const mobileCalendarDetail = mobileCalendarView.querySelector('.timeline-mobile-detail');
+  const detailHost = mobileCalendar.docEls['timeline-calendar-detail'];
+  const mobileCalendarDetail = detailHost.querySelector('.timeline-mobile-detail');
   assert(mobileCalendarDetail && !mobileCalendarDetail.hidden, 'Calendar selection must expose the shared note details on mobile');
+  assert.equal(mobileCalendarView.querySelector('.timeline-mobile-detail'), null, 'Details must stay outside the horizontally scrollable calendar');
   assert.equal(mobileCalendarDetail.dataset.pageId, 'oct-extra-3');
+  mobileCalendar.docEls['timeline-view-selector'].children.find(c => c.dataset.view === 'timeline').click();
+  assert.equal(detailHost.hidden, true, 'Calendar details host must hide when returning to the timeline');
 });
 
 console.log('ALL TIMELINE TIME & GRAIN FILTER TESTS PASSED!');
+assert.equal(docEls['timeline-filter-sheet'].getAttribute('role'), 'region');
+assert.equal(docEls['timeline-filter-sheet'].getAttribute('aria-modal'), null, 'Desktop filter region must not claim modal dialog semantics');
+const modalEnv = createTimelineEnv('https://example.test/timeline.html', 0, 390);
+modalEnv.docEls['timeline-filter-toggle'].click();
+assert.equal(modalEnv.docEls['timeline-filter-sheet'].getAttribute('role'), 'dialog');
+assert.equal(modalEnv.docEls['timeline-filter-sheet'].getAttribute('aria-modal'), 'true');
+modalEnv.docEls['timeline-filter-close'].click();
+assert.equal(modalEnv.docEls['timeline-filter-sheet'].getAttribute('aria-modal'), null);
 console.log('========================================');

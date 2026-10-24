@@ -1,0 +1,35 @@
+async (page) => {
+ const base=new URL('/',page.url()).href;
+ const browser=page.context().browser();const results=[];
+ const profiles=[{name:'web',viewport:{width:1440,height:900}},{name:'android-emulation',viewport:{width:360,height:900},isMobile:true,hasTouch:true,userAgent:'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36'}];
+ for(const {name,...options} of profiles){
+  const context=await browser.newContext(options);await context.grantPermissions(['clipboard-read','clipboard-write'],{origin:base});const p=await context.newPage();
+  await p.goto(new URL('pages/ontology/ontology-evidence-evolution.html?org-museum-theme=light',base).href,{waitUntil:'load'});
+  if(await p.locator('[data-ai-toggle], .museum-ai-trigger').count())throw Error('Redundant AI button remains');
+  await p.keyboard.press('Control+i');await p.locator('#museum-ai-panel').waitFor({state:'visible'});await p.keyboard.press('Escape');await p.locator('#museum-ai-panel').waitFor({state:'hidden'});
+  for(const route of ['pages/ontology/ontology-evidence-evolution.html','related.html?source=ontology-evidence-evolution&target=ontology-concept-boundaries&mode=full']){
+   for(const theme of ['light','dark']){
+    for(const width of name==='web'?[768,1280,1440]:[360]){
+     await p.setViewportSize({width,height:900});
+     await p.goto(new URL(route+(route.includes('?')?'&':'?')+'org-museum-theme='+theme,base).href,{waitUntil:'load'});
+     const blocks=p.locator('pre.org-museum-code-block');await blocks.first().waitFor({state:'visible'});
+     const initial=await blocks.evaluateAll(nodes=>nodes.map(e=>({hidden:e.querySelector('code').hidden,toggle:e.querySelector('.code-toggle-btn')?.getAttribute('aria-expanded'),copy:!!e.querySelector('.code-copy-btn:not(.code-toggle-btn)')})));
+     if(initial.some(e=>!e.hidden||e.toggle!=='false'||!e.copy))throw Error('Missing default folding or controls '+JSON.stringify(initial));
+     const first=blocks.first();const code=first.locator('code').first();const original=await code.textContent();
+     const copy=first.locator('.code-copy-btn:not(.code-toggle-btn)');await copy.click();
+     await p.waitForFunction(()=>[...document.querySelectorAll('.code-copy-btn')].some(b=>b.textContent==='已复制'));
+     const copied=await p.evaluate(()=>navigator.clipboard.readText());
+     // Windows clipboard normalizes LF to CRLF; all other text must match.
+     if(copied.replace(/\r\n/g,'\n')!==original.replace(/\r\n/g,'\n'))throw Error('Clipboard changed code content');
+     const toggle=first.locator('.code-toggle-btn');await toggle.press('Enter');await code.waitFor({state:'visible'});
+     const expanded=await first.evaluate(e=>{const code=e.querySelector('code'),a=e.querySelector('.code-toggle-btn').getBoundingClientRect(),b=e.querySelector('.code-copy-btn:not(.code-toggle-btn)').getBoundingClientRect();return {whiteSpace:getComputedStyle(code).whiteSpace,preOverflow:Math.max(0,e.scrollWidth-e.clientWidth),codeOverflow:Math.max(0,code.scrollWidth-code.clientWidth),buttonHeight:Math.min(a.height,b.height),buttonsOverlap:!(a.right<=b.left||b.right<=a.left),copyOpacity:getComputedStyle(e.querySelector('.code-copy-btn:not(.code-toggle-btn)')).opacity,pageOverflow:Math.max(0,document.documentElement.scrollWidth-innerWidth)}});
+     if(expanded.whiteSpace!=='pre-wrap'||expanded.preOverflow>1||expanded.codeOverflow>1||expanded.pageOverflow>1||expanded.buttonsOverlap||expanded.buttonHeight<44||expanded.copyOpacity!=='1')throw Error('Expanded code layout '+JSON.stringify({route,width,theme,...expanded}));
+     if(width===360&&theme==='dark')await p.screenshot({path:'output/code-controls-20261023/'+(route.startsWith('related')?'related':'article')+'-expanded-360.png'});
+     await toggle.press('Space');await code.waitFor({state:'hidden'});
+     if(width===360&&theme==='dark')await p.screenshot({path:'output/code-controls-20261023/'+(route.startsWith('related')?'related':'article')+'-collapsed-360.png'});
+     results.push({name,route,width,theme,blocks:initial.length,clipboard:'same content; OS line endings',keyboard:'Enter/Space',...expanded});
+    }
+   }
+  }await context.close();
+ }return {status:'PASS',results};
+}

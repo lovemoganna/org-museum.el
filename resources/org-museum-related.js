@@ -187,22 +187,7 @@ function renderPanel(side,page){
     panel.appendChild(full);
     if(typeof panel.querySelectorAll==='function'){
       panel.querySelectorAll('pre').forEach(function(pre){
-        if(pre.querySelector('.code-copy-btn'))return;
-        var btn=element('button','code-copy-btn','复制代码');
-        btn.type='button';btn.setAttribute('aria-label','复制代码');
-        btn.onclick=function(ev){
-          ev.stopPropagation();
-          var codeEl=pre.querySelector('code');
-          var codeText=codeEl?codeEl.innerText:pre.innerText;
-          if(navigator.clipboard&&navigator.clipboard.writeText){
-            navigator.clipboard.writeText(codeText).then(function(){
-              btn.textContent='已复制 ✓';
-              btn.classList.add('is-copied');
-              setTimeout(function(){btn.textContent='复制代码';btn.classList.remove('is-copied');},2000);
-            });
-          }
-        };
-        pre.appendChild(btn);
+        window.orgMuseumPrepareCodeBlock(pre,pre.querySelector('code'));
       });
     }
   }else panel.appendChild(summaryContent(page, side));

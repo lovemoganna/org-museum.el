@@ -3009,6 +3009,7 @@ body.museum-index-filtering .museum-index-shell {
 }
 .pathway-footer {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -3019,8 +3020,9 @@ body.museum-index-filtering .museum-index-shell {
 .pathway-start-btn {
   display: inline-flex;
   align-items: center;
+  min-height: var(--museum-touch-target);
   font: 600 11.5px/1.4 var(--font-ui);
-  color: #fff !important;
+  color: var(--museum-on-accent);
   background: var(--museum-primary);
   padding: 5px 12px;
   border-radius: var(--museum-radius-control);
@@ -3032,6 +3034,7 @@ body.museum-index-filtering .museum-index-shell {
   transform: translateX(1px);
 }
 .pathway-filter-btn {
+  min-height: var(--museum-touch-target);
   font: 400 11px/1.4 var(--font-technical);
   color: var(--museum-text-muted);
   background: transparent;
@@ -3629,16 +3632,29 @@ pre.org-museum-code-block {
   max-width: 100%;
   max-height: none;
   margin: 22px 0;
-  padding: 36px 16px 16px;
+  padding: 16px;
   overflow: auto;
   border: 1px solid var(--museum-code-border);
-  border-left: 3px solid var(--museum-accent);
   border-radius: var(--museum-radius-control);
   background: var(--museum-code-surface);
-  color: var(--mono-white);
-  font: 400 11px/1.7 var(--font-code);
-  font-variant-ligatures: contextual common-ligatures discretionary-ligatures;
-  white-space: pre;
+  color: var(--museum-code-ink);
+  font: 400 13px/1.75 var(--font-code);
+  font-variant-ligatures: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+pre.org-museum-code-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  column-gap: 4px;
+  align-items: center;
+  padding: 0;
+  white-space: normal;
+}
+
+.org-src-container > pre.org-museum-code-block {
+  margin: 0;
 }
 
 .results {
@@ -3667,6 +3683,62 @@ pre.org-museum-results:focus-visible {
 
 .org-museum-code {
   font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+pre.org-museum-code-block > code.org-museum-code {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 16px;
+  border: 0;
+  border-top: 1px solid var(--museum-border-soft);
+  border-radius: 0;
+  background: transparent;
+  color: var(--museum-code-ink);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: visible;
+}
+
+/* Quiet syntax colors belong to the reading theme, including late-loaded hljs. */
+.org-museum-code-block .org-museum-code :is([class*="hljs-"], [class^="org-"]) {
+  color: inherit;
+  background: transparent;
+  font-weight: inherit;
+}
+
+.org-museum-code-block .org-museum-code :is(.org-keyword, .org-builtin, .hljs-keyword, .hljs-selector-tag, .hljs-meta) {
+  color: var(--museum-code-keyword);
+}
+.org-museum-code-block .org-museum-code :is(.org-string, .org-doc, .hljs-string, .hljs-regexp, .hljs-attribute) {
+  color: var(--museum-code-string);
+}
+.org-museum-code-block .org-museum-code :is(.org-function-name, .org-type, .hljs-title, .hljs-type, .hljs-built_in) {
+  color: var(--museum-code-function);
+}
+.org-museum-code-block .org-museum-code :is(.org-constant, .org-variable-name, .hljs-variable, .hljs-literal, .hljs-number, .hljs-symbol, .hljs-bullet) {
+  color: var(--museum-code-number);
+}
+.org-museum-code-block .org-museum-code :is(.org-comment, .org-comment-delimiter, .hljs-comment, .hljs-quote) {
+  color: var(--museum-code-comment);
+  font-style: normal;
+}
+
+pre.org-museum-code-block > code[hidden] {
+  display: none !important;
+}
+
+@media print {
+  pre.org-museum-code-block > code[hidden] {
+    display: block !important;
+  }
 }
 
 .code-highlight-status {
@@ -3678,8 +3750,8 @@ pre.org-museum-results:focus-visible {
 }
 
 pre.org-museum-code-block.org-museum-code-collapsed {
-  max-height: 320px;
-  overflow: hidden;
+  max-height: none;
+  padding-bottom: 0;
 }
 
 pre.org-museum-code-block.org-museum-code-expanded {
@@ -3687,43 +3759,52 @@ pre.org-museum-code-block.org-museum-code-expanded {
   overflow: auto;
 }
 
-.code-lang-label,
-.code-copy-btn {
-  position: absolute;
-  top: 10px;
-  color: var(--text-muted);
-  font: 400 9px/1 var(--font-technical);
-}
-
 .code-lang-label {
-  left: 14px;
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  padding-inline: 14px 4px;
+  color: var(--museum-text-muted);
+  font: 500 11px/1.4 var(--font-ui);
+  letter-spacing: .04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .code-copy-btn {
   display: inline-flex;
   min-width: 44px;
-  min-height: 28px;
+  min-height: 44px;
+  grid-column: 3;
+  grid-row: 1;
   align-items: center;
   justify-content: center;
-  top: 4px;
-  right: 12px;
-  padding: 0 6px;
+  padding: 0 12px;
   border: 0;
+  border-radius: 0;
   background: transparent;
+  color: var(--museum-text-muted);
+  font: 500 12px/1.4 var(--font-ui);
   cursor: pointer;
+  opacity: 1;
 }
 
-.code-toggle-btn {
-  right: 58px;
+.code-copy-btn.code-toggle-btn {
+  grid-column: 2;
 }
 
-.code-copy-btn:hover,
-.code-copy-btn:focus-visible,
-.code-toggle-btn:hover,
-.code-toggle-btn:focus-visible {
-  border-radius: var(--museum-radius-control);
+.code-copy-btn:hover {
   color: var(--museum-text);
-  background: var(--museum-selected-surface);
+  background: var(--museum-hover);
+}
+.code-copy-btn:focus-visible {
+  outline: 2px solid var(--museum-focus-ring);
+  outline-offset: -3px;
+  background: var(--museum-hover);
+}
+.code-copy-btn.is-copied {
+  color: var(--museum-success);
 }
 
 #org-museum-right-sidebar {
@@ -4869,7 +4950,7 @@ body.zen-mode .article-container {
   }
 
   .museum-index-shell {
-    padding-top: 48px;
+    padding-top: 56px;
   }
 
   .museum-home-upper {
@@ -4938,29 +5019,9 @@ body.zen-mode .article-container {
     display: inline-flex;
   }
 
-  pre.src,
-  pre.example,
-  pre.org-museum-code-block {
-    padding-top: 48px;
-  }
 
-  .code-lang-label {
-    top: 18px;
-  }
 
-  .code-copy-btn {
-    top: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: var(--museum-touch-target);
-    min-height: var(--museum-touch-target);
-    padding: 0 6px;
-  }
 
-  .code-toggle-btn {
-    right: 64px;
-  }
 
   #graph-category-filters button,
   .graph-view-controls button,
@@ -5212,7 +5273,13 @@ body.zen-mode .article-container {
   --museum-surface: #292322;
   --museum-surface-raised: #362d2b;
   --museum-surface-muted: #241f1e;
-  --museum-code-surface: #1c1817;
+  --museum-code-surface: #211e1c;
+  --museum-code-ink: #ded7cd;
+  --museum-code-keyword: #c3b1d7;
+  --museum-code-string: #b7c397;
+  --museum-code-function: #9fc1ca;
+  --museum-code-number: #d3b58e;
+  --museum-code-comment: #aaa399;
   --museum-code-console-bg: #1e1b1a;
   --museum-code-console-fg: #f8f8f2;
   --museum-code-border: #6f5d54;
@@ -5351,7 +5418,13 @@ body.zen-mode .article-container {
   --museum-surface: #f8f3eb;
   --museum-surface-raised: #fffaf3;
   --museum-surface-muted: #f2eadf;
-  --museum-code-surface: #e9e0d5;
+  --museum-code-surface: #f2ece3;
+  --museum-code-ink: #39332e;
+  --museum-code-keyword: #75527e;
+  --museum-code-string: #526641;
+  --museum-code-function: #365e77;
+  --museum-code-number: #82572e;
+  --museum-code-comment: #70675f;
   --museum-code-console-bg: #1e1b1a;
   --museum-code-console-fg: #f8f8f2;
   --museum-code-border: #b7a696;
@@ -6193,10 +6266,11 @@ button.museum-tag-chip {
   display: flex;
   align-items: center;
   flex: 1 1 300px;
-  min-width: 200px;
+  min-width: 0;
 }
 
 .related-shelf-search-input {
+  min-width: 0;
   width: 100%;
   height: 38px;
   padding: 8px 34px 8px 14px;
@@ -6239,6 +6313,7 @@ button.museum-tag-chip {
 
 .related-group-controls {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 3px;
   background: var(--museum-paper);
@@ -6345,7 +6420,7 @@ button.museum-tag-chip {
   font-family: var(--font-technical);
   font-size: 12px;
   color: var(--museum-secondary-text);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 /* Group sections */
@@ -6364,6 +6439,7 @@ button.museum-tag-chip {
 
 .related-group-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -6690,6 +6766,7 @@ button.museum-tag-chip {
 
 .related-bar-btn,
 .related-sync-btn,
+.related-mobile-segments button,
 .related-modebar button,
 .related-modebar a {
   min-height: 34px;
@@ -6710,6 +6787,7 @@ button.museum-tag-chip {
 
 .related-bar-btn:hover,
 .related-sync-btn:hover,
+.related-mobile-segments button:hover,
 .related-modebar button:hover,
 .related-modebar a:hover {
   background: var(--museum-hover);
@@ -6861,44 +6939,6 @@ button.museum-tag-chip {
   100% { background: transparent; }
 }
 
-.code-copy-btn {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  padding: 2px 8px;
-  min-height: 24px;
-  font-size: 11px;
-  font-family: var(--font-ui);
-  background: var(--museum-surface-raised);
-  border: 1px solid var(--museum-control-border);
-  border-radius: 4px;
-  color: var(--museum-text-muted);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity .15s ease, background .15s ease, color .15s ease;
-  z-index: 5;
-}
-
-.related-full pre {
-  position: relative;
-}
-
-.related-full pre:hover .code-copy-btn,
-.code-copy-btn:focus-visible {
-  opacity: 1;
-}
-
-.code-copy-btn:hover {
-  color: var(--museum-text);
-  background: var(--museum-surface-raised);
-  border-color: var(--museum-accent);
-}
-
-.code-copy-btn.is-copied {
-  opacity: 1;
-  color: var(--museum-gold);
-  border-color: var(--museum-gold);
-}
 
 .related-completed-badge {
   display: inline-flex;
@@ -7230,26 +7270,6 @@ button.museum-tag-chip {
   margin: 3px 0;
 }
 
-/* 统一代码块：深色控制台底色与 Monokai 高亮完美兼容 (解决浅色模式对比度缺陷) */
-.related-paper pre,
-.related-full pre,
-.related-full pre.src,
-.related-full pre.example,
-.related-full pre.org-museum-code-block {
-  position: relative;
-  max-width: 100%;
-  margin: 14px 0;
-  padding: 12px 14px;
-  overflow-x: auto;
-  border: 1px solid var(--museum-code-border);
-  border-left: 3px solid var(--museum-accent);
-  border-radius: var(--museum-radius-control);
-  background: var(--museum-code-console-bg) !important;
-  color: var(--museum-code-console-fg) !important;
-  font: 400 12.5px/1.6 var(--font-code, "Victor Mono", monospace);
-  white-space: pre;
-  box-shadow: 0 2px 8px var(--panel-shadow);
-}
 
 .related-paper pre code,
 .related-full pre code {
@@ -7535,15 +7555,13 @@ button.museum-tag-chip {
   }
 
   .related-modebar {
-    position: sticky;
-    z-index: 25;
-    top: 108px;
+    position: static;
     display: grid;
-    grid-template-columns: 1fr auto;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
-      "left right"
-      "center center"
-      "segments segments";
+      "left"
+      "center"
+      "right";
     align-items: center;
     gap: 8px;
     padding: 8px 10px;
@@ -7576,7 +7594,7 @@ button.museum-tag-chip {
     display: none;
   }
 
-  .related-sync-btn {
+  .related-modebar .related-sync-btn {
     display: none;
   }
 
@@ -7588,7 +7606,11 @@ button.museum-tag-chip {
   }
 
   .related-mobile-segments {
-    grid-area: segments;
+    position: sticky;
+    z-index: 25;
+    top: var(--topbar-height);
+    padding-block: 4px;
+    background: var(--museum-paper);
     display: grid;
     width: 100%;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -9181,7 +9203,8 @@ button.museum-tag-chip {
   .timeline-filter-list button.is-active,
   .graph-page .graph-view-controls button[aria-pressed="true"],
   .graph-mode-tabs button.is-active,
-  .related-modebar button.is-active {
+  .related-modebar button.is-active,
+  .related-mobile-segments button[aria-pressed="true"] {
     border-color: var(--museum-control-border);
     color: var(--museum-text);
     background: var(--museum-selected-surface);
@@ -9245,6 +9268,7 @@ button.museum-tag-chip {
 
   .related-index {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     align-content: start;
   }
 
@@ -9294,26 +9318,8 @@ button.museum-tag-chip {
     min-height: 44px;
   }
 
-  pre.src,
-  pre.example,
-  pre.org-museum-code-block {
-    padding-top: 48px;
-  }
 
-  .code-copy-btn {
-    top: 0;
-    display: inline-flex;
-    min-width: 44px;
-    min-height: 44px;
-    align-items: center;
-    justify-content: center;
-    padding-inline: 6px;
-    font-size: var(--museum-type-meta);
-  }
 
-  .code-toggle-btn {
-    right: 64px;
-  }
 
   #graph-neighbours button,
   .graph-inspector-actions a,
@@ -9895,7 +9901,6 @@ button.museum-tag-chip {
   margin-left: 6px;
   font: normal 11px/1 var(--font-technical);
   color: var(--museum-text-muted);
-  opacity: 0.85;
 }
 .dashboard-trend-bin.is-dense-grid:not(:hover):not(.is-active) .dashboard-trend-value {
   opacity: 0;
@@ -10342,7 +10347,8 @@ button.museum-entry-category[aria-pressed="true"] {
 .museum-ai-public-item p { margin: 0 0 6px; line-height: 1.6; font-size: 13px; }
 .museum-ai-public-item small { color: var(--museum-text-muted); font-size: 11px; }
 .museum-ai-trigger {
-  display: inline-flex;
+  /* Suppress the obsolete launcher before legacy article scripts initialize. */
+  display: none;
   position: fixed; z-index: 71; bottom: 24px; right: 18px;
   align-items: center; gap: 8px;
   min-height: 38px; padding: 0 14px 0 12px;
@@ -10420,7 +10426,6 @@ button.museum-entry-category[aria-pressed="true"] {
   color: var(--museum-text-muted);
   font: 500 10px/1 var(--font-technical);
   letter-spacing: .04em;
-  opacity: .85;
 }
 .museum-ai-trigger:hover .museum-ai-trigger-shortcut {
   opacity: 1;
@@ -12206,7 +12211,7 @@ body.museum-ai-open .museum-ai-sidebar {
 }
 .graph-page.is-network-runtime .graph-mode-tabs button[aria-pressed="true"] b,
 .graph-page.is-network-runtime .graph-mode-tabs button.is-active b {
-  background: color-mix(in srgb, var(--museum-on-accent, #fff) 25%, transparent);
+  background: transparent;
   color: var(--museum-on-accent, #fff);
 }
 
@@ -14148,7 +14153,7 @@ html[data-theme="dark"][data-reading-tone="slate"] body {
   display: inline;
   transition: filter 0.25s ease, background-color 0.2s ease;
 }
-html[data-active-recall="true"] :is(.article-container, .related-paper, .museum-md) :is(strong, b, .org-bold, .museum-cloze):not(button *, a *, .museum-next-learning-hub *, .museum-study-guide *) {
+html[data-active-recall="true"] [data-museum-recall] {
   filter: blur(5px) !important;
   user-select: none;
   cursor: pointer;
@@ -14157,9 +14162,8 @@ html[data-active-recall="true"] :is(.article-container, .related-paper, .museum-
   padding: 0 4px;
   transition: filter 0.22s ease, background-color 0.2s ease;
 }
-html[data-active-recall="true"] :is(.article-container, .related-paper, .museum-md) :is(strong, b, .org-bold, .museum-cloze):hover,
-html[data-active-recall="true"] :is(.article-container, .related-paper, .museum-md) :is(strong, b, .org-bold, .museum-cloze):focus,
-html[data-active-recall="true"] :is(.article-container, .related-paper, .museum-md) :is(strong, b, .org-bold, .museum-cloze).is-revealed {
+html[data-active-recall="true"] [data-museum-recall]:hover,
+html[data-active-recall="true"] [data-museum-recall].is-revealed {
   filter: none !important;
   user-select: auto;
   background: color-mix(in srgb, var(--museum-accent) 10%, transparent) !important;
@@ -15753,7 +15757,7 @@ body {
   padding: 6px 14px;
   border-radius: var(--museum-radius-control);
   background: var(--museum-primary);
-  color: #fff !important;
+  color: var(--museum-on-accent) !important;
   font: 600 12px/1.4 var(--font-ui);
   border: 1px solid transparent;
   cursor: pointer;
@@ -15870,10 +15874,7 @@ body {
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--museum-border-soft) 60%, transparent), 0 2px 8px color-mix(in srgb, var(--panel-shadow) 10%, transparent);
 }
 
-:is(.article-container, .museum-md) pre.src,
-:is(.article-container, .museum-md) .org-src-container {
-  box-shadow: 0 2px 12px -2px color-mix(in srgb, var(--panel-shadow) 24%, transparent);
-}
+
 
 /* ==========================================================================
    ROUND 26 — EDITORIAL TYPOGRAPHY, STAGE DEPTH & SCULPTURAL ACCENTS
@@ -16709,17 +16710,9 @@ button, .museum-settings-segment-btn, .museum-theme-segment-btn, .pathway-step, 
   letter-spacing: 0.04em;
 }
 
-/* 6. Code Blocks: Polished Titanium Framing & Header */
+/* Code content owns its single frame; the Org wrapper only groups captions. */
 .org-src-container {
-  border-radius: var(--museum-radius-control, 6px);
-  border: 1px solid color-mix(in srgb, var(--museum-border) 80%, transparent);
-  overflow: hidden;
-  box-shadow: 0 2px 10px -2px color-mix(in srgb, var(--panel-shadow) 18%, transparent);
-  transition: border-color 200ms ease, box-shadow 200ms ease;
-}
-.org-src-container:hover {
-  border-color: color-mix(in srgb, var(--museum-accent) 50%, var(--museum-border));
-  box-shadow: 0 6px 20px -3px color-mix(in srgb, var(--panel-shadow) 24%, transparent);
+  margin-block: 1.2em;
 }
 
 /* 7. Graph Stage: Premium Radar Ring & Luminous Grid */

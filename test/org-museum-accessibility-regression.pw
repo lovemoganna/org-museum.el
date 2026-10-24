@@ -1,0 +1,58 @@
+async (page) => {
+  // Run against the real exported library from its index page with Playwright CLI.
+  const base = new URL('.', page.url()).href;
+  const check = (value, message) => { if (!value) throw Error(message); };
+  await page.setViewportSize({width: 360, height: 900});
+  await page.goto(new URL('index.html?org-museum-theme=dark', base).href, {waitUntil: 'load'});
+  const search = page.getByRole('combobox', {name: '搜索索引', exact: true});
+  await search.fill('Babel');
+  await search.press('ArrowUp');
+  check(await search.evaluate(e => e.getAttribute('aria-activedescendant') ===
+    Array.from(document.querySelectorAll('#museum-index-suggest [role=option]')).at(-1)?.id),
+  'ArrowUp must identify the last real suggestion to assistive technology');
+  await search.press('Escape');
+  check(await search.getAttribute('aria-activedescendant') === null, 'Closing must clear the active descendant');
+
+  await page.goto(new URL('pages/ontology/ontology-concept-boundaries.html?org-museum-theme=dark', base).href, {waitUntil: 'load'});
+  await page.locator('.museum-nav-settings').click();
+  await page.getByRole('tab', {name: '📚 学习辅助', exact: true}).click();
+  await page.getByRole('checkbox', {name: /渐进式主动回忆/}).check();
+  await page.locator('.museum-nav-settings').press('Escape');
+  await page.getByRole('button', {name: '显示重点内容', exact: true}).first().press('Enter');
+  const revealed = page.getByRole('button', {name: /^隐藏重点内容：/}).first();
+  check(await revealed.getAttribute('aria-pressed') === 'true', 'One Enter must reveal exactly once');
+  await revealed.press('Space');
+  check(await page.locator('[data-museum-recall].is-revealed').count() === 0, 'Space must conceal the concept');
+
+  await page.goto(new URL('related.html?org-museum-theme=dark', base).href, {waitUntil: 'load'});
+  await page.locator('.related-index-row').filter({hasText: '本体论建模：从概念边界到可计算语义'}).click();
+  await page.getByRole('button', {name: '完整正文', exact: true}).click();
+  await page.getByRole('button', {name: '关闭自测模式', exact: true}).waitFor();
+  check(await page.locator('[data-museum-recall]').count() > 0, 'Dynamically loaded reading must support recall controls');
+  await page.getByRole('button', {name: '关闭自测模式', exact: true}).click();
+  check(await page.locator('[data-museum-recall]').count() === 0, 'Exiting must restore normal reading semantics');
+  const link = page.locator('#related-ontology-evidence-evolution-text-table-of-contents > ul > li:nth-child(8) > a');
+  await link.focus();
+  await page.waitForFunction(() => {
+    const e = document.querySelector('#related-ontology-evidence-evolution-text-table-of-contents > ul > li:nth-child(8) > a');
+    const r = e?.getClientRects()[0];
+    const hit = r && document.elementFromPoint(r.left + 3, r.top + r.height / 2);
+    return hit === e || e?.contains(hit);
+  });
+  const geometry = await link.evaluate(e => {
+    const r = e.getClientRects()[0];
+    const hit = document.elementFromPoint(r.left + 3, r.top + r.height / 2);
+    const bar = document.querySelector('.related-modebar').getBoundingClientRect();
+    const panes = document.querySelector('.related-mobile-segments').getBoundingClientRect();
+    return {hit: hit === e || e.contains(hit), toolbarBottom: bar.bottom, paneTop: panes.top,
+      paneHeight: panes.height, overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth};
+  });
+  check(geometry.hit, 'Focused TOC link must not be covered by the reading toolbar');
+  check(geometry.paneHeight <= 64 && geometry.toolbarBottom <= geometry.paneTop + 1 && geometry.overflow <= 1,
+    'Mobile reading must retain compact pane controls without a large fixed toolbar');
+  await page.getByRole('button', {name: '目标笔记', exact: true}).click();
+  check(await page.getByRole('article', {name: '目标笔记', exact: true}).isVisible(), 'Target pane must remain reachable');
+  await page.getByRole('button', {name: '源笔记', exact: true}).click();
+  check(await page.getByRole('article', {name: '源笔记', exact: true}).isVisible(), 'Source pane must remain reachable');
+  return {status: 'PASS', mobileReading: geometry};
+}

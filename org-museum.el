@@ -3448,6 +3448,7 @@ failed file to the export error report rather than producing
 malformed HTML."
   (with-temp-buffer
     (insert-file-contents out-file)
+    (org-museum--pp-normalize-shared-head out-file)
     (org-museum--pp-set-document-language org-file)
     (org-museum--pp-fix-exported-entities)
     (org-museum--pp-remove-inline-styles)
@@ -3470,6 +3471,55 @@ malformed HTML."
         (insert rewritten))
       (write-region (point-min) (point-max) out-file)
       t)))
+
+(defun org-museum--pp-normalize-shared-head (out-file)
+  "Keep one current theme bootstrap and shared stylesheet for OUT-FILE.
+Local versioned copies from older Org HTML_HEAD settings are replaced;
+other scripts and example markup in the body are preserved."
+  (goto-char (point-min))
+  (let ((case-fold-search t))
+    (when (re-search-forward "<head\\b[^>]*>" nil t)
+      (let ((start (point))
+            (seen nil)
+            (canonical (org-museum--theme-script-tag out-file))
+            (end (save-excursion
+                   (when (re-search-forward "</head>" nil t)
+                     (copy-marker (match-beginning 0))))))
+        (when end
+          (while (re-search-forward
+                  (rx "<script" word-boundary (* (not ?>)) ">"
+                      (*? anything) "</script" (* space) ">") end t)
+            (let* ((begin (match-beginning 0))
+                   (finish (match-end 0))
+                   (tag (match-string-no-properties 0))
+                   (src (org-museum--html-attr-value tag "src")))
+              (when (and src (or (string-match-p
+                                 "\\`\\(?:\\.\\.?/\\)*resources/org-museum-theme\\.js\\(?:[?#].*\\)?\\'" src)
+                                (equal (car (split-string src "[?#]"))
+                                       (car (split-string (org-museum--html-attr-value canonical "src") "[?#]")))))
+                (delete-region begin finish)
+                (goto-char begin)
+                (unless seen (insert canonical) (setq seen t)))))
+          (unless seen
+            (goto-char start)
+            (insert "\n" canonical))
+          (goto-char start)
+          (setq seen nil canonical (org-museum--css-link-tag out-file))
+          (while (re-search-forward (rx "<link" word-boundary (* (not ?>)) ">") end t)
+            (let* ((begin (match-beginning 0))
+                   (finish (match-end 0))
+                   (href (org-museum--html-attr-value (match-string-no-properties 0) "href")))
+              (when (and href (or (string-match-p
+                                  "\\`\\(?:\\.\\.?/\\)*resources/org-museum\\.css\\(?:[?#].*\\)?\\'" href)
+                                 (equal (car (split-string href "[?#]"))
+                                        (car (split-string (org-museum--html-attr-value canonical "href") "[?#]")))))
+                (delete-region begin finish)
+                (goto-char begin)
+                (unless seen (insert canonical) (setq seen t)))))
+          (unless seen
+            (goto-char start)
+            (insert "\n" canonical))
+          (set-marker end nil))))))
 
 (defun org-museum--source-language (org-file)
   "Return the language declared by ORG-FILE, or the configured default."
@@ -6903,12 +6953,71 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
               (buffer-string))
             "</script>\n")))
 
+(defun org-museum--build-learning-pathways-html (pages out-file)
+  "Render curated learning entries using real PAGES and OUT-FILE links.
+Counts use the same exact tag membership as the index filter.  A route
+without its tagged starting note is omitted rather than linking to a
+nonexistent or excluded page."
+  (let* ((specs
+          '(("duckdb" "sql" "/sql/duckdb.org" "数据分析入门"
+             "DuckDB 极速实战路线"
+             "从环境最小运行、表建模，到 11 个实战分析模块与窗口函数进阶。"
+             ("00 最小入门" "11 模块实战" "SQL 速查"))
+            ("org-babel" "Babel" "/Emacs/Org/org-babel-01-execution-foundations.org"
+             "可计算笔记" "Org Babel 执行与工程体系"
+             "让笔记成为可执行、可复用、可验证的工程化知识系统。"
+             ("01 执行基础" "02 组合工程化" "03 验证与排错"))
+            ("ontology" "ontology" "/ontology/ontology-concept-boundaries.org"
+             "知识建模" "本体论与知识图谱建模"
+             "从业务问题推导概念边界，用三节点约束反例验证模型，建立可信任的知识治理标准。"
+             ("概念边界" "关系与反例" "证据与治理"))))
+         (cards
+          (delq nil
+                (mapcar
+                 (lambda (spec)
+                   (pcase-let* ((`(,key ,tag ,suffix ,badge ,title ,copy ,steps) spec)
+                                (members (cl-remove-if-not
+                                          (lambda (page)
+                                            (member tag (org-museum-page-tags page)))
+                                          pages))
+                                (start (cl-find-if
+                                        (lambda (page)
+                                          (string-suffix-p
+                                           suffix
+                                           (replace-regexp-in-string
+                                            "\\\\" "/" (org-museum-page-path page))))
+                                        members)))
+                     (when start
+                       (format
+                        (concat "<article class=\"museum-pathway-card\" data-pathway=\"%s\">"
+                                "<div class=\"pathway-head\"><span class=\"pathway-badge\">%s</span>"
+                                "<span class=\"pathway-count\">%d 篇笔记</span></div>"
+                                "<h3>%s</h3><p>%s</p><div class=\"pathway-steps\">%s</div>"
+                                "<div class=\"pathway-footer\"><a href=\"%s\" class=\"pathway-start-btn\">从第 1 篇开始 →</a>"
+                                "<button type=\"button\" class=\"pathway-filter-btn\" data-filter-tag=\"%s\">筛选此类笔记</button></div></article>\n")
+                        key badge (length members) title copy
+                        (mapconcat (lambda (step)
+                                     (format "<span class=\"step-pill\">%s</span>" step))
+                                   steps "<span class=\"step-arrow\" aria-hidden=\"true\">→</span>")
+                        (org-museum--html-escape
+                         (org-museum--page-href (org-museum-page-id start) out-file))
+                        tag))))
+                 specs))))
+    (if cards
+        (concat
+         "<section id=\"learning-pathways\" class=\"museum-learning-pathways\" aria-labelledby=\"learning-pathways-title\">"
+         "<div class=\"museum-section-heading\"><h2 id=\"learning-pathways-title\">推荐学习路径 · 零基础入门</h2>"
+         "<span class=\"pathways-subtitle\">系统化循序渐进，快速掌握核心技能与实践任务</span></div>"
+         "<div class=\"museum-pathway-grid\">" (apply #'concat cards) "</div></section>\n")
+      "")))
+
 (defun org-museum--build-index-html (cats graph-href out-file)
   "Return the complete index.html for CATS and GRAPH-HREF."
   (ignore graph-href)
   (let* ((pages (org-museum--sort-pages-by-modified
                  (org-museum--pages-from-categories cats)))
          (recent pages)
+         (pathways (org-museum--build-learning-pathways-html pages out-file))
          (index-data (org-museum--index-data-alist pages out-file))
          (recent-html
           (if recent
@@ -6936,37 +7045,12 @@ KIND is one of `home', `article', `timeline', `graph', or `related'."
      "    <div class=\"museum-index-intro-text\"><p class=\"museum-index-kicker\">ORG MUSEUM / 知识库索引</p>"
      "<h1>内容索引</h1><p>面向零基础与进阶学习者的系统化知识索引，支持全文检索、图谱联动与多维探索。</p></div>\n"
      "  </div>\n"
-     "  <div id=\"index-study-tip\" class=\"museum-study-guide\" role=\"note\" aria-label=\"知识库新手导航\">"
+     (unless (string-empty-p pathways)
+       (concat "  <div id=\"index-study-tip\" class=\"museum-study-guide\" role=\"note\" aria-label=\"知识库新手导航\">"
      "<div class=\"study-guide-content\"><span class=\"study-guide-badge\">🌟 新手第一站</span>"
      "<span class=\"study-guide-text\">从下方<strong>推荐学习路径</strong>挑一条主线开始；研读时善用顶部的<strong>时间</strong>（查沿革）、<strong>图谱</strong>（看脉络）、<strong>关联阅读</strong>（双篇对照）与 <strong>AI 中心</strong>（即问即答）。</span></div>"
-     "<button type=\"button\" class=\"study-guide-dismiss\" id=\"index-guide-dismiss\" aria-label=\"关闭新手提示\">✕</button></div>\n"
-     "  <section id=\"learning-pathways\" class=\"museum-learning-pathways\" aria-labelledby=\"learning-pathways-title\">\n"
-     "    <div class=\"museum-section-heading\"><h2 id=\"learning-pathways-title\">推荐学习路径 · 零基础入门</h2>"
-     "<span class=\"pathways-subtitle\">系统化循序渐进，快速掌握核心技能与实践任务</span></div>\n"
-     "    <div class=\"museum-pathway-grid\">\n"
-     "      <article class=\"museum-pathway-card\" data-pathway=\"duckdb\">\n"
-     "        <div class=\"pathway-head\"><span class=\"pathway-badge\">数据分析入门</span><span class=\"pathway-count\">8 篇实战</span></div>\n"
-     "        <h3>DuckDB 极速实战路线</h3>\n"
-     "        <p>从环境最小运行、表建模，到 11 个实战分析模块与窗口函数进阶。</p>\n"
-     "        <div class=\"pathway-steps\"><span class=\"step-pill\">00 最小入门</span><span class=\"step-arrow\">→</span><span class=\"step-pill\">11 模块实战</span><span class=\"step-arrow\">→</span><span class=\"step-pill\">SQL 速查</span></div>\n"
-     "        <div class=\"pathway-footer\"><a href=\"pages/sql/duckdb.html\" class=\"pathway-start-btn\">从第 1 篇开始 →</a><button type=\"button\" class=\"pathway-filter-btn\" data-filter-tag=\"sql\">筛选此类笔记</button></div>\n"
-     "      </article>\n"
-     "      <article class=\"museum-pathway-card\" data-pathway=\"org-babel\">\n"
-     "        <div class=\"pathway-head\"><span class=\"pathway-badge\">可计算笔记</span><span class=\"pathway-count\">3 篇核心</span></div>\n"
-     "        <h3>Org Babel 执行与工程体系</h3>\n"
-     "        <p>让笔记成为可执行、可复用、可验证的工程化知识系统。</p>\n"
-     "        <div class=\"pathway-steps\"><span class=\"step-pill\">01 执行基础</span><span class=\"step-arrow\">→</span><span class=\"step-pill\">02 组合工程化</span><span class=\"step-arrow\">→</span><span class=\"step-pill\">03 验证与排错</span></div>\n"
-     "        <div class=\"pathway-footer\"><a href=\"pages/Emacs/Org/org-babel-01-execution-foundations.html\" class=\"pathway-start-btn\">从第 1 篇开始 →</a><button type=\"button\" class=\"pathway-filter-btn\" data-filter-tag=\"Babel\">筛选此类笔记</button></div>\n"
-     "      </article>\n"
-     "      <article class=\"museum-pathway-card\" data-pathway=\"ontology\">\n"
-     "        <div class=\"pathway-head\"><span class=\"pathway-badge\">知识建模</span><span class=\"pathway-count\">6 篇架构</span></div>\n"
-     "        <h3>本体论与知识图谱建模</h3>\n"
-     "        <p>从业务问题推导概念边界，用三节点约束反例验证模型，建立可信任的知识治理标准。</p>\n"
-     "        <div class=\"pathway-steps\"><span class=\"step-pill\">概念边界</span><span class=\"step-arrow\">→</span><span class=\"step-pill\">关系与反例</span><span class=\"step-arrow\">→</span><span class=\"step-pill\">证据与治理</span></div>\n"
-     "        <div class=\"pathway-footer\"><a href=\"pages/ontology/ontology-concept-boundaries.html\" class=\"pathway-start-btn\">从第 1 篇开始 →</a><button type=\"button\" class=\"pathway-filter-btn\" data-filter-tag=\"ontology\">筛选此类笔记</button></div>\n"
-     "      </article>\n"
-     "    </div>\n"
-     "  </section>\n"
+     "<button type=\"button\" class=\"study-guide-dismiss\" id=\"index-guide-dismiss\" aria-label=\"关闭新手提示\">✕</button></div>\n"))
+     pathways
      "  <div class=\"museum-index-search-wrap\">\n"
      "  <label class=\"museum-index-search\">"
      "<span class=\"sr-only\">搜索索引</span>"
@@ -9265,22 +9349,7 @@ function renderPanel(side,page){
     panel.appendChild(full);
     if(typeof panel.querySelectorAll==='function'){
       panel.querySelectorAll('pre').forEach(function(pre){
-        if(pre.querySelector('.code-copy-btn'))return;
-        var btn=element('button','code-copy-btn','复制代码');
-        btn.type='button';btn.setAttribute('aria-label','复制代码');
-        btn.onclick=function(ev){
-          ev.stopPropagation();
-          var codeEl=pre.querySelector('code');
-          var codeText=codeEl?codeEl.innerText:pre.innerText;
-          if(navigator.clipboard&&navigator.clipboard.writeText){
-            navigator.clipboard.writeText(codeText).then(function(){
-              btn.textContent='已复制 ✓';
-              btn.classList.add('is-copied');
-              setTimeout(function(){btn.textContent='复制代码';btn.classList.remove('is-copied');},2000);
-            });
-          }
-        };
-        pre.appendChild(btn);
+        window.orgMuseumPrepareCodeBlock(pre,pre.querySelector('code'));
       });
     }
   }else panel.appendChild(summaryContent(page, side));
@@ -9891,12 +9960,12 @@ if(relationValid())renderDetail();else renderIndex();
      "        <a id=\"related-open-target\" class=\"related-bar-btn\" href=\"#\" target=\"_blank\" title=\"在新标签打开目标笔记完整页\">目标笔记 ↗</a>\n"
      "        <a id=\"related-to-graph\" class=\"related-bar-btn\" href=\"graph.html\" title=\"在知识图谱中查看此关联\">图谱定位</a>\n"
      "      </div>\n"
+     "    </div>\n"
      "      <span class=\"related-mobile-segments\" role=\"group\" aria-label=\"移动端对读区域\">\n"
      "        <button type=\"button\" data-related-pane=\"source\" aria-pressed=\"true\">源笔记</button>\n"
      "        <button type=\"button\" data-related-pane=\"relation\" aria-pressed=\"false\">关系</button>\n"
      "        <button type=\"button\" data-related-pane=\"target\" aria-pressed=\"false\">目标笔记</button>\n"
      "      </span>\n"
-     "    </div>\n"
      "    <div class=\"related-reading-grid\">\n"
      "      <article class=\"related-paper\" data-related-panel=\"source\" aria-label=\"源笔记\"></article>\n"
      "      <aside class=\"related-bridge\" aria-label=\"关系方向\" hidden>\n"
@@ -10037,6 +10106,7 @@ var grainSelector=document.getElementById('timeline-grain-selector');
 var grainFilters=document.getElementById('timeline-grain-filters');
 var viewSelector=document.getElementById('timeline-view-selector');
 var calendarView=document.getElementById('timeline-calendar-view');
+var calendarDetail=document.getElementById('timeline-calendar-detail');
 
 var params=new URLSearchParams(location.search);
 if('scrollRestoration' in history)history.scrollRestoration='manual';
@@ -10606,7 +10676,7 @@ function applyMobileFocus(page){
     mobileDetail.dataset.list=mobileListSignature;
     mobileDetail.replaceChildren(detailContent(page,true));
   }
-  if(state.view==='calendar')calendarView.appendChild(mobileDetail);
+  if(state.view==='calendar')calendarDetail.appendChild(mobileDetail);
   else entry.item.appendChild(mobileDetail);
   mobileDetail.hidden=false;
 }
@@ -10871,6 +10941,7 @@ function switchView(nextView, writeHistory){
     });
   }
   if(calendarView)calendarView.hidden=!isCal;
+  if(calendarDetail)calendarDetail.hidden=!isCal;
   if(canvas)canvas.hidden=isCal;
   var toolbar=document.querySelector('.timeline-canvas-toolbar');
   if(toolbar)toolbar.hidden=isCal;
@@ -11265,7 +11336,8 @@ function setFilterOpen(open,returnFocus){
     filterSheet.dataset.open=filterOpen?'true':'false';
     filterSheet.setAttribute('role',mobile?'dialog':'region');
     filterSheet.setAttribute('aria-hidden',mobile&&!filterOpen?'true':'false');
-    filterSheet.setAttribute('aria-modal',filterOpen?'true':'false');
+    if(mobile&&filterOpen)filterSheet.setAttribute('aria-modal','true');
+    else filterSheet.removeAttribute('aria-modal');
     filterSheet.inert=mobile&&!filterOpen;
   }
   if(filterToggle)filterToggle.setAttribute('aria-expanded',filterOpen?'true':'false');
@@ -11439,6 +11511,7 @@ if(state.focus){
    "      <div id=\"timeline-canvas\"><div id=\"timeline-svg\"></div><div id=\"timeline-tooltip\" role=\"tooltip\" hidden></div><div class=\"timeline-canvas-toolbar\" role=\"toolbar\" aria-label=\"时间轴画布控制\"><button type=\"button\" class=\"timeline-tool-btn\" id=\"timeline-zoom-in\" title=\"放大时间轴 (+)\" aria-label=\"放大时间轴\"><span aria-hidden=\"true\">＋</span></button><button type=\"button\" class=\"timeline-tool-btn\" id=\"timeline-zoom-out\" title=\"缩小时间轴 (-)\" aria-label=\"缩小时间轴\"><span aria-hidden=\"true\">－</span></button><button type=\"button\" class=\"timeline-tool-btn\" id=\"timeline-zoom-reset\" title=\"复位时间轴 (1:1)\" aria-label=\"复位时间轴\"><span>1:1</span></button><span class=\"timeline-tool-divider\" aria-hidden=\"true\"></span><button type=\"button\" class=\"timeline-tool-btn timeline-tool-text-btn\" id=\"timeline-jump-oldest\" title=\"跳转至最早记录\" aria-label=\"跳转至最早记录\"><span>最早</span></button><button type=\"button\" class=\"timeline-tool-btn timeline-tool-text-btn\" id=\"timeline-jump-latest\" title=\"跳转至最新记录\" aria-label=\"跳转至最新记录\"><span>最新</span></button><button type=\"button\" class=\"timeline-tool-btn timeline-tool-text-btn\" id=\"timeline-explore-random\" title=\"随机漫游一条笔记\" aria-label=\"随机漫游一条笔记\"><span>🎲 漫游</span></button></div></div>\n"
    "      <ol id=\"timeline-mobile-list\"></ol>\n"
    "      <div id=\"timeline-calendar-view\" class=\"timeline-calendar-view\" hidden></div>\n"
+   "      <div id=\"timeline-calendar-detail\" hidden></div>\n"
    "      <details class=\"timeline-isolated\"><summary>孤立笔记 <span id=\"timeline-isolated-count\">00</span></summary><p class=\"timeline-isolated-intro\">💡 <strong>零基础认知</strong>：孤立笔记是尚未与其它笔记建立链接的单点记录。知识在互联中生长——点击「对读串联」或「图谱定位」，把单点想法编织入知识体系。</p><div id=\"timeline-isolated-list\"></div></details>\n"
    "    </section>\n"
    "    <aside id=\"timeline-focus-card\" class=\"timeline-focus-card\" aria-label=\"当前笔记\" tabindex=\"-1\" hidden></aside>\n"
@@ -13346,20 +13419,6 @@ function initCodeBlocks(){
     var m=pre.className.match(/(?:^|\\s)src-([^\\s]+)/);
     return langMap[m?m[1]:'text']||(m?m[1]:'plaintext');
   }
-  function copyText(text,done,fail){
-    if(navigator.clipboard&&navigator.clipboard.writeText){
-      navigator.clipboard.writeText(text).then(done,function(){fallback();});
-    }else{fallback();}
-    function fallback(){
-      var ta=document.createElement('textarea');
-      ta.value=text;ta.setAttribute('readonly','');
-      ta.style.position='fixed';ta.style.left='-9999px';
-      document.body.appendChild(ta);ta.select();
-      var copied=false;
-      try{copied=document.execCommand('copy')===true;}catch(e){copied=false;}
-      document.body.removeChild(ta);(copied?done:fail)();
-    }
-  }
   blocks.forEach(function(pre){
     if(pre.dataset.orgMuseumCodeReady==='1')return;
     pre.dataset.orgMuseumCodeReady='1';
@@ -13380,42 +13439,7 @@ function initCodeBlocks(){
     code.setAttribute('data-language',lang);
     codeBlocks.push(pre);
     if(lang!=='plaintext')codes.push(code);
-    var lineCount=(code.textContent||'').replace(/\\r?\\n$/,'').split(/\\r?\\n/).length;
-    var isLong=lineCount>18||code.getBoundingClientRect().height>320;
-    var lbl=document.createElement('span');lbl.className='code-lang-label';
-    lbl.textContent=(lang==='plaintext'?'TEXT':lang).toUpperCase();
-    var btn=document.createElement('button');btn.className='code-copy-btn';btn.textContent='复制';
-    btn.type='button';
-    btn.setAttribute('aria-label','复制代码');
-    btn.onclick=function(){
-      copyText(code.innerText||code.textContent,function(){
-        btn.textContent='已复制';btn.classList.add('copied');
-        setTimeout(function(){btn.textContent='复制';btn.classList.remove('copied');},2000);
-      },function(){
-        btn.textContent='复制失败';btn.classList.remove('copied');
-        setTimeout(function(){btn.textContent='复制';},2500);
-      });
-    };
-    pre.insertBefore(lbl,pre.firstChild);
-    if(isLong){
-      pre.classList.add('org-museum-code-collapsed');
-      var toggle=document.createElement('button');
-      toggle.className='code-copy-btn code-toggle-btn';
-      toggle.type='button';
-      toggle.textContent='展开';
-      toggle.setAttribute('aria-label','展开代码块');
-      toggle.setAttribute('aria-expanded','false');
-      toggle.onclick=function(){
-        var expanded=pre.classList.toggle('org-museum-code-expanded');
-        pre.classList.toggle('org-museum-code-collapsed',!expanded);
-      toggle.textContent=expanded?'收起':'展开';
-      toggle.setAttribute('aria-label',expanded?'收起代码块':'展开代码块');
-      toggle.setAttribute('aria-expanded',expanded?'true':'false');
-      scheduleCodeScrollAccess();
-      };
-      pre.insertBefore(toggle,lbl.nextSibling);
-      pre.insertBefore(btn,toggle.nextSibling);
-    }else pre.insertBefore(btn,lbl.nextSibling);
+    window.orgMuseumPrepareCodeBlock(pre,code,lang);
   });
   var codeAccessFrame=0;
   function syncCodeScrollAccess(){

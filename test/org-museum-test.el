@@ -1821,18 +1821,12 @@
                    ((symbol-function 'org-museum--hljs-js-src)
                     (lambda (_out-file) "resources/highlight.min.js")))
            (org-museum--script-ui-core "article.html"))))
-    (should (string-match-p
-             (regexp-quote "replace(/\\r?\\n$/,'')") script))
-    (should (string-match-p
-             (regexp-quote "code.getBoundingClientRect().height>320") script))
-    (should (string-match-p "if(isLong)" script))
-    (should (string-match-p "org-museum-code-collapsed" script))
-    (should (string-match-p "aria-expanded" script)))
+    (should (string-match-p "orgMuseumPrepareCodeBlock(pre,code,lang)" script)))
   (with-temp-buffer
     (insert-file-contents
      (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
     (should (search-forward ".org-museum-code-collapsed" nil t))
-    (should (search-forward "max-height: 320px" nil t))
+    (should (string-search "pre.org-museum-code-block > code[hidden]" (buffer-string)))
     (should (search-forward ".org-museum-code-expanded" nil t))))
 
 (ert-deftest org-museum-scrollable-code-is-keyboard-focusable ()
@@ -1931,7 +1925,7 @@
     (insert-file-contents
      (expand-file-name "resources/org-museum.css" org-museum-test--repo-root))
     (should (string-match-p
-             "\\.code-copy-btn[[:space:]\n]*{[^}]*min-width: 44px;[^}]*min-height: 28px;"
+             "\\.code-copy-btn[[:space:]\n]*{[^}]*min-width: 44px;[^}]*min-height: 44px;"
              (buffer-string)))
     (should (string-match-p
              "#graph-neighbours button[[:space:]\n]*{[^}]*min-height: 28px;"
@@ -4092,7 +4086,10 @@
           (should (string-search "timeline-filter-backdrop" html))
           (should (string-search "role=\"dialog\"" html))
           (should (string-search "aria-modal=\"false\"" html))
-          (should (string-search "filterSheet.setAttribute('aria-modal',filterOpen?'true':'false')" html))
+          ;; Modal applies only to the open mobile dialog, never the desktop region.
+          ;; The generated handler's transitions are exercised in the JS timeline test.
+          (should (string-search "if(mobile&&filterOpen)filterSheet.setAttribute('aria-modal','true')" html))
+          (should (string-search "filterSheet.removeAttribute('aria-modal')" html))
           (should (string-search "timeline-filter-result" html)))
       (delete-directory root t))))
 

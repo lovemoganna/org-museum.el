@@ -33,6 +33,9 @@
     var panel = one("#museum-ai-panel");
     var toc = one("#org-museum-right-sidebar");
     if (!panel) return;
+    // Published legacy HTML is preserved by the source publishing pipeline.
+    // Retire its old launcher as well; keyboard access remains available.
+    if (trigger) { trigger.remove(); trigger = null; }
     var articleNode = one(".article-container");
     var pageId = articleNode && articleNode.dataset.pageId;
     var noteTitle = (articleNode && (articleNode.dataset.pageTitle || one("h1", articleNode)?.textContent)) || document.title;
@@ -783,9 +786,13 @@
     }
 
 
-    renderChat();
-    // Articles always open with the AI chat panel hidden.
+    // Every article entry starts closed, including a restored browser history
+    // snapshot on desktop or Android. Closing before the snapshot also avoids
+    // briefly showing the previously opened panel during restoration.
+    window.addEventListener("pagehide", function () { setOpen(false, false); });
+    window.addEventListener("pageshow", function () { setOpen(false, false); });
     setOpen(false, false);
+    renderChat();
     if (toc) {
       var tocButtons = all("[data-toc-toggle]");
       var hoverTimer;

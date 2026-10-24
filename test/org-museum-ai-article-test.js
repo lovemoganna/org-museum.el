@@ -54,9 +54,13 @@ function createMockElement(tagName = "div") {
         return next;
       }
     },
-    setAttribute(k, v) { el.attributes[k] = String(v); },
+    remove() {
+      if (el.parentElement) el.parentElement.children = el.parentElement.children.filter(child => child !== el);
+      el.parentElement = null;
+    },
+    setAttribute(k, v) { el.attributes[k] = String(v); if (k === "hidden") el.hidden = true; },
     getAttribute(k) { return Object.prototype.hasOwnProperty.call(el.attributes, k) ? el.attributes[k] : null; },
-    removeAttribute(k) { delete el.attributes[k]; },
+    removeAttribute(k) { delete el.attributes[k]; if (k === "hidden") el.hidden = false; },
     appendChild(child) {
       el.children.push(child);
       child.parentElement = el;
@@ -169,10 +173,7 @@ assert.ok(elContent.includes("data-ai-chat-form"), "HTML generator must declare 
 assert.ok(elContent.includes("data-ai-chat-input"), "HTML generator must declare composer input textarea");
 assert.ok(elContent.includes("data-ai-chat-stop"), "HTML generator must declare composer stop button");
 assert.ok(elContent.includes("data-ai-chat-send"), "HTML generator must declare composer send button");
-assert.ok(elContent.includes("museum-ai-trigger"), "HTML generator must declare .museum-ai-trigger");
-assert.ok(elContent.includes("data-ai-toggle"), "HTML generator must declare data-ai-toggle trigger button");
-assert.ok(elContent.includes("data-ai-trigger-dot"), "HTML generator must declare data-ai-trigger-dot");
-assert.ok(elContent.includes("data-ai-trigger-shortcut"), "HTML generator must declare data-ai-trigger-shortcut");
+assert.ok(!elContent.includes("data-ai-toggle"), "Articles must not generate the redundant floating AI button");
 
 console.log("✓ HTML generator output markup contracts verified");
 
@@ -332,7 +333,7 @@ const mockDoc = {
   body,
   createElement(tag) { return createMockElement(tag); },
   querySelector(sel) {
-    if (sel === "[data-ai-toggle]") return triggerBtn;
+    if (sel === "[data-ai-toggle]") return process.env.ORG_MUSEUM_TEST_LEGACY_TRIGGER ? triggerBtn : null;
     if (sel === "#museum-ai-panel") return panel;
     if (sel === ".article-container") return articleContainer;
     return body.querySelector(sel);
@@ -364,7 +365,14 @@ const mockBrowserAi = {
   }
 };
 
+const windowListeners = {};
 const mockWin = {
+  addEventListener(type, fn) {
+    (windowListeners[type] ||= []).push(fn);
+  },
+  dispatchEvent(event) {
+    (windowListeners[event.type] || []).forEach(fn => fn(event));
+  },
   innerWidth: 1440,
   document: mockDoc,
   sessionStorage: mockSessionStorage,
@@ -394,6 +402,8 @@ mockLocalStorage.setItem("org-museum-browser-models-list", JSON.stringify([
 ]));
 
 const jsContent = fs.readFileSync(path.join(root, "resources/org-museum-ai.js"), "utf8");
+// A previous page's open state must never override the article-entry default.
+mockLocalStorage.setItem("copilot_sidebar_open", "true");
 
 // Run script
 vm.runInNewContext(jsContent, {
@@ -411,7 +421,10 @@ vm.runInNewContext(jsContent, {
 });
 
 // Verify initial setup
-assert.equal(triggerShortcut.textContent, "Ctrl+I", "Windows trigger shortcut should display Ctrl+I");
+if (process.env.ORG_MUSEUM_TEST_LEGACY_TRIGGER) {
+  assert.equal(triggerBtn.parentElement, null, "Preserved legacy articles must retire their old floating launcher");
+}
+assert.equal(triggerShortcut.textContent, "", "No shortcut label is rendered without a floating trigger");
 assert.equal(contextTitle.textContent, "DuckDB 深度分析与架构笔记", "Context title should match article title");
 assert.ok(centerLink.href.includes("ai-center.html?pageId="), "ai-center link must point to ai-center.html with pageId");
 assert.notEqual(centerLink.href, "#", "ai-center link must not be dummy # dead link");
@@ -434,6 +447,8 @@ console.log("--- TEST 4: Sidebar Toggle and Shortcuts ---");
 // By default, sidebar is hidden
 assert.equal(body.classList.contains("museum-ai-open"), false, "Sidebar defaults to hidden");
 assert.equal(panel.inert, true, "Panel is inert when closed");
+assert.equal(panel.hidden, true, "Panel is hidden even with a saved open preference");
+assert.equal(panel.getAttribute("aria-hidden"), "true");
 
 // Ctrl+I Shortcut opens
 mockDoc.dispatchEvent({ type: "keydown", key: "i", ctrlKey: true, preventDefault() {} });
@@ -455,6 +470,15 @@ mockDoc.dispatchEvent({ type: "keydown", key: "Escape" });
 assert.equal(body.classList.contains("museum-ai-open"), false, "Escape closes sidebar");
 
 // Re-open for following tests
+mockDoc.dispatchEvent({ type: "keydown", key: "i", ctrlKey: true, preventDefault() {} });
+windowListeners.pageshow.forEach(fn => fn({persisted: true}));
+assert.equal(body.classList.contains("museum-ai-open"), false, "History restoration starts closed");
+assert.equal(panel.hidden, true);
+assert.equal(panel.inert, true);
+assert.equal(panel.getAttribute("aria-hidden"), "true");
+mockDoc.dispatchEvent({ type: "keydown", key: "i", ctrlKey: true, preventDefault() {} });
+windowListeners.pagehide.forEach(fn => fn({persisted: true}));
+assert.equal(panel.hidden, true, "History snapshots must not retain an expanded panel");
 mockDoc.dispatchEvent({ type: "keydown", key: "i", ctrlKey: true, preventDefault() {} });
 assert.equal(body.classList.contains("museum-ai-open"), true, "Re-open sidebar for interaction tests");
 
@@ -519,7 +543,7 @@ async function runAsyncTests() {
   assert.ok(modelSelect.children.some(c => c.value === "deepseek-r1:7b"), "Model options include cached models");
 
   // Test two-way org-museum-model-changed event
-  mockDoc.dispatchEvent({
+  mockWin.dispatchEvent({
     type: "org-museum-model-changed",
     detail: { model: "deepseek-r1:7b" }
   });
