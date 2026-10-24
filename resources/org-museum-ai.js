@@ -716,6 +716,7 @@
         chatInput.blur();
       }
     }
+    window.orgMuseumOpenArticleAi = function () { setOpen(true, true); };
     if (trigger) trigger.addEventListener("click", function () { setOpen(!document.body.classList.contains("museum-ai-open"), true); });
 
     document.addEventListener("keydown", function (event) {

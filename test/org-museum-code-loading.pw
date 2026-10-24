@@ -1,0 +1,24 @@
+async (page) => {
+ const results=[];
+ for(const phase of ['after']){
+  const context=await page.context().browser().newContext({viewport:{width:1280,height:900}});const p=await context.newPage();let releaseImages;const gate=new Promise(r=>releaseImages=r);let pendingImages=0;
+  await p.addInitScript(()=>document.addEventListener('DOMContentLoaded',()=>document.querySelectorAll('img').forEach(i=>i.loading='eager'),{once:true}));
+  await p.route('**/*',async route=>{
+   if(route.request().resourceType()==='image'){pendingImages++;await gate;await route.continue();}
+   else if(new URL(route.request().url()).pathname.endsWith('/org-museum-article.js'))await route.fulfill({path:'resources/org-museum-article.js',contentType:'text/javascript'});
+   else if(new URL(route.request().url()).pathname.endsWith('/org-museum-ai.js'))await route.fulfill({path:'resources/org-museum-ai.js',contentType:'text/javascript'});
+   else await route.continue();
+  });
+  const image=p.waitForRequest(r=>r.resourceType()==='image');
+  await p.goto('http://127.0.0.1:8772/pages/sql/duckdb-ontology-slicing-tutorial.html',{waitUntil:'domcontentloaded'});await image;
+  if(phase==='after')await p.waitForFunction(()=>document.querySelectorAll('pre.org-museum-code-block').length>0);
+  const state=await p.evaluate(()=>({readyState:document.readyState,codeBlocks:document.querySelectorAll('pre.org-museum-code-block').length}));
+  if(!pendingImages||state.readyState==='complete'||state.codeBlocks===0)throw Error('Delayed-image contract '+JSON.stringify({phase,pendingImages,...state}));
+  if(phase==='after'){const b=p.locator('pre.org-museum-code-block').first();await b.locator('.code-toggle-btn').click();if(!await b.locator('code').isVisible())throw Error('Cannot expand while images pending');}
+  releaseImages();await p.waitForLoadState('load');
+  if(phase==='after'){
+   const quiz=p.locator('[data-hub-action="quiz"]');if(await quiz.count()){await quiz.click();await p.locator('#museum-ai-panel').waitFor({state:'visible'});if(!(await p.locator('[data-ai-chat-input]').inputValue()).includes('3 道'))throw Error('Quiz prompt missing');}
+  }
+  results.push({phase,pendingImages,...state,status:'PASS'});await context.close();
+ }return results;
+}

@@ -602,8 +602,10 @@ function initLearningHub(){
   if(quiz)quiz.addEventListener('click',function(){
     var panel=document.getElementById('museum-ai-panel');
     var trigger=document.querySelector('[data-ai-toggle]');
-    if(!panel||!trigger)return;
-    if(panel.getAttribute('aria-hidden')!=='false')trigger.click();
+    if(!panel)return;
+    if(typeof window.orgMuseumOpenArticleAi==='function')window.orgMuseumOpenArticleAi();
+    else if(trigger&&panel.getAttribute('aria-hidden')!=='false')trigger.click();
+    else if(panel.getAttribute('aria-hidden')!=='false')return;
     var input=panel.querySelector('[data-ai-chat-input]');
     var title=document.querySelector('h1.title');
     if(input){input.value='请根据当前笔记《'+(title?title.textContent.trim():document.title)+'》，生成 3 道渐进式自测题，先给题目，再给参考答案与解析。';input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();}
@@ -612,12 +614,15 @@ function initLearningHub(){
   syncStudied();
 }
 
+// Reading controls must not wait for slow images, fonts, or attachments.
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',initCodeBlocks,{once:true});
+else initCodeBlocks();
+
 window.addEventListener('load',function(){
   initReadingActions();
   initLearningHub();
   initHeadingAnchors();
   initScrollSpy();
-  initCodeBlocks();
   initReadingProgress();
   initLightbox();
   initCJKSpacing();

@@ -449,6 +449,10 @@ assert.equal(body.classList.contains("museum-ai-open"), false, "Sidebar defaults
 assert.equal(panel.inert, true, "Panel is inert when closed");
 assert.equal(panel.hidden, true, "Panel is hidden even with a saved open preference");
 assert.equal(panel.getAttribute("aria-hidden"), "true");
+mockWin.orgMuseumOpenArticleAi();
+assert.equal(body.classList.contains("museum-ai-open"), true, "Article actions open AI without a floating launcher");
+mockDoc.dispatchEvent({ type: "keydown", key: "Escape" });
+assert.equal(panel.hidden, true);
 
 // Ctrl+I Shortcut opens
 mockDoc.dispatchEvent({ type: "keydown", key: "i", ctrlKey: true, preventDefault() {} });
