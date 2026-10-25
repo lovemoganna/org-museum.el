@@ -4011,6 +4011,17 @@ pre.org-museum-code-block.org-museum-code-expanded {
   border-top: 1px solid var(--rule);
 }
 
+.org-museum-nav + #local-graph-container,
+#local-graph-container.has-nav-links {
+  margin-top: 14px;
+  padding-top: 0;
+  border-top: none;
+}
+
+#local-graph-container.has-nav-links h3 {
+  display: none;
+}
+
 .org-museum-nav {
   display: grid;
   gap: 26px;

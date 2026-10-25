@@ -3459,6 +3459,7 @@ malformed HTML."
     (org-museum--pp-stabilize-heading-anchors org-file)
     (org-museum--pp-stabilize-generated-anchors org-file)
     (org-museum--pp-wrap-tables)
+    (org-museum--localize-generated-toc (org-museum--source-language org-file))
     (if (not (org-museum--pp-wrap-content-div out-file org-file))
         (progn
           (message "Org Museum 已停止处理 %s：找不到 #content 元素" out-file)
@@ -3554,6 +3555,17 @@ other scripts and example markup in the body are preserved."
       (goto-char tag-begin)
       (insert replacement))))
 
+(defun org-museum--localize-generated-toc (language)
+  "Localize Org's generated table-of-contents heading for LANGUAGE."
+  (when (string-prefix-p "zh" (downcase (or language "")))
+    (goto-char (point-min))
+    (when (re-search-forward
+           "<div\\b[^>]*\\bid=\"table-of-contents\"[^>]*>" nil t)
+      (let ((limit (min (point-max) (+ (point) 512))))
+        (when (re-search-forward
+               "\\(<h2\\b[^>]*>\\)Table of Contents\\(</h2>\\)" limit t)
+          (replace-match "\\1本文目录\\2" t nil))))))
+
 (defun org-museum--pp-fix-exported-entities ()
   "Repair malformed Org HTML tag separators in the current buffer.
 Org 9.8 emits the final non-breaking-space entity before a tag span without
@@ -3624,8 +3636,19 @@ tables retain their native markup."
 (defun org-museum--article-learning-hub-html (page out-file)
   "Return the learning completion and next-step actions hub HTML for PAGE."
   (let* ((shared-root (org-museum--shared-root))
-         (related-href (org-museum--relative-path
-                        (expand-file-name "related.html" shared-root) out-file)))
+         (links (org-museum-page-links-to page))
+         (backs (org-museum-page-linked-from page))
+         (first-related (car (or links backs)))
+         (related-href
+          (if (and first-related (not (string-empty-p first-related)))
+              (org-museum--related-href
+               (org-museum-page-id page) first-related out-file)
+            (org-museum--relative-path
+             (expand-file-name "related.html" shared-root) out-file)))
+         (related-desc
+          (if (and first-related (not (string-empty-p first-related)))
+              "与关联笔记双栏并排对读"
+            "浏览关联笔记库，并排双栏阅读")))
     (format
      (concat
       "<section class=\"museum-next-learning-hub\" aria-label=\"学习闭环与下一步行动\">\n"
@@ -3653,12 +3676,13 @@ tables retain their native markup."
       "      <span class=\"action-icon\">🔗</span>\n"
       "      <div class=\"action-info\">\n"
       "        <strong>对比关联笔记</strong>\n"
-      "        <small>并排双栏阅读，构建网状认知</small>\n"
+      "        <small>%s</small>\n"
       "      </div>\n"
       "    </a>\n"
       "  </div>\n"
       "</section>\n")
-     (org-museum--html-escape related-href t))))
+     (org-museum--html-escape related-href t)
+     (org-museum--html-escape related-desc))))
 
 (defun org-museum--article-meta-html (page out-file org-file)
   "Return the article metadata rail for PAGE."
@@ -4020,11 +4044,12 @@ Applicable scope: org-museum--postprocess-html."
                        org-file (org-museum-index-pages org-museum--index))))
          (links     (when page (org-museum-page-links-to page)))
          (backs     (when page (org-museum-page-linked-from page)))
-         (nav-html  (when (or links backs)
+         (has-nav   (and (or links backs) t))
+         (nav-html  (when has-nav
                       (org-museum--build-nav-html
                        links backs out-file (org-museum-page-id page))))
          (graph-html (when page
-                       (org-museum--generate-local-graph-html page out-file)))
+                       (org-museum--generate-local-graph-html page out-file has-nav)))
          (assets-html (when page
                         (org-museum--page-assets-html page out-file)))
          (knowledge-html (when (fboundp 'org-museum-knowledge--page-html)
@@ -9083,14 +9108,7 @@ window.addEventListener('pageshow',startReadingSession);
 
 (defun org-museum--related-localize-generated-toc (language)
   "Localize Org's generated table-of-contents heading for LANGUAGE."
-  (when (string-prefix-p "zh" (downcase (or language "")))
-    (goto-char (point-min))
-    (when (re-search-forward
-           "<div\\b[^>]*\\bid=\"table-of-contents\"[^>]*>" nil t)
-      (let ((limit (min (point-max) (+ (point) 512))))
-        (when (re-search-forward
-               "\\(<h2\\b[^>]*>\\)Table of Contents\\(</h2>\\)" limit t)
-          (replace-match "\\1本文目录\\2" t nil))))))
+  (org-museum--localize-generated-toc language))
 
 (defun org-museum--related-rebase-fragment (html page out-file)
   "Rebase links in HTML from PAGE output to OUT-FILE and prefix fragment IDs."
@@ -11704,8 +11722,10 @@ Applicable scope: org-museum--generate-local-graph-html."
               nodes)
         (push `((source . ,center-id) (target . ,overflow-id)) links)))
     `((nodes . ,(vconcat nodes)) (links . ,(vconcat links)))))
-(defun org-museum--generate-local-graph-html (page &optional out-file)
-  "Return the compact local relationship section for PAGE."
+(defun org-museum--generate-local-graph-html (page &optional out-file has-nav)
+  "Return the compact local relationship section for PAGE.
+When HAS-NAV is non-nil, relationship links have already been rendered
+by `org-museum--build-nav-html', so we avoid duplicating the list."
   (let* ((data (org-museum--generate-local-graph-data page out-file))
          (nodes (append (cdr (assq 'nodes data)) nil))
          (related
@@ -11718,27 +11738,47 @@ Applicable scope: org-museum--generate-local-graph-html."
          (graph-href
           (concat (org-museum--relative-path graph-file out-file)
                   "?focus="
-                  (url-hexify-string (org-museum-page-id page)))))
+                  (url-hexify-string (org-museum-page-id page))))
+         (category (org-museum-page-category page))
+         (category-label (org-museum--category-label category))
+         (index-file (expand-file-name "index.html" (org-museum--shared-root)))
+         (index-href (concat (org-museum--relative-path index-file out-file) "#recent-updates"))
+         (cat-href (concat (org-museum--relative-path index-file out-file)
+                           "?category=" (url-hexify-string (or category "")) "#recent-updates")))
     (concat
-     "<section id=\"local-graph-container\" aria-labelledby=\"local-graph-heading\">\n"
+     "<section id=\"local-graph-container\" aria-labelledby=\"local-graph-heading\""
+     (if has-nav " class=\"has-nav-links\"" "") ">\n"
      (format "<h3 id=\"local-graph-heading\">局部关系 / %02d</h3>\n" (length related))
      (if related
          (concat
-          "<ul class=\"org-museum-related-list\">\n"
-          (mapconcat
-           (lambda (node)
-             (format "<li><a href=\"%s\">%s</a></li>"
-                     (org-museum--html-escape
-                      (or (cdr (assq 'url node)) "#") t)
-                     (org-museum--html-escape
-                      (or (cdr (assq 'name node))
-                          (cdr (assq 'id node))
-                          "未命名"))))
-           related "\n")
-          "\n</ul>\n")
-       "<p class=\"org-museum-related-empty\">这篇笔记还没有可导出的关联页面。</p>\n")
-     (format "<a class=\"local-graph-link\" href=\"%s\">查看局部关系 →</a>\n"
-             (org-museum--html-escape graph-href t))
+          (if has-nav
+              ""
+            (concat
+             "<ul class=\"org-museum-related-list\">\n"
+             (mapconcat
+              (lambda (node)
+                (format "<li><a href=\"%s\">%s</a></li>"
+                        (org-museum--html-escape
+                         (or (cdr (assq 'url node)) "#") t)
+                        (org-museum--html-escape
+                         (or (cdr (assq 'name node))
+                             (cdr (assq 'id node))
+                             "未命名"))))
+              related "\n")
+             "\n</ul>\n"))
+          (format "<a class=\"local-graph-link\" href=\"%s\">在知识图谱中查看关系网络 →</a>\n"
+                  (org-museum--html-escape graph-href t)))
+       (concat
+        "<p class=\"org-museum-related-empty\">当前笔记暂无直接关联笔记。</p>\n"
+        (if (and category (not (string= category "uncategorized")))
+            (format "<p class=\"org-museum-related-hint\">可前往 <a href=\"%s\">%s 主题</a> 查看同类笔记，或浏览 <a href=\"%s\">全部笔记索引</a> 继续探索。</p>\n"
+                    (org-museum--html-escape cat-href t)
+                    (org-museum--html-escape (or category-label category))
+                    (org-museum--html-escape index-href t))
+          (format "<p class=\"org-museum-related-hint\">可浏览 <a href=\"%s\">全部笔记索引</a> 继续探索。</p>\n"
+                  (org-museum--html-escape index-href t)))
+        (format "<a class=\"local-graph-link\" href=\"%s\">在知识图谱中查看此节点 →</a>\n"
+                (org-museum--html-escape graph-href t))))
      "</section>\n")))
 
 

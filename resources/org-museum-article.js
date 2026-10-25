@@ -608,7 +608,17 @@ function initLearningHub(){
     else if(panel.getAttribute('aria-hidden')!=='false')return;
     var input=panel.querySelector('[data-ai-chat-input]');
     var title=document.querySelector('h1.title');
-    if(input){input.value='请根据当前笔记《'+(title?title.textContent.trim():document.title)+'》，生成 3 道渐进式自测题，先给题目，再给参考答案与解析。';input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();}
+    var connection=document.querySelector('[data-browser-connection]');
+    var isConnected = connection && connection.textContent && !connection.textContent.includes('尚未连接');
+    if(!isConnected){
+      var hint=panel.querySelector('.museum-ai-composer-hint');
+      if(hint)hint.textContent='提示：请在设置中配置并连接 AI 模型';
+    }
+    if(input){
+      input.value='请根据当前笔记《'+(title?title.textContent.trim():document.title)+'》，生成 3 道渐进式自测题，先给题目，再给参考答案与解析。';
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+      input.focus();
+    }
   });
   window.addEventListener('storage',function(event){if(event.key==='org-museum-studied-pages')syncStudied();});
   syncStudied();
