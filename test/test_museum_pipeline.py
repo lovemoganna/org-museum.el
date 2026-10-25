@@ -54,6 +54,23 @@ class Validation(unittest.TestCase):
         asset.write_text("a,b\n1,2\n", encoding="utf-8")
         self.path.write_text(note(extra="[[file:../../../note-assets/sample.csv]]"), encoding="utf-8")
         self.assertEqual(len(m.validate(self.root)), 1)
+    def test_mp3_asset_allowed_by_validation(self):
+        asset = self.root / "note-assets/sample.mp3"
+        asset.parent.mkdir(exist_ok=True)
+        asset.write_bytes(b"ID3" + b"\x00" * 128)
+        self.path.write_text(note(extra="[[file:../../../note-assets/sample.mp3][音频]]"), encoding="utf-8")
+        self.assertEqual(len(m.validate(self.root)), 1)
+    def test_mp3_asset_still_enforces_size_limit(self):
+        asset = self.root / "note-assets/oversize.mp3"
+        asset.parent.mkdir(exist_ok=True)
+        with asset.open("wb") as handle:
+            handle.truncate(20 * 1024 * 1024 + 1)
+        with self.assertRaises(m.Invalid): m.validate(self.root)
+    def test_other_unsupported_binary_still_rejected(self):
+        asset = self.root / "note-assets/sample.exe"
+        asset.parent.mkdir(exist_ok=True)
+        asset.write_bytes(b"MZ")
+        with self.assertRaises(m.Invalid): m.validate(self.root)
     def test_failed_build_no_output(self):
         output = self.root / "output"
         with self.assertRaises(OSError): m.build(self.root, self.root, output, "nonexistent-emacs-123")
