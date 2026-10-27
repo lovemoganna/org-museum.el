@@ -1,0 +1,53 @@
+async (page) => {
+ const context=page.context(),base='http://127.0.0.1:8778/';
+ await page.evaluate(()=>sessionStorage.removeItem('org-museum-player-v1'));
+ await page.goto(base+'pages/collected/ideas/suno-songwriting/b861d8ab-bcee-4e85-a44d-dc44ef826120.html?org-museum-theme=dark',{waitUntil:'domcontentloaded'});
+ await page.locator('.article-container .museum-audio-play').click();await page.waitForFunction(()=>document.querySelector('#museum-global-player audio')?.currentTime>.2);
+ await page.locator('.museum-player-details').click();
+ while(await page.evaluate(()=>window.orgMuseumPlayer.state().mode)!=='order')await page.locator('.museum-player-mode').click();
+ await page.keyboard.press('Escape');
+ await page.route('**/fixture-*.mp3',r=>r.fulfill({path:'test/fixtures/media/sample.mp3',contentType:'audio/mpeg'}));
+ await page.evaluate(base=>{window.orgMuseumPlayer.add([{src:base+'fixture-a.mp3',title:'回归测试 A',page:base+'index.html'},{src:base+'fixture-b.mp3',title:'回归测试 B',page:base+'timeline.html'}]);window.orgMuseumPlayer.toggle(window.orgMuseumPlayer.state().queue.find(t=>t.title==='回归测试 A'));},base);
+ await page.waitForFunction(()=>window.orgMuseumPlayer.state().track.title==='回归测试 B',null,{timeout:15000});
+ await page.waitForFunction(()=>document.querySelector('#museum-global-player audio').ended,null,{timeout:10000});
+ const order=await page.evaluate(()=>({track:window.orgMuseumPlayer.state().track.title,ended:document.querySelector('#museum-global-player audio').ended}));
+ await page.locator('.museum-player-details').click();await page.locator('.museum-player-mode').click();
+ await page.locator('.museum-player-dialog .museum-audio-play').click();
+ await page.waitForFunction(()=>document.querySelector('#museum-global-player audio').currentTime>.2);
+ await page.waitForFunction(()=>{const a=document.querySelector('#museum-global-player audio');return a.currentTime>1.3;});
+ await page.waitForFunction(()=>{const a=document.querySelector('#museum-global-player audio');return a.currentTime<.8&&!a.paused;});
+ const repeated=await page.evaluate(()=>({mode:window.orgMuseumPlayer.state().mode,title:window.orgMuseumPlayer.state().track.title}));
+ await page.locator('.museum-player-mode').click();await page.keyboard.press('Escape');await page.locator('.museum-player-skip').last().click();
+ const shuffled=await page.evaluate(()=>window.orgMuseumPlayer.state().track.title);if(shuffled==='回归测试 B')throw Error('Shuffle repeated same track');
+ await page.locator('.museum-player-details').click();await page.locator('.museum-player-clear').click();
+ if(await page.locator('.museum-player-queue-item').count()!==1)throw Error('Clear pending');
+ await page.keyboard.press('Escape');
+ const second=await context.newPage();
+ await second.route('**/org-museum-theme.js*',r=>r.fulfill({path:'resources/org-museum-theme.js',contentType:'application/javascript'}));
+ await second.route('**/org-museum.css*',r=>r.fulfill({path:'resources/org-museum.css',contentType:'text/css'}));
+ await second.goto(base+'pages/collected/ideas/suno-songwriting/b861d8ab-bcee-4e85-a44d-dc44ef826120.html',{waitUntil:'domcontentloaded'});
+ await second.locator('.article-container .museum-audio-play').click();
+ await second.waitForFunction(()=>document.querySelector('#museum-global-player audio')?.currentTime>.2);
+ await page.waitForFunction(()=>document.querySelector('#museum-global-player audio').paused);
+ await second.close();
+ await page.locator('.museum-player-stop').click();if(await page.locator('.museum-player-bar').isVisible())throw Error('Stop did not hide');
+ const sourceFrame=page.frameLocator('#museum-site-frame');
+ await sourceFrame.locator('.article-container .museum-audio-play').click();
+ await page.locator('.museum-player-bar').waitFor();
+ await page.waitForFunction(()=>!document.querySelector('#museum-global-player audio').paused);
+ await page.addScriptTag({path:'output/ui-quality-20261023-round3/package/axe.min.js'});
+ const axe=[];
+ for(const theme of ['dark','light']){
+  await page.evaluate(t=>document.documentElement.setAttribute('data-theme',t),theme);
+  await page.locator('.museum-player-details').click();
+  const result=await page.evaluate(async()=>{const r=await window.axe.run({include:[['#museum-global-player']]},{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa','wcag22aa']},rules:{'frame-tested':{enabled:false}}});return {violations:r.violations.map(v=>({id:v.id,impact:v.impact,summary:v.nodes.map(n=>n.failureSummary)})),incomplete:r.incomplete.map(v=>v.id),passes:r.passes.length};});
+  if(result.violations.length)throw Error(JSON.stringify(result));axe.push({theme,...result});
+  await page.keyboard.press('Escape');
+ }
+ let recover=false;await page.route('**/broken-audio.mp3',r=>recover?r.fulfill({path:'test/fixtures/media/sample.mp3',contentType:'audio/mpeg'}):r.fulfill({status:404,body:'Not found'}));
+ await page.evaluate(base=>window.orgMuseumPlayer.toggle({src:base+'broken-audio.mp3',title:'错误恢复测试',page:base+'index.html'}),base);
+ await page.locator('.museum-player-details').click();await page.locator('.museum-player-notice').filter({hasText:/失败/}).waitFor();await page.keyboard.press('Escape');recover=true;
+ await page.locator('.museum-player-toggle').click();await page.waitForFunction(()=>document.querySelector('#museum-global-player audio').currentTime>.2);await page.locator('.museum-player-toggle').click();await page.locator('.museum-player-details').click();
+ if(await page.locator('.museum-player-dialog .museum-audio-seek').isDisabled())throw Error('Retry left progress disabled');await page.keyboard.press('Escape');
+ return {order,repeated,shuffled,secondTabPausesFirst:true,stopAndResume:true,errorRetry:true,axe};
+}

@@ -1,0 +1,57 @@
+async (page) => {
+ const base=page.url().startsWith('http')?new URL(page.url().includes('/org-notes/')?'/org-notes/':'/',page.url()).href:'http://127.0.0.1:8778/';
+ await page.route('**/org-museum-theme.js*',r=>r.fulfill({path:'resources/org-museum-theme.js',contentType:'application/javascript'}));
+ await page.route('**/org-museum.css*',r=>r.fulfill({path:'resources/org-museum.css',contentType:'text/css'}));
+ await page.route('**/org-museum-article.js*',r=>r.fulfill({path:'resources/org-museum-article.js',contentType:'application/javascript'}));
+ const song='pages/collected/ideas/suno-songwriting/b861d8ab-bcee-4e85-a44d-dc44ef826120.html';
+ await page.goto(base+song+'?org-museum-theme=dark',{waitUntil:'domcontentloaded'});
+ await page.locator('.article-container .museum-audio-play').click();
+ await page.locator('#museum-site-frame').waitFor();
+ const audio=page.locator('#museum-global-player audio');
+ await page.waitForFunction(()=>document.querySelector('#museum-global-player audio').currentTime>0.3);
+ const before=await audio.evaluate(a=>{window.testPersistentAudio=a;return a.currentTime;});
+ let reader=page.frameLocator('#museum-site-frame');
+ await reader.getByRole('link',{name:/全部笔记/}).first().click();
+ await page.waitForURL(/index\.html/);
+ await reader.getByRole('link',{name:'时间',exact:true}).click();
+ await page.waitForURL(/timeline\.html/);
+ await page.waitForFunction(t=>document.querySelector('#museum-global-player audio').currentTime>t,before);
+ const timeline=await audio.evaluate(a=>({sameElement:window.testPersistentAudio===a,time:a.currentTime,paused:a.paused}));
+ if(!timeline.sameElement||timeline.paused)throw Error('Audio restarted on navigation');
+ await page.goBack();await page.waitForURL(/index\.html/);
+ await page.goForward();await page.waitForURL(/timeline\.html/);
+ const content=page.frames().find(f=>f.parentFrame()===page.mainFrame());
+ await reader.getByLabel('开始日期').fill('2026-10-20');await reader.getByLabel('结束日期').fill('2026-10-26');
+ await page.waitForURL(/from=2026-10-20/);
+ await content.evaluate(()=>location.hash='museum-audio-check');await page.waitForURL(/#museum-audio-check$/);
+ await page.goBack();await page.waitForURL(u=>!u.hash&&u.pathname.endsWith('timeline.html'));
+ if(!await page.evaluate(()=>window.orgMuseumReadingSuspended))throw Error('Original reading tracker still active');
+ if(await audio.evaluate(a=>a.paused))throw Error('Filter navigation paused music');
+ const layout=[];
+ for(const width of [360,768,1280,1440]){
+   await page.setViewportSize({width,height:900});
+   const box=await page.locator('.museum-player-bar').evaluate(n=>({left:n.getBoundingClientRect().left,right:n.getBoundingClientRect().right,width:n.getBoundingClientRect().width,overflow:n.scrollWidth-n.clientWidth,buttons:[...n.querySelectorAll('button')].filter(b=>b.offsetWidth).map(b=>b.getBoundingClientRect().height)}));
+   if(box.left<0||box.right>width||box.overflow>1||box.buttons.some(h=>h<44))throw Error(JSON.stringify(box));
+   layout.push({viewport:width,...box});
+ }
+ await page.locator('.museum-player-details').click();
+ await page.locator('.museum-player-dialog').waitFor({state:'visible'});
+ await page.locator('.museum-player-dialog .museum-audio-speed').selectOption('1.5');
+ if(await audio.evaluate(a=>a.playbackRate)!==1.5)throw Error('Rate');
+ await page.locator('.museum-player-mode').click();
+ await page.locator('.museum-player-mode').click();
+ const mode=await page.locator('.museum-player-mode').textContent();if(mode!=='随机播放')throw Error('Mode');
+ await page.keyboard.press('Escape');await page.locator('.museum-player-dialog').waitFor({state:'hidden'});
+ await page.locator('.museum-player-toggle').click();
+ if(!await audio.evaluate(a=>a.paused))throw Error('Mini pause');
+ await page.locator('.museum-player-toggle').click();
+ await page.waitForFunction(()=>!document.querySelector('#museum-global-player audio').paused);
+ await page.screenshot({path:'output/global-audio-20261027/timeline-playing.png'});
+ await page.locator('.museum-player-details').click();await page.screenshot({path:'output/global-audio-20261027/panel.png'});
+ const result={before,timeline,layout,mode,queue:await page.locator('.museum-player-queue-item').count(),history:'Back/Forward and query sync passed'};
+ await page.keyboard.press('Escape');await page.reload({waitUntil:'domcontentloaded'});
+ await page.locator('.museum-player-bar').waitFor();
+ const restored=await page.locator('#museum-global-player audio').evaluate(a=>({paused:a.paused,preload:a.preload}));
+ if(!restored.paused||restored.preload!=='none')throw Error('Reload autoplay');
+ return {...result,restored};
+}

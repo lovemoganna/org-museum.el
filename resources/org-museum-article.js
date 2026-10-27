@@ -791,6 +791,7 @@ document.addEventListener('visibilitychange',onVisibilityChange);
 if(motionQuery.addEventListener)motionQuery.addEventListener('change',onMotionChange);
 else if(motionQuery.addListener)motionQuery.addListener(onMotionChange);
 window.addEventListener('pagehide',onPageHide,{once:true});
+window.addEventListener('museum:page-suspend',onPageHide,{once:true});
 if(document.readyState==='loading')
   document.addEventListener('DOMContentLoaded',initFx);
 else initFx();
@@ -1128,7 +1129,7 @@ var restoreStarted=false;
 var saveInterval=null;
 var engagedTotalMs=0,qualifiedAt=0;
 function readingActive(){
-  return document.visibilityState==='visible'&&document.hasFocus();
+  return !window.orgMuseumReadingSuspended&&document.visibilityState==='visible'&&document.hasFocus();
 }
 var activeSince=readingActive()?Date.now():0;
 function updateEngagement(){
@@ -1217,6 +1218,7 @@ function record(){
   };
 }
 function save(){
+  if(window.orgMuseumReadingSuspended)return;
   var value=record();
   if(!value.qualifiedAt)return;
   openDb().then(function(db){
@@ -1276,7 +1278,11 @@ window.addEventListener('pagehide',function(){
   if(timer){clearTimeout(timer);timer=null;}
   stopPeriodicSave();save();
 });
-function startReadingSession(){restore();schedule();startPeriodicSave();}
+window.addEventListener('museum:page-suspend',function(){
+  if(timer){clearTimeout(timer);timer=null;}
+  stopPeriodicSave();save();
+});
+function startReadingSession(){if(!window.orgMuseumReadingSuspended){restore();schedule();startPeriodicSave();}}
 window.addEventListener('load',startReadingSession);
 window.addEventListener('pageshow',startReadingSession);
 })();

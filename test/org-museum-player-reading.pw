@@ -1,0 +1,17 @@
+async (page) => {
+ const context=await page.context().browser().newContext();const p=await context.newPage();
+ const base='http://127.0.0.1:8778/';
+ for(const [file,type] of [['org-museum-theme.js','application/javascript'],['org-museum-article.js','application/javascript'],['org-museum.css','text/css']])await p.route('**/'+file+'*',r=>r.fulfill({path:'resources/'+file,contentType:type}));
+ await p.goto(base+'pages/collected/ideas/suno-songwriting/b861d8ab-bcee-4e85-a44d-dc44ef826120.html',{waitUntil:'domcontentloaded'});
+ await p.locator('.article-container .museum-audio-play').click();
+ await p.waitForFunction(()=>document.querySelector('#museum-global-player audio')?.currentTime>.2);
+ await p.frameLocator('#museum-site-frame').getByRole('link',{name:/全部笔记/}).first().click();await p.waitForURL(/index\.html/);
+ await p.frameLocator('#museum-site-frame').getByRole('link',{name:'时间',exact:true}).click();await p.waitForURL(/timeline\.html/);
+ const record=()=>p.evaluate(()=>new Promise((resolve,reject)=>{const request=indexedDB.open('org-museum',1);request.onsuccess=()=>{const get=request.result.transaction('readingState','readonly').objectStore('readingState').get('b861d8ab-bcee-4e85-a44d-dc44ef826120');get.onsuccess=()=>resolve(get.result);get.onerror=()=>reject(get.error);};request.onerror=()=>reject(request.error);}));
+ const before=await record();if(!before||!before.href.includes('suno-songwriting'))throw Error('Original note position not saved');
+ const started=Date.now();await p.waitForFunction(start=>Date.now()-start>5500,started);
+ const after=await record();
+ if(after.href!==before.href||after.lastVisitedAt!==before.lastVisitedAt)throw Error('Hidden original note kept recording: '+JSON.stringify({before,after}));
+ const suspended=await p.evaluate(()=>window.orgMuseumReadingSuspended);
+ await context.close();return {suspended,href:after.href,unchangedTimestamp:after.lastVisitedAt===before.lastVisitedAt,oldTrackerStopped:true};
+}
