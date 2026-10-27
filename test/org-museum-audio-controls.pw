@@ -1,0 +1,69 @@
+async (page) => {
+ const origin=new URL(page.url()).origin;
+ const route=(page.url().includes('/org-notes/')?'/org-notes':'')+'/pages/collected/ideas/suno-songwriting/b861d8ab-bcee-4e85-a44d-dc44ef826120.html';
+ // Route only the candidate shared assets, preserving the real song and page.
+ await page.route('**/org-museum-theme.js*',r=>r.fulfill({path:'resources/org-museum-theme.js',contentType:'application/javascript'}));
+ await page.route('**/org-museum.css*',r=>r.fulfill({path:'resources/org-museum.css',contentType:'text/css'}));
+ await page.emulateMedia({reducedMotion:'reduce'});
+ await page.addInitScript(()=>{localStorage.clear();sessionStorage.clear();});
+ await page.goto(origin+route+'?org-museum-theme=dark',{waitUntil:'domcontentloaded'});
+ const widget=page.locator('.museum-audio-controls'), audio=page.locator('audio');
+ await widget.waitFor();
+ if(await audio.isVisible())throw Error('Both sets of controls shown');
+ const initial=await audio.evaluate(a=>({preload:a.preload,paused:a.paused,currentTime:a.currentTime,readyState:a.readyState}));
+ if(initial.preload!=='none'||!initial.paused)throw Error('Unexpected preload/autoplay');
+ const layout=[];
+ for(const theme of ['light','dark'])for(const width of [360,768,1280,1440]){
+   await page.setViewportSize({width,height:900});
+   await page.evaluate(t=>window.orgMuseumSetTheme?window.orgMuseumSetTheme(t):document.documentElement.setAttribute('data-theme',t),theme);
+   await widget.evaluate(n=>n.scrollIntoView({block:'center',behavior:'instant'}));
+   await page.waitForFunction(()=>document.querySelector('.museum-audio-controls').getBoundingClientRect().right<=innerWidth);
+   const measurement=await widget.evaluate(n=>({overflow:n.scrollWidth-n.clientWidth,pageOverflow:document.documentElement.scrollWidth-innerWidth,closedDrawerRight:document.querySelector('#org-museum-sidebar').getBoundingClientRect().right,buttons:[...n.querySelectorAll('button,select,input')].map(e=>({height:e.getBoundingClientRect().height,width:e.getBoundingClientRect().width})),background:getComputedStyle(n.closest('figure')).backgroundColor}));
+   if(measurement.overflow>1||measurement.pageOverflow>1||measurement.closedDrawerRight>1||measurement.buttons.some(b=>b.height<44||b.width<44))throw Error('Controls layout '+JSON.stringify({theme,width,...measurement}));
+   await page.screenshot({path:'output/audio-style-20261027/'+theme+'-'+width+'.png'});
+   layout.push({theme,width,...measurement});
+ }
+ const play=page.locator('.museum-audio-play');
+ await audio.evaluate(a=>a.muted=true);await play.click();
+ await page.waitForFunction(()=>document.querySelector('audio').currentTime>0.3).catch(e=>{throw Error('Initial playback: '+e.message);});
+ if(await play.getAttribute('aria-label')!=='暂停')throw Error('Play feedback');
+ await play.click();if(!await audio.evaluate(a=>a.paused))throw Error('Pause');
+ const seek=page.locator('.museum-audio-seek');
+ const track=await seek.boundingBox();await page.mouse.click(track.x+track.width*.35,track.y+track.height/2);
+ await page.waitForFunction(()=>document.querySelector('audio').currentTime>50&&document.querySelector('audio').currentTime<150).catch(e=>{throw Error('Pointer seek: '+e.message);});
+ await seek.focus();await seek.press('ArrowRight');
+ const sought=await audio.evaluate(a=>a.currentTime);if(sought<50)throw Error('Keyboard seeking');
+ await page.locator('.museum-audio-speed').selectOption('1.5');
+ if(await audio.evaluate(a=>a.playbackRate)!==1.5)throw Error('Speed');
+ await page.locator('.museum-audio-volume').focus();await page.locator('.museum-audio-volume').press('Home');
+ await page.locator('.museum-audio-mute').click();
+ if(await audio.evaluate(a=>a.muted||a.volume===0))throw Error('Zero volume unmute');
+ await page.locator('.museum-audio-mute').click();
+ if(!await audio.evaluate(a=>a.muted))throw Error('Mute');
+ // Fast play/pause, end and repeat must follow media state, not a UI timer.
+ await play.click();await play.click();
+ await page.waitForFunction(()=>document.querySelector('audio').paused);
+ await audio.evaluate(a=>{a.currentTime=a.duration-.1;a.playbackRate=2;a.play().catch(()=>{});});
+ await page.waitForFunction(()=>document.querySelector('audio').ended).catch(e=>{throw Error('End state: '+e.message);});
+ await play.click();await page.waitForFunction(()=>{const a=document.querySelector('audio');return a.currentTime>0.1&&a.currentTime<3&&!a.paused;}).catch(e=>{throw Error('Replay: '+e.message);});
+ await play.click();
+ const metadata=await audio.evaluate(a=>({duration:a.duration,currentTime:a.currentTime,paused:a.paused}));
+ // Replacement is idempotent and also works on dynamically inserted articles.
+ await page.evaluate(()=>{window.orgMuseumMedia.enhance(document);const full=document.createElement('div');full.className='article-container';full.id='dynamic-audio-test';full.innerHTML='<figure><audio controls preload="none" aria-label="动态音频"><source src="/missing-audio.mp3" type="audio/mpeg"></audio><figcaption><a href="/missing-audio.mp3">源文件</a></figcaption></figure>';document.querySelector('.article-container').append(full);});
+ await page.locator('#dynamic-audio-test .museum-audio-controls').waitFor();
+ if(await widget.count()!==2)throw Error('Duplicate audio controls');
+ let recover=false;
+ await page.route('**/missing-audio.mp3',r=>!recover?r.fulfill({status:404,body:'Not found'}):r.fulfill({path:'test/fixtures/media/sample.mp3',contentType:'audio/mpeg'}));
+ const dynamic=page.locator('#dynamic-audio-test');await dynamic.locator('.museum-audio-play').click();
+ await dynamic.locator('[role=status]').filter({hasText:/无法播放|播放失败/}).waitFor();
+ recover=true;
+ await dynamic.locator('.museum-audio-play').click();
+ await page.waitForFunction(()=>document.querySelector('#dynamic-audio-test audio').currentTime>0.2);
+ await dynamic.locator('.museum-audio-play').click();
+ await dynamic.locator('.museum-audio-native').click();
+ if(!await dynamic.locator('audio').isVisible())throw Error('Error native fallback');
+ await dynamic.evaluate(n=>n.remove());
+ await page.locator('.museum-audio-native').click();
+ if(!await audio.isVisible()||await page.locator('.museum-audio-controls').isVisible())throw Error('Native fallback');
+ return {initial,layout,metadata,sought,playPauseSeekVolumeSpeedEndRepeatErrorAndFallback:'passed'};
+}

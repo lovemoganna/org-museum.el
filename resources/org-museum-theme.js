@@ -1829,6 +1829,118 @@
       caption.appendChild(link); caption.appendChild(status);
       figure.appendChild(player); figure.appendChild(caption);
     });
+    root.querySelectorAll('.article-container audio, .museum-md audio').forEach(prepareAudio);
+  }
+  var audioSequence = 0;
+  function prepareAudio(audio) {
+    if (audio.dataset.museumAudioReady || !audio.closest('figure')) return;
+    var figure = audio.closest('figure');
+    var panel = document.createElement('div'); panel.className = 'museum-audio-controls';
+    var title = audio.getAttribute('aria-label') || '音频';
+    var source = audio.currentSrc || audio.getAttribute('src') || audio.querySelector('source')?.getAttribute('src') || '';
+    var format = /\.([a-z0-9]+)(?:[?#]|$)/i.exec(source);
+    var titleId = 'museum-audio-title-'+(++audioSequence);
+    var icons = {
+      play:'<path d="m9 5 10 7-10 7Z"/>',
+      pause:'<path d="M8 5v14M16 5v14"/>',
+      volume:'<path d="M11 5 6 9H3v6h3l5 4ZM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14"/>',
+      muted:'<path d="M11 5 6 9H3v6h3l5 4ZM16 9l6 6m0-6-6 6"/>'
+    };
+    function icon(button, name) {
+      button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">'+icons[name]+'</svg>';
+    }
+    function element(tag, className, text) {
+      var node = document.createElement(tag); node.className = className;
+      if (text) node.textContent = text; return node;
+    }
+    function button(className, label) {
+      var node = element('button',className); node.type='button'; node.setAttribute('aria-label',label);node.title=label;return node;
+    }
+    function clock(value) {
+      if (!Number.isFinite(value)) return '--:--';
+      var total=Math.max(0,Math.floor(value)),hours=Math.floor(total/3600),minutes=Math.floor(total%3600/60),seconds=String(total%60).padStart(2,'0');
+      return (hours?hours+':'+String(minutes).padStart(2,'0'):minutes)+':'+seconds;
+    }
+    var header=element('div','museum-audio-heading');
+    var heading=element('div','museum-audio-identity');
+    heading.appendChild(element('span','museum-audio-format',(format?format[1].toUpperCase()+' · ':'')+'音频'));
+    var name=element('span','museum-audio-title',title);name.id=titleId;heading.appendChild(name);header.appendChild(heading);
+    var fallback=button('museum-audio-native','切换系统音频控件');fallback.textContent='系统控件';header.appendChild(fallback);
+    panel.setAttribute('role','group');panel.setAttribute('aria-labelledby',titleId);
+    var main=element('div','museum-audio-main');
+    var play=button('museum-audio-play','播放');icon(play,'play');main.appendChild(play);
+    var progress=element('div','museum-audio-progress');
+    var meta=element('div','museum-audio-meta');
+    var time=element('span','museum-audio-time','0:00 / --:--');
+    var status=element('span','museum-audio-status','点击播放');status.setAttribute('role','status');
+    meta.append(time,status);
+    var seek=element('input','museum-audio-seek');seek.type='range';seek.min='0';seek.max='0';seek.step='0.1';seek.value='0';seek.disabled=true;seek.setAttribute('aria-label',title+'，播放进度');
+    progress.append(meta,seek);main.appendChild(progress);
+    var footer=element('div','museum-audio-footer');
+    var volumeGroup=element('div','museum-audio-volume-group');
+    var mute=button('museum-audio-mute','静音');icon(mute,'volume');mute.setAttribute('aria-pressed','false');
+    var volume=element('input','museum-audio-volume');volume.type='range';volume.min='0';volume.max='1';volume.step='0.05';volume.value=String(audio.volume);volume.setAttribute('aria-label',title+'，音量');
+    volumeGroup.append(mute,volume);
+    var speed=element('select','museum-audio-speed');speed.setAttribute('aria-label',title+'，播放速度');
+    [0.5,0.75,1,1.25,1.5,2].forEach(function(rate){var option=document.createElement('option');option.value=String(rate);option.textContent=rate+'×';speed.appendChild(option);});speed.value=String(audio.playbackRate);
+    footer.append(volumeGroup,speed);panel.append(header,main,footer);
+    var requested=false, failed=false, dragging=false, sourceErrors=new Set();
+    function syncProgress() {
+      var duration=audio.duration,available=Number.isFinite(duration)&&duration>0;
+      seek.disabled=!available||failed;seek.max=available?String(duration):'0';
+      if (!dragging) seek.value=String(audio.currentTime||0);
+      time.textContent=clock(dragging?Number(seek.value):audio.currentTime)+' / '+clock(duration);
+      seek.setAttribute('aria-valuetext',clock(Number(seek.value))+'，总时长 '+clock(duration));
+      seek.style.setProperty('--audio-progress',available?Math.min(100,100*Number(seek.value)/duration)+'%':'0%');
+    }
+    function syncState(message) {
+      var playing=!audio.paused&&!audio.ended;
+      icon(play,playing?'pause':'play');play.setAttribute('aria-label',playing?'暂停':'播放');play.title=playing?'暂停':'播放';
+      panel.classList.toggle('is-playing',playing);
+      if(message)status.textContent=message;
+      syncProgress();
+    }
+    play.addEventListener('click',function(){
+      if(!audio.paused||requested){requested=false;audio.pause();syncState('已暂停');return;}
+      requested=true;
+      if(failed){failed=false;sourceErrors.clear();audio.load();}
+      status.textContent='加载中…';
+      var promise=audio.play();
+      if(promise)promise.catch(function(error){
+        if(error.name==='AbortError')return;
+        requested=false;syncState('播放失败，请重试或打开源文件');
+      });
+    });
+    audio.addEventListener('playing',function(){requested=false;syncState('正在播放');});
+    audio.addEventListener('pause',function(){requested=false;syncState(failed?'无法播放，请重试或打开源文件':audio.ended?'播放结束':'已暂停');});
+    audio.addEventListener('ended',function(){requested=false;syncState('播放结束');});
+    audio.addEventListener('waiting',function(){if(!audio.paused)status.textContent='缓冲中…';});
+    function fail(){failed=true;requested=false;audio.pause();syncState('无法播放，请重试或打开源文件');}
+    audio.addEventListener('error',fail);
+    // A failed <source> does not bubble an error to <audio>. Keep alternate
+    // sources usable, but stop buffering when every candidate has failed.
+    var sources=Array.from(audio.querySelectorAll('source'));
+    sources.forEach(function(source){source.addEventListener('error',function(){
+      sourceErrors.add(source);
+      if(!audio.hasAttribute('src')&&sourceErrors.size===sources.length&&audio.readyState===0)fail();
+    });});
+    ['loadedmetadata','durationchange','timeupdate','seeked'].forEach(function(event){audio.addEventListener(event,syncProgress);});
+    seek.addEventListener('input',function(){dragging=true;syncProgress();});
+    seek.addEventListener('change',function(){audio.currentTime=Number(seek.value);dragging=false;syncProgress();});
+    function syncVolume(){
+      var muted=audio.muted||audio.volume===0;icon(mute,muted?'muted':'volume');mute.setAttribute('aria-pressed',String(muted));mute.setAttribute('aria-label',muted?'取消静音':'静音');mute.title=muted?'取消静音':'静音';
+      volume.value=String(audio.muted?0:audio.volume);
+      volume.setAttribute('aria-valuetext',Math.round(Number(volume.value)*100)+'%');
+    }
+    mute.addEventListener('click',function(){if(audio.volume===0){audio.volume=0.5;audio.muted=false;}else audio.muted=!audio.muted;syncVolume();});
+    volume.addEventListener('input',function(){audio.volume=Number(volume.value);audio.muted=audio.volume===0;syncVolume();});
+    audio.addEventListener('volumechange',syncVolume);
+    speed.addEventListener('change',function(){audio.playbackRate=Number(speed.value);});
+    audio.addEventListener('ratechange',function(){speed.value=String(audio.playbackRate);});
+    fallback.addEventListener('click',function(){audio.controls=true;audio.hidden=false;panel.hidden=true;figure.classList.remove('museum-audio-player');audio.focus();});
+    // Hide the browser controls only after the replacement is fully wired.
+    audio.before(panel);audio.dataset.museumAudioReady='1';audio.hidden=true;
+    figure.classList.add('museum-audio-player');syncVolume();syncState();
   }
   window.orgMuseumMedia = {describe:describe, enhance:enhance};
   function init() {
