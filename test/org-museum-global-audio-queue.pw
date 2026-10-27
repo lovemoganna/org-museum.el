@@ -30,6 +30,7 @@ async (page) => {
  await second.waitForFunction(()=>document.querySelector('#museum-global-player audio')?.currentTime>.2);
  await page.waitForFunction(()=>document.querySelector('#museum-global-player audio').paused);
  await second.close();
+ await page.locator('.museum-player-details').click();
  await page.locator('.museum-player-stop').click();if(await page.locator('.museum-player-bar').isVisible())throw Error('Stop did not hide');
  const sourceFrame=page.frameLocator('#museum-site-frame');
  await sourceFrame.locator('.article-container .museum-audio-play').click();

@@ -18,6 +18,8 @@ async (page) => {
  await page.waitForFunction(t=>document.querySelector('#museum-global-player audio').currentTime>t,before);
  const timeline=await audio.evaluate(a=>({sameElement:window.testPersistentAudio===a,time:a.currentTime,paused:a.paused}));
  if(!timeline.sameElement||timeline.paused)throw Error('Audio restarted on navigation');
+ await page.locator('.museum-player-fold').click();
+ if(await page.locator('.museum-player-bar').isVisible()||!await page.locator('.museum-player-restore').evaluate(n=>n===document.activeElement))throw Error('Fold or focus failed');
  await page.goBack();await page.waitForURL(/index\.html/);
  await page.goForward();await page.waitForURL(/timeline\.html/);
  const content=page.frames().find(f=>f.parentFrame()===page.mainFrame());
@@ -27,6 +29,8 @@ async (page) => {
  await page.goBack();await page.waitForURL(u=>!u.hash&&u.pathname.endsWith('timeline.html'));
  if(!await page.evaluate(()=>window.orgMuseumReadingSuspended))throw Error('Original reading tracker still active');
  if(await audio.evaluate(a=>a.paused))throw Error('Filter navigation paused music');
+ if(await page.locator('.museum-player-bar').isVisible())throw Error('Navigation expanded folded player');
+ await page.locator('.museum-player-restore').focus();await page.keyboard.press('Enter');
  const layout=[];
  for(const width of [360,768,1280,1440]){
    await page.setViewportSize({width,height:900});
@@ -53,5 +57,8 @@ async (page) => {
  await page.locator('.museum-player-bar').waitFor();
  const restored=await page.locator('#museum-global-player audio').evaluate(a=>({paused:a.paused,preload:a.preload}));
  if(!restored.paused||restored.preload!=='none')throw Error('Reload autoplay');
- return {...result,restored};
+ await page.locator('.museum-player-fold').click();await page.reload({waitUntil:'domcontentloaded'});
+ await page.locator('.museum-player-restore').waitFor();
+ if(await page.locator('.museum-player-bar').isVisible()||!await page.locator('#museum-global-player audio').evaluate(a=>a.paused))throw Error('Folded refresh state');
+ return {...result,restored,foldedNavigation:'pass',foldedReload:'pass',keyboardRestore:'pass'};
 }
