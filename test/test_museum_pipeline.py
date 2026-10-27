@@ -54,6 +54,15 @@ class Validation(unittest.TestCase):
         asset.write_text("a,b\n1,2\n", encoding="utf-8")
         self.path.write_text(note(extra="[[file:../../../note-assets/sample.csv]]"), encoding="utf-8")
         self.assertEqual(len(m.validate(self.root)), 1)
+    def test_common_media_assets_allowed_by_validation(self):
+        directory = self.root / "note-assets"
+        directory.mkdir()
+        for extension in ("mp3", "wav", "ogg", "m4a", "mp4", "webm"):
+            with self.subTest(extension=extension):
+                asset = directory / ("sample." + extension)
+                asset.write_bytes(b"format validation fixture")
+                self.path.write_text(note(extra=f"[[file:../../../note-assets/{asset.name}][媒体]]"), encoding="utf-8")
+                self.assertEqual(len(m.validate(self.root)), 1)
     def test_mp3_asset_allowed_by_validation(self):
         asset = self.root / "note-assets/sample.mp3"
         asset.parent.mkdir(exist_ok=True)

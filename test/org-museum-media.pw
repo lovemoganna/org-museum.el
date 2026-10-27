@@ -1,0 +1,77 @@
+async (page) => {
+  const results = [];
+  const base = new URL(page.url().includes('/org-notes/') ? '/org-notes/' : '/',page.url()).href;
+  await page.emulateMedia({reducedMotion:'reduce'});
+  const article = 'pages/collected/knowledge/english-speaking-5w/a59163a1-5f68-4a52-a831-cb7f770c1abe.html';
+  await page.goto(base+article+'?org-museum-theme=dark',{waitUntil:'domcontentloaded'});
+  await page.locator('.museum-media iframe').waitFor();
+  if (await page.locator('.museum-media iframe').count() !== 1) throw Error('Duplicate or missing YouTube player');
+  const youtube = await page.locator('.museum-media iframe').getAttribute('src');
+  if (!youtube.includes('embed/ag3RnEaB3zM?autoplay=0')) throw Error(youtube);
+  const providerFrames = [];
+  for (const frame of page.frames().filter(f=>f.url().includes('youtube.com/embed/'))) {
+    providerFrames.push({url:frame.url(),text:(await frame.locator('body').innerText({timeout:10000}).catch(e=>String(e))).slice(0,700)});
+  }
+  for (const theme of ['light','dark']) {
+    await page.evaluate(t=>document.documentElement.setAttribute('data-theme',t),theme);
+    for (const width of [360,768,1280,1440]) {
+      await page.setViewportSize({width,height:900});
+      await page.waitForFunction(()=>{const r=document.querySelector('.museum-media iframe').getBoundingClientRect();return r.left>=0 && r.right<=innerWidth && r.width>0;});
+      const measurement = await page.locator('.museum-media').evaluate(f=>{
+        const p=f.querySelector('iframe'), r=p.getBoundingClientRect();
+        return {width:r.width,height:r.height,overflow:document.documentElement.scrollWidth-innerWidth,within:r.width<=f.clientWidth+1,title:p.title,fullscreen:p.allowFullscreen};
+      });
+      if(measurement.overflow>1||!measurement.within||measurement.height<200||!measurement.fullscreen||!measurement.title)throw Error(JSON.stringify(measurement));
+      results.push({theme,viewport:width,...measurement});
+    }
+  }
+  await page.setViewportSize({width:1440,height:900});
+  await page.locator('.museum-media iframe').scrollIntoViewIfNeeded();
+  await page.screenshot({path:'output/media-20261026/article-1440.png',timeout:15000});
+  await page.setViewportSize({width:360,height:900});
+  await page.locator('.museum-media iframe').scrollIntoViewIfNeeded();
+  await page.screenshot({path:'output/media-20261026/article-360.png',timeout:15000});
+  // Real encoded media fixtures exercise decoding and playback; they never
+  // enter the note source or publication artifact.
+  await page.route('**/media-fixture.mp4', r=>r.fulfill({path:'test/fixtures/media/sample.mp4',contentType:'video/mp4'}));
+  await page.route('**/media-fixture.mp3', r=>r.fulfill({path:'test/fixtures/media/sample.mp3',contentType:'audio/mpeg'}));
+  await page.evaluate(()=>{
+    const article=document.querySelector('.article-container');
+    const extra=document.createElement('section');extra.id='media-validation';
+    extra.innerHTML='<p><a href="/media-fixture.mp4">视频</a></p><p><a href="/media-fixture.mp3">音频</a></p><p><a href="https://www.bilibili.com/video/BV1B7411m7LV/?p=2&t=42">B站验证</a></p>';
+    article.append(extra);window.orgMuseumMedia.enhance(extra);
+  });
+  const native=[];
+  for(const tag of ['video','audio']) {
+    const media=page.locator('#media-validation '+tag);
+    const keys=await media.evaluate(m=>['j','k'].map(key=>{const e=new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true});m.dispatchEvent(e);return e.defaultPrevented;}));
+    if(keys.some(Boolean))throw Error('Reading shortcuts captured native media keys');
+    const initial=await media.evaluate(m=>({controls:m.controls,preload:m.preload,autoplay:m.autoplay,label:m.getAttribute('aria-label')}));
+    if(!initial.controls||initial.preload!=='none'||initial.autoplay||!initial.label)throw Error('Native defaults');
+    await media.evaluate(async m=>{m.muted=true;await m.play();});
+    await page.waitForFunction(tag=>document.querySelector('#media-validation '+tag).currentTime>0.2,tag,{timeout:15000});
+    native.push(await media.evaluate(m=>({tag:m.tagName,duration:m.duration,time:m.currentTime,error:m.error?.code||null})));
+    await media.evaluate(m=>m.pause());
+  }
+  const bili=await page.locator('#media-validation iframe').getAttribute('src');
+  if(!bili.includes('bvid=BV1B7411m7LV&p=2&autoplay=0&t=42'))throw Error(bili);
+  await page.evaluate(()=>{
+    const related=document.createElement('div');related.className='related-full article-container';related.id='related-media-validation';
+    related.innerHTML='<p><a href="https://youtu.be/797i57sGhEY?t=92">动态相关正文</a></p>';
+    document.body.append(related);
+  });
+  await page.locator('#related-media-validation iframe').waitFor();
+  const dynamic=await page.locator('#related-media-validation iframe').getAttribute('src');
+  if(!dynamic.endsWith('start=92'))throw Error(dynamic);
+  await page.locator('#related-media-validation').evaluate(n=>n.remove());
+  await page.locator('#media-validation').evaluate(n=>n.remove());
+  const toggle=page.locator('.code-toggle-btn').first();
+  await toggle.press('Enter');
+  if(await toggle.getAttribute('aria-expanded')!=='true')throw Error('Code expansion regression');
+  await toggle.press('Space');
+  if(await toggle.getAttribute('aria-expanded')!=='false')throw Error('Code folding regression');
+  if(await page.locator('.museum-ai-trigger,[data-ai-toggle]').count())throw Error('AI launcher regression');
+  await page.keyboard.press('Control+i');await page.locator('#museum-ai-panel').waitFor({state:'visible'});
+  await page.keyboard.press('Escape');await page.locator('#museum-ai-panel').waitFor({state:'hidden'});
+  return {youtube,providerFrames,layout:results,native,bili,dynamic,coreRegression:'code fold, keyboard AI open/close passed'};
+}

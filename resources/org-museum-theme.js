@@ -1751,3 +1751,95 @@
     else if (systemScheme.addListener) systemScheme.addListener(changed);
   }
 })();
+
+/* Shared media: also handles full articles inserted by related reading. */
+(function () {
+  'use strict';
+  if (window.orgMuseumMedia || !window.MutationObserver) return;
+  var types = {mp3:'audio/mpeg', wav:'audio/wav', ogg:'audio/ogg', m4a:'audio/mp4', mp4:'video/mp4', webm:'video/webm'};
+  function seconds(value) {
+    if (/^\d+$/.test(value || '')) return Math.min(Number(value), 2147483647);
+    var match = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(value || '');
+    return match ? Math.min((Number(match[1] || 0)*3600 + Number(match[2] || 0)*60 + Number(match[3] || 0)), 2147483647) : 0;
+  }
+  function describe(href) {
+    var url;
+    try { url = new URL(href, document.baseURI); } catch (_) { return null; }
+    if (!/^https?:$/.test(url.protocol) || url.username || url.password) return null;
+    var host = url.hostname.toLowerCase(), id, match;
+    var start = seconds(url.searchParams.get('start') || url.searchParams.get('t') || url.hash.replace(/^#t=/, ''));
+    if (host === 'youtu.be') id = url.pathname.slice(1).split('/')[0];
+    if (['youtube.com','www.youtube.com','m.youtube.com','www.youtube-nocookie.com','youtube-nocookie.com'].indexOf(host) !== -1) {
+      if (url.pathname === '/watch') id = url.searchParams.get('v');
+      else if ((match = /^\/(?:embed|shorts|live)\/([^/]+)\/?$/.exec(url.pathname))) id = match[1];
+    }
+    if (id && /^[\w-]{11}$/.test(id)) return {kind:'iframe', key:'youtube:'+id, label:'YouTube', src:'https://www.youtube.com/embed/'+id+'?autoplay=0&playsinline=1&start='+start};
+    if (['bilibili.com','www.bilibili.com','m.bilibili.com','player.bilibili.com'].indexOf(host) !== -1) {
+      var bvid = null, aid = null;
+      if ((match = /^\/video\/(BV[0-9A-Za-z]{10}|av\d+)\/?$/.exec(url.pathname))) {
+        if (match[1].slice(0,2) === 'BV') bvid = match[1]; else aid = match[1].slice(2);
+      } else if (host === 'player.bilibili.com' && url.pathname === '/player.html') {
+        bvid = url.searchParams.get('bvid'); aid = url.searchParams.get('aid');
+      }
+      var identity = /^BV[0-9A-Za-z]{10}$/.test(bvid || '') ? 'bvid='+bvid : /^\d+$/.test(aid || '') ? 'aid='+aid : null;
+      if (identity) {
+        var part = Math.max(1, Math.min(parseInt(url.searchParams.get('p'),10) || 1, 10000));
+        return {kind:'iframe', key:'bilibili:'+identity+':'+part, label:'哔哩哔哩', src:'https://player.bilibili.com/player.html?'+identity+'&p='+part+'&autoplay=0&t='+start};
+      }
+    }
+    var extension = /\.([a-z0-9]+)$/i.exec(url.pathname);
+    var mime = extension && types[extension[1].toLowerCase()];
+    return mime ? {kind:mime.split('/')[0], key:url.href, label:mime.startsWith('audio/')?'音频':'视频', src:url.href, mime:mime} : null;
+  }
+  function enhance(root) {
+    root.querySelectorAll('a[href]').forEach(function (link) {
+      // Only a standalone paragraph becomes a player; prose, tables, code and
+      // existing native players retain their reading/navigation behaviour.
+      var paragraph = link.parentElement;
+      var container = link.closest('.article-container, .museum-md');
+      if (!container || !paragraph || paragraph.tagName !== 'P' || link.closest('figure,pre,nav,.museum-asset')) return;
+      if (!Array.from(paragraph.childNodes).every(function(n){return n === link || (n.nodeType === 3 && !n.textContent.trim());})) return;
+      var media = describe(link.href);
+      if (!media || Array.from(container.querySelectorAll('[data-museum-media-key]')).some(function(n){return n.dataset.museumMediaKey === media.key;})) return;
+      var figure = document.createElement('figure');
+      figure.className = 'museum-asset museum-media museum-media-'+media.kind;
+      figure.dataset.museumMediaKey = media.key;
+      var player = document.createElement(media.kind), caption = document.createElement('figcaption');
+      if (media.kind === 'iframe') {
+        player.title = media.label+'：'+(link.textContent.trim() || '视频播放器');
+        player.loading = 'lazy';
+        player.referrerPolicy = 'strict-origin-when-cross-origin';
+        player.allow = 'encrypted-media; fullscreen; picture-in-picture';
+        player.allowFullscreen = true;
+        player.src = media.src;
+      } else {
+        player.controls = true; player.preload = 'none';
+        player.setAttribute('aria-label', link.textContent.trim() || media.label);
+        if (media.kind === 'video') player.setAttribute('playsinline','');
+        var source = document.createElement('source'); source.src = media.src; source.type = media.mime;
+        player.appendChild(source);
+        player.addEventListener('error', function(){status.hidden = false;});
+        source.addEventListener('error', function(){status.hidden = false;});
+      }
+      caption.className = 'museum-asset-caption';
+      var status = document.createElement('span');
+      status.textContent = media.kind === 'iframe' ? '若无法播放，可打开源站观看。' : '无法播放此媒体，可打开源文件。';
+      status.hidden = media.kind !== 'iframe'; status.setAttribute('role','status');
+      paragraph.replaceWith(figure);
+      caption.appendChild(link); caption.appendChild(status);
+      figure.appendChild(player); figure.appendChild(caption);
+    });
+  }
+  window.orgMuseumMedia = {describe:describe, enhance:enhance};
+  function init() {
+    enhance(document);
+    var pending = false;
+    new MutationObserver(function(records){
+      if (pending || !records.some(function(record){return Array.from(record.addedNodes).some(function(n){return n.nodeType===1 && (n.matches('.article-container,.museum-md') || n.querySelector('.article-container,.museum-md'));});})) return;
+      pending = true;
+      queueMicrotask(function(){pending=false;enhance(document);});
+    }).observe(document.body,{childList:true,subtree:true});
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded',init,{once:true});
+  else init();
+})();

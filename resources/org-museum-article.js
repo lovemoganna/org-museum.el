@@ -68,7 +68,7 @@ else init();
 var lastKey='',lastKeyTime=0;
 function readingShortcutBlocked(e){
   return e.defaultPrevented||e.isComposing||e.metaKey||e.ctrlKey||e.altKey||
-    e.target.isContentEditable||e.target.closest('input,textarea,select,button,a,[role="dialog"],dialog')||
+    e.target.isContentEditable||e.target.closest('input,textarea,select,button,a,video,audio,[role="dialog"],dialog')||
     document.querySelector('dialog[open],#image-lightbox-overlay.visible')||
     document.body.classList.contains('museum-drawer-open')||
     document.body.classList.contains('museum-toc-open');

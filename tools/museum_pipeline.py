@@ -30,7 +30,8 @@ SECRETS = [
     re.compile(r"(?i)https?://[^\s/]+:[^\s/@]+@"),
     re.compile(r"(?i)\b[A-Z]:[\\/](?:Users|Documents and Settings)[\\/]|file:///|\\\\[A-Za-z0-9_.-]+\\"),
 ]
-ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp3", ".pdf", ".csv", ".json", ".txt", ".sql", ".py", ".sh"}
+ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".pdf", ".csv", ".json", ".txt", ".sql", ".py", ".sh",
+                    ".mp3", ".wav", ".ogg", ".m4a", ".mp4", ".webm"}
 
 class Invalid(ValueError):
     pass

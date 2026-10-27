@@ -86,6 +86,19 @@
 .museum-asset-caption > span { flex: 1 1 12em; min-width: 0; }
 .museum-asset-caption > a { flex: 0 0 auto; }
 
+.museum-media iframe {
+  aspect-ratio: 16 / 9;
+  min-height: 200px;
+}
+
+.museum-media .museum-asset-caption > a {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.museum-media .museum-asset-caption > [hidden] { display: none; }
+
 .museum-asset :where(img, video, audio):focus-visible,
 .museum-asset-card:focus-visible,
 .museum-asset-preview:focus-visible {
