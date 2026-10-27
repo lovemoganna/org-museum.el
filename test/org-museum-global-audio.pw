@@ -11,6 +11,12 @@ async (page) => {
  await page.waitForFunction(()=>document.querySelector('#museum-global-player audio').currentTime>0.3);
  const before=await audio.evaluate(a=>{window.testPersistentAudio=a;return a.currentTime;});
  let reader=page.frameLocator('#museum-site-frame');
+ await reader.locator('#main-scroll').waitFor();
+ if(await page.locator('.museum-player-restore').isVisible())await page.locator('.museum-player-restore').click();
+ await reader.locator('#main-scroll').evaluate(n=>n.scrollBy(0,100));
+ await page.locator('.museum-player-restore').waitFor();
+ if(await audio.evaluate(a=>a.paused))throw Error('Scroll auto-fold paused audio');
+ await page.locator('.museum-player-restore').click();
  await reader.getByRole('link',{name:/全部笔记/}).first().click();
  await page.waitForURL(/index\.html/);
  await reader.getByRole('link',{name:'时间',exact:true}).click();
@@ -18,8 +24,7 @@ async (page) => {
  await page.waitForFunction(t=>document.querySelector('#museum-global-player audio').currentTime>t,before);
  const timeline=await audio.evaluate(a=>({sameElement:window.testPersistentAudio===a,time:a.currentTime,paused:a.paused}));
  if(!timeline.sameElement||timeline.paused)throw Error('Audio restarted on navigation');
- await page.locator('.museum-player-fold').click();
- if(await page.locator('.museum-player-bar').isVisible()||!await page.locator('.museum-player-restore').evaluate(n=>n===document.activeElement))throw Error('Fold or focus failed');
+ if(await page.locator('.museum-player-bar').isVisible()||!await page.locator('.museum-player-restore').isVisible())throw Error('Navigation did not auto-fold');
  await page.goBack();await page.waitForURL(/index\.html/);
  await page.goForward();await page.waitForURL(/timeline\.html/);
  const content=page.frames().find(f=>f.parentFrame()===page.mainFrame());
@@ -54,11 +59,11 @@ async (page) => {
  await page.locator('.museum-player-details').click();await page.screenshot({path:'output/global-audio-20261027/panel.png'});
  const result={before,timeline,layout,mode,queue:await page.locator('.museum-player-queue-item').count(),history:'Back/Forward and query sync passed'};
  await page.keyboard.press('Escape');await page.reload({waitUntil:'domcontentloaded'});
- await page.locator('.museum-player-bar').waitFor();
+ await page.locator('.museum-player-restore').waitFor();
  const restored=await page.locator('#museum-global-player audio').evaluate(a=>({paused:a.paused,preload:a.preload}));
  if(!restored.paused||restored.preload!=='none')throw Error('Reload autoplay');
- await page.locator('.museum-player-fold').click();await page.reload({waitUntil:'domcontentloaded'});
+ await page.locator('.museum-player-restore').click();await page.locator('.museum-player-fold').click();await page.reload({waitUntil:'domcontentloaded'});
  await page.locator('.museum-player-restore').waitFor();
  if(await page.locator('.museum-player-bar').isVisible()||!await page.locator('#museum-global-player audio').evaluate(a=>a.paused))throw Error('Folded refresh state');
- return {...result,restored,foldedNavigation:'pass',foldedReload:'pass',keyboardRestore:'pass'};
+ return {...result,restored,scrollAutoFold:'pass',foldedNavigation:'pass',foldedReload:'pass',keyboardRestore:'pass'};
 }

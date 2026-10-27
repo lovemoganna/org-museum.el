@@ -1971,6 +1971,7 @@
   var rootURL=new URL('../',script?script.src:location.href);
   var KEY='org-museum-player-v1',clients=new Set(),queue=[],current=null,root,bar,restore,frame,dialog,audio;
   var titleButton,timer,playButton,previous,next,seek,modeButton,queueList,notice,sourceLink,sourcePage;
+  var readingDocuments=new WeakSet();
   var mode='order',closed=false,folded=false,savedTime=0,lastSaved=0,catalogLoaded=false;
   var owner=Date.now().toString(36)+Math.random().toString(36).slice(2);
   var icons={fold:'<path d="m6 9 6 6 6-6"/>',music:'<path d="M9 18V5l12-2v13M9 8l12-2"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="18" cy="16" rx="3" ry="3"/>',play:'<path d="m9 5 10 7-10 7Z"/>',pause:'<path d="M8 5v14M16 5v14"/>',prev:'<path d="M6 5v14m12-14L8 12l10 7Z"/>',next:'<path d="M18 5v14M6 5l10 7-10 7Z"/>',list:'<path d="M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1"/>',close:'<path d="m6 6 12 12M6 18 18 6"/>'};
@@ -1995,9 +1996,26 @@
     restore.setAttribute('aria-expanded',String(!folded));
     document.documentElement.classList.toggle('museum-player-reserved',!closed&&!folded);
   }
-  function fold(value){
+  function fold(value,automatic){
+    var moveFocus=!automatic||bar.contains(document.activeElement);
     folded=value;visibility();save();
-    (folded?restore:bar.querySelector('.museum-player-fold')).focus({preventScroll:true});
+    if(moveFocus)(folded?restore:bar.querySelector('.museum-player-fold')).focus({preventScroll:true});
+  }
+  function autoFold(){
+    if(bar&&!closed&&!folded&&!dialog.open)fold(true,true);
+  }
+  function watchReading(win,doc){
+    if(doc.readyState==='loading'||readingDocuments.has(doc))return;
+    readingDocuments.add(doc);
+    var scroll=doc.getElementById('main-scroll')||doc.scrollingElement;
+    var anchor=scroll?scroll.scrollTop:0;
+    doc.addEventListener('scroll',function(e){
+      if(e.target!==scroll&&e.target!==doc)return;
+      var position=scroll?scroll.scrollTop:win.scrollY;
+      if(folded||closed||dialog.open){anchor=position;return;}
+      if(Math.abs(position-anchor)>=24){anchor=position;autoFold();}
+    },{capture:true,passive:true});
+    win.addEventListener('pagehide',autoFold);
   }
   function inline(doc){
     doc.documentElement.classList.add('museum-global-audio-ready');
@@ -2144,17 +2162,18 @@
     frame.addEventListener('load',function(){
       try{
         var doc=frame.contentDocument,win=frame.contentWindow;if(!doc||win.location.origin!==location.origin)return;
-        if(win.location.href!==location.href)history.replaceState(history.state,'',win.location.href);
+        if(win.location.href!==location.href){autoFold();history.replaceState(history.state,'',win.location.href);}
         document.title=doc.title;add(tracks(doc,win.location.href));
         if(position!==null){var sc=doc.getElementById('main-scroll');if(sc)sc.scrollTop=position;else win.scrollTo(0,position);position=null;}
+        watchReading(win,doc);
         var theme=doc.documentElement.getAttribute('data-theme');if(theme)document.documentElement.setAttribute('data-theme',theme);
         doc.addEventListener('click',function(e){var a=e.target.closest('a[href]');if(!a||a.hasAttribute('download')||a.target||e.ctrlKey||e.metaKey||e.shiftKey)return;var u=new URL(a.href);if(/^https?:$/.test(u.protocol)&&u.origin!==location.origin)a.target='_top';else if(u.origin===location.origin&&!/(?:\.html?|\/)$/i.test(u.pathname)&&u.hash!=='#')a.target='_blank';},true);
       }catch(_){notice.textContent='当前页面无法嵌入，可在新标签页打开原链接。';}
     });
     frame.src=location.href;root.prepend(frame);document.documentElement.classList.add('museum-player-host');
   }
-  function syncLocation(win){try{if(frame&&win===frame.contentWindow&&win.location.origin===location.origin&&location.href!==win.location.href)history.replaceState(history.state,'',win.location.href);}catch(_){} }
-  function connect(win){clients.add(win);syncLocation(win);refresh();}
+  function syncLocation(win){try{if(frame&&win===frame.contentWindow&&win.location.origin===location.origin&&location.href!==win.location.href){autoFold();history.replaceState(history.state,'',win.location.href);}}catch(_){} }
+  function connect(win){clients.add(win);syncLocation(win);try{watchReading(win,win.document);}catch(_){}refresh();}
   var api={toggle:toggle,add:add,state:state,refresh:refresh,connect:connect,syncLocation:syncLocation};
   try{
     if(window.parent!==window){
@@ -2164,7 +2183,7 @@
       ['pushState','replaceState'].forEach(function(name){var original=history[name];history[name]=function(){var value=original.apply(history,arguments);api.syncLocation(window);return value;};});
       window.addEventListener('hashchange',function(){api.syncLocation(window);});
       window.addEventListener('popstate',function(){api.syncLocation(window);});
-      function ready(){api.add(tracks(document,location.href));api.refresh();}
+      function ready(){api.connect(window);api.add(tracks(document,location.href));api.refresh();}
       if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',ready,{once:true});else ready();
       return;
     }
@@ -2187,7 +2206,8 @@
     }catch(_){}
   }
   window.addEventListener('museum-player-ui-ready',refresh);
-  window.addEventListener('pagehide',save);
+  window.addEventListener('pagehide',function(){autoFold();save();});
+  document.addEventListener('visibilitychange',function(){if(document.hidden)autoFold();});
   window.addEventListener('storage',function(e){if(e.key==='org-museum-player-owner'&&e.newValue&&!e.newValue.startsWith(owner+':')&&audio&&!audio.paused){audio.pause();notice.textContent='已在另一个标签页播放，此处暂停。';}});
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',ready,{once:true});else ready();
 })();
