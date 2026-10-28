@@ -45,6 +45,32 @@ class Validation(unittest.TestCase):
     def test_active_export_blocked(self):
         self.path.write_text(note(extra="#+INCLUDE: /private/file"), encoding="utf-8")
         with self.assertRaises(m.Invalid): m.validate(self.root)
+    def test_table_cell_line_breaks_allowed(self):
+        for br in ("<br>", "<br/>", "<br />"):
+            with self.subTest(br=br):
+                self.path.write_text(note(extra=(
+                    "| 项目 | 说明 |\n|------+------|\n"
+                    f"| *步骤* | 第一行@@html:{br}@@第二行@@html:{br}@@第三行 |")), encoding="utf-8")
+                self.assertEqual(len(m.validate(self.root)), 1)
+
+    def test_table_break_does_not_allow_other_raw_html(self):
+        for snippet in ("<br onclick='alert(1)'>", "<br style='color:red'>",
+                        "<br data-x='1'/>", "<script>alert(1)</script>",
+                        "<img src=x onerror=alert(1)>", "<div>text</div>",
+                        "<br>@@ @@html:<iframe src=x></iframe>"):
+            with self.subTest(snippet=snippet):
+                self.path.write_text(note(extra=f"| A | B@@html:{snippet}@@C |"), encoding="utf-8")
+                with self.assertRaises(m.Invalid):
+                    m.validate(self.root)
+
+    def test_break_exception_is_table_only(self):
+        for body in ("正文@@html:<br>@@第二行", "#+TITLE: A@@html:<br>@@B",
+                     "#+begin_export html\n<br>\n#+end_export"):
+            with self.subTest(body=body):
+                self.path.write_text(note(extra=body), encoding="utf-8")
+                with self.assertRaises(m.Invalid):
+                    m.validate(self.root)
+
     def test_outside_link_blocked(self):
         self.path.write_text(note(extra="[[file:../../../../outside.txt]]"), encoding="utf-8")
         with self.assertRaises(m.Invalid): m.validate(self.root)

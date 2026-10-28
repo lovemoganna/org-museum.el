@@ -87,7 +87,13 @@ def metadata(text: str):
             continue
         if blocks:
             continue
-        if re.search(r"@@html:|<script\b", line, re.I):
+        # Org pipe tables have one physical line per row. Permit only the
+        # attribute-free break snippet that ox-html already renders natively;
+        # remove it for validation, never rewrite the stored note or code.
+        active_line = line
+        if re.fullmatch(r"[ \t]*\|.*\|[ \t]*", line):
+            active_line = re.sub(r"@@html:<br(?: ?/)?>@@", "", line)
+        if re.search(r"@@html:|<script\b", active_line, re.I):
             raise Invalid("org: raw active HTML is unsupported")
         keyword = re.match(r"\s*#\+([\w_]+):\s*(.*)$", line, re.I)
         if keyword:
