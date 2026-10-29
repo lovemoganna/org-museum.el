@@ -1,0 +1,34 @@
+async(page)=>{
+ const ctx=await page.context().browser().newContext({permissions:['clipboard-read','clipboard-write']});page=await ctx.newPage();
+ await page.route('**/org-museum-theme.js*',r=>r.fulfill({path:'resources/org-museum-theme.js',contentType:'application/javascript'}));await page.route('**/org-museum.css*',r=>r.fulfill({path:'resources/org-museum.css',contentType:'text/css'}));
+ await page.goto('https://lovemoganna.github.io/org-notes/pages/collected/programming/duckdb-excel-relation/1a5d49f3-4ac5-49cc-a1cd-48c014530351.html?org-museum-theme=dark',{waitUntil:'domcontentloaded'});
+ // Disposable edge-case table, never written into the published note.
+ await page.evaluate(()=>{const host=document.createElement('div');host.className='museum-md';host.innerHTML='<table><tr><th>项目</th><th>说明</th></tr><tr><td>学习步骤</td><td>第一行：阅读原文<br>第二行：整理重点<br>第三行：查看文档</td></tr><tr><td>普通行</td><td>普通内容不变</td></tr><tr><td>长内容</td><td>第一段<br>第二段</td></tr></table>';document.querySelector('.article-container').append(host);});
+ const button=page.locator('.museum-md .museum-table-copy').first();await button.click();await page.getByRole('status').filter({hasText:'已复制'}).waitFor();
+ const clipboard=await page.evaluate(async()=>{const items=await navigator.clipboard.read();const item=items[0];return {text:await(await item.getType('text/plain')).text(),html:await(await item.getType('text/html')).text()}});
+ clipboard.text=clipboard.text.replace(/\r\n?/g,'\n');
+ if(!clipboard.text.includes('"第一行：阅读原文\n第二行：整理重点\n第三行：查看文档"')||!clipboard.text.startsWith('项目\t说明\n'))throw Error('TSV boundary error '+clipboard.text);
+ const structure=await page.evaluate(html=>{const doc=new DOMParser().parseFromString(html,'text/html');return {rows:doc.querySelectorAll('tr').length,breaks:doc.querySelectorAll('br').length,cells:doc.querySelectorAll('th,td').length}},clipboard.html);
+ if(structure.rows!==4||structure.breaks!==3||structure.cells!==8)throw Error('HTML cells '+JSON.stringify(structure));
+ const layouts=[];
+ await page.addScriptTag({path:'output/ui-quality-20261023-round3/package/axe.min.js'});
+ for(const theme of ['dark','light'])for(const width of [360,768,1280,1440]){
+  await page.setViewportSize({width,height:900});await page.evaluate(t=>document.documentElement.setAttribute('data-theme',t),theme);
+  await button.scrollIntoViewIfNeeded();const box=await button.boundingBox();if(box.height<44||box.x<0||box.x+box.width>width)throw Error('Bounds');
+  const axe=await page.evaluate(async()=>{const r=await axe.run(document.querySelector('.museum-md .museum-table-tools'));return r.violations.map(v=>v.id)});if(axe.length)throw Error(JSON.stringify(axe));layouts.push({theme,width,height:box.height,axe:0});
+  if(theme==='dark'&&[360,1280].includes(width))await page.screenshot({path:'output/table-copy-20261028/table-'+width+'.png'});
+ }
+ const dynamic=await page.evaluate(()=>{const host=document.createElement('div');host.className='museum-md';host.innerHTML='<table><tr><th>键</th><th colspan="2">值</th></tr><tr><td rowspan="2">A</td><td>含"引号"</td><td>=SUM(A1:A2)</td></tr><tr><td>X<br>Y</td><td>Z</td></tr></table>';document.querySelector('.article-container').append(host);return true;});
+ const last=page.locator('.museum-md .museum-table-copy').last();await last.waitFor();
+ const merged=await page.locator('.museum-md table').last().evaluate(t=>window.orgMuseumTableClipboard.data(t));
+ if(merged.text!=='键\t值\t\nA\t"含""引号"""\t=SUM(A1:A2)\n\t"X\nY"\tZ')throw Error('Merged grid '+merged.text);
+ await page.evaluate(()=>{window.savedWrite=navigator.clipboard.write;window.savedText=navigator.clipboard.writeText;navigator.clipboard.write=()=>Promise.reject(Error('denied'));navigator.clipboard.writeText=()=>Promise.reject(Error('denied'));});
+ await last.click();await page.locator('.museum-md .museum-table-copy-status').last().filter({hasText:'已复制'}).waitFor();
+ const fallback=(await page.evaluate(()=>navigator.clipboard.readText())).replace(/\r\n?/g,'\n');if(fallback!==merged.text)throw Error('Legacy clipboard fallback');
+ await page.evaluate(()=>{document.execCommand=()=>false;});await last.click();await page.locator('.museum-md .museum-table-copy-status').last().filter({hasText:'复制失败'}).waitFor();
+ if(!await last.evaluate(n=>n===document.activeElement)||await last.isDisabled())throw Error('Error recovery focus');
+ await page.evaluate(()=>{navigator.clipboard.write=window.savedWrite;navigator.clipboard.writeText=window.savedText;});
+ await last.focus();await page.keyboard.press('Enter');await page.locator('.museum-md .museum-table-copy-status').last().filter({hasText:'已复制'}).waitFor();
+ await page.emulateMedia({media:'print'});if(await button.isVisible())throw Error('Print toolbar visible');
+ return {clipboard:structure,plainText:clipboard.text,layouts,merged:merged.text,dynamic,legacyFallback:'pass',failureFeedback:'pass',keyboard:'pass',print:'pass'};
+}

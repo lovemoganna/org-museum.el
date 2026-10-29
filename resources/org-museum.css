@@ -3796,6 +3796,16 @@ body.museum-index-filtering .museum-index-shell {
   background: var(--museum-surface-muted);
 }
 
+.museum-table-tools { min-width: 0; margin: 24px 0; }
+.museum-table-tools > .museum-table-scroll { margin: 0; }
+.museum-table-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-height: 44px; margin-bottom: 4px; }
+.museum-table-copy-status { color: var(--museum-text-muted); font: 400 12px/1.5 var(--museum-sans-font); }
+.museum-table-copy { flex: 0 0 auto; min-height: 44px; padding: 8px 12px; border: 1px solid var(--museum-control-border); border-radius: var(--museum-radius-control); background: var(--museum-surface-muted); color: var(--museum-text); font: 500 12px/1.5 var(--museum-sans-font); cursor: pointer; }
+.museum-table-copy:hover { background: var(--museum-hover); }
+.museum-table-copy:focus-visible { outline: 2px solid var(--museum-focus-ring); outline-offset: 2px; }
+.museum-table-copy:disabled { cursor: wait; }
+@media print { .museum-table-toolbar { display: none !important; } }
+
 .museum-table-scroll:focus-visible {
   outline: 2px solid var(--museum-focus-ring);
   outline-offset: 3px;

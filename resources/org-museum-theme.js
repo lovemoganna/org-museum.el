@@ -1752,6 +1752,71 @@
   }
 })();
 
+/* Table copying preserves native cell boundaries and explicit line breaks. */
+(function(){
+  'use strict';
+  if(window.orgMuseumTableClipboard)return;
+  function data(table){
+    var rows=Array.from(table.rows),grid=[],clean=document.createElement('table');
+    rows.forEach(function(row,r){
+      var line=grid[r]||(grid[r]=[]),tr=document.createElement('tr'),column=0;
+      Array.from(row.cells).forEach(function(cell){
+        while(line[column]!==undefined)column++;
+        var text=cell.innerText.replace(/\r\n?/g,'\n').trim();
+        var width=cell.colSpan||1,height=Math.min(cell.rowSpan||rows.length,rows.length-r);
+        var copy=document.createElement(cell.tagName.toLowerCase());
+        if(width>1)copy.colSpan=width;if(height>1)copy.rowSpan=height;
+        text.split('\n').forEach(function(part,i){if(i)copy.append(document.createElement('br'));copy.append(document.createTextNode(part));});
+        tr.append(copy);
+        for(var y=0;y<height;y++)for(var x=0;x<width;x++){
+          var target=grid[r+y]||(grid[r+y]=[]);target[column+x]=y===0&&x===0?text:'';
+        }
+        column+=width;
+      });
+      clean.append(tr);
+    });
+    var columns=Math.max(0,...grid.map(function(row){return row.length;}));
+    var tsv=grid.map(function(row){return Array.from({length:columns},function(_,i){var value=row[i]||'';return /[\t\n"]/.test(value)?'"'+value.replace(/"/g,'""')+'"':value;}).join('\t');}).join('\n');
+    return {text:tsv,html:clean.outerHTML};
+  }
+  function prepare(scope){
+    var tables=Array.from(scope.querySelectorAll('table'));
+    if(scope.matches&&scope.matches('table'))tables.unshift(scope);
+    tables.forEach(function(table){
+      if(table.dataset.museumTableCopy==='1'||!table.closest('.article-container,.museum-md,.related-paper,.related-full')||table.parentElement.closest('table'))return;
+      table.dataset.museumTableCopy='1';
+      var scroll=table.closest('.museum-table-scroll');
+      if(!scroll){scroll=document.createElement('section');scroll.className='museum-table-scroll';scroll.tabIndex=0;scroll.setAttribute('aria-label','表格，可横向滚动');table.before(scroll);scroll.append(table);}
+      var tools=document.createElement('div');tools.className='museum-table-tools';
+      var toolbar=document.createElement('div');toolbar.className='museum-table-toolbar';
+      var status=document.createElement('span');status.className='museum-table-copy-status';status.setAttribute('role','status');
+      var button=document.createElement('button');button.type='button';button.className='museum-table-copy';button.textContent='复制表格';
+      var caption=table.caption?.textContent.trim();button.setAttribute('aria-label','复制表格'+(caption?'：'+caption:''));
+      toolbar.append(status,button);scroll.before(tools);tools.append(toolbar,scroll);
+      button.addEventListener('click',async function(){
+        if(!table.rows.length){status.textContent='表格为空，无可复制内容';return;}
+        button.disabled=true;status.textContent='正在复制…';
+        var payload=data(table),ok=false;
+        try{
+          if(navigator.clipboard?.write&&window.ClipboardItem){
+            await navigator.clipboard.write([new ClipboardItem({'text/plain':new Blob([payload.text],{type:'text/plain'}),'text/html':new Blob([payload.html],{type:'text/html'})})]);ok=true;
+          }
+        }catch(_){}
+        if(!ok)try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(payload.text);ok=true;}}catch(_){}
+        if(!ok){
+          var input=document.createElement('textarea');input.value=payload.text;input.readOnly=true;input.style.cssText='position:fixed;left:-9999px;top:0';document.body.append(input);input.select();
+          try{ok=document.execCommand('copy')===true;}catch(_){}input.remove();
+        }
+        button.disabled=false;button.focus({preventScroll:true});
+        status.textContent=ok?'已复制':'复制失败，请选择表格后手动复制';
+      });
+    });
+  }
+  window.orgMuseumTableClipboard={data:data,prepare:prepare};
+  function init(){prepare(document);if(typeof MutationObserver==='undefined')return;new MutationObserver(function(records){records.forEach(function(record){record.addedNodes.forEach(function(node){if(node.nodeType===1)prepare(node);});});}).observe(document.body,{childList:true,subtree:true});}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();
+})();
+
 /* Shared media: also handles full articles inserted by related reading. */
 (function () {
   'use strict';
