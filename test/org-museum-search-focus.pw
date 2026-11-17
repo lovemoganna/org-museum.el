@@ -1,0 +1,21 @@
+async(page)=>{
+ await page.route('**/org-museum.css*',r=>r.fulfill({path:'resources/org-museum.css',contentType:'text/css'}));
+ const checks=[];
+ for(const theme of ['dark','light'])for(const width of [360,768,1280,1440]){
+  await page.setViewportSize({width,height:900});await page.goto('https://lovemoganna.github.io/org-notes/index.html?org-museum-theme='+theme,{waitUntil:'domcontentloaded'});
+  const input=page.locator('#org-museum-global-search');await input.click();await input.fill('duckdb');
+  await page.locator('#museum-index-suggest').waitFor({state:'visible'});
+  const focus=await input.evaluate(n=>({outline:getComputedStyle(n).outlineStyle,shadow:getComputedStyle(n.parentElement).boxShadow,border:getComputedStyle(n.parentElement).borderColor,count:document.querySelectorAll('#org-museum-global-search').length}));
+  if(focus.outline!=='none'||focus.count!==1)throw Error(JSON.stringify(focus));
+  await page.keyboard.press('ArrowDown');
+  const active=await input.getAttribute('aria-activedescendant');if(!active)throw Error('Keyboard suggestion selection');
+  await page.keyboard.press('Escape');if(await input.getAttribute('aria-expanded')!=='false')throw Error('Escape');
+  const clear=page.getByRole('button',{name:'清空搜索',exact:true});await clear.focus();
+  const outline=await clear.evaluate(n=>getComputedStyle(n).outlineStyle);if(outline==='none')throw Error('Clear keyboard focus missing');
+  await page.keyboard.press('Enter');if(await input.inputValue()!=='')throw Error('Clear');
+  await input.focus();if(await input.evaluate(n=>getComputedStyle(n).outlineStyle)!=='none')throw Error('Keyboard input duplicate ring');
+  if(theme==='dark'&&[360,1280].includes(width))await page.screenshot({path:'output/search-ghost-20261116/after-'+width+'.png'});
+  checks.push({theme,width,...focus,clearOutline:outline,keyboard:'pass'});
+ }
+ return checks;
+}

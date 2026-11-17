@@ -16851,9 +16851,10 @@ button, .museum-settings-segment-btn, .museum-theme-segment-btn, .pathway-step, 
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Component focus rules own composite fields; the global rule is a fallback. */
 :focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--museum-accent) 80%, transparent) !important;
-  outline-offset: 3px !important;
+  outline: 2px solid var(--museum-focus-ring);
+  outline-offset: 3px;
 }
 
 /* 2. Index Matrix & Pathway Cards: Organic Lift & Fine Border Sheen */
