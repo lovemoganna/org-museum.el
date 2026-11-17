@@ -16881,15 +16881,15 @@ button, .museum-settings-segment-btn, .museum-theme-segment-btn, .pathway-step, 
   transform: translateY(-1px);
 }
 
-/* 3. Global Search Field: Luminous Inset & Command Aura */
-.museum-search-line input {
-  transition: all 220ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-.museum-search-line input:focus {
-  background: var(--museum-paper) !important;
-  box-shadow: 0 0 0 1px var(--museum-accent),
-              0 4px 16px -2px color-mix(in srgb, var(--museum-accent) 25%, transparent) !important;
-}
+/* The shared field owns its focus ring; never draw a second ring on its input. */
+.museum-search-line input:focus { background: transparent; box-shadow: none; }
+.museum-article-search-popover { position: fixed; z-index: 700; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; padding: 6px; border: 1px solid var(--museum-border); border-radius: var(--museum-radius-panel); background: var(--museum-paper); color: var(--museum-text); box-shadow: 0 8px 24px rgb(0 0 0 / .16); font: 400 13px/1.5 var(--museum-sans-font); }
+.museum-article-search-popover[hidden] { display: none; }
+.museum-article-search-option { display: flex; align-items: center; min-height: 44px; box-sizing: border-box; padding: 8px 10px; color: var(--museum-text); text-decoration: none; overflow-wrap: anywhere; }
+.museum-article-search-option:hover, .museum-article-search-option[aria-selected="true"] { background: var(--museum-hover); color: var(--museum-accent); }
+.museum-article-search-status { margin: 4px 10px; color: var(--museum-text-muted); font-size: 12px; }
+.museum-article-search-more { display: flex; align-items: center; min-height: 44px; padding: 0 10px; color: var(--museum-accent); border-top: 1px solid var(--museum-border-soft); }
+@media print { .museum-article-search-popover { display: none !important; } }
 
 /* 4. Article Presentation: Pristine Editorial Card & Vignette */
 .museum-article-layout {

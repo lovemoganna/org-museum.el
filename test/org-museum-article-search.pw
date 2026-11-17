@@ -1,0 +1,28 @@
+async(page)=>{
+ const ctx=await page.context().browser().newContext();page=await ctx.newPage();
+ await page.route('**/org-museum-theme.js*',r=>r.fulfill({path:'resources/org-museum-theme.js',contentType:'application/javascript'}));await page.route('**/org-museum.css*',r=>r.fulfill({path:'resources/org-museum.css',contentType:'text/css'}));
+ const base='https://lovemoganna.github.io/org-notes/',article=base+'pages/collected/knowledge/orderbook-depth/c4883a69-fda5-42be-a472-c7d15778358e.html';
+ await page.goto(article+'?org-museum-theme=dark',{waitUntil:'domcontentloaded'});
+ const results=[];
+ for(const theme of ['dark','light'])for(const width of [360,768,1280,1440]){
+  await page.setViewportSize({width,height:900});await page.evaluate(t=>document.documentElement.setAttribute('data-theme',t),theme);
+  const input=page.locator('#org-museum-global-search');await input.fill('duckdb');await input.focus();
+  const popup=page.locator('.museum-article-search-popover');await popup.waitFor({state:'visible'});
+  const items=page.locator('#museum-article-search-options [role=option]');if(await items.count()<1)throw Error('No real matches');
+  const focus=await input.evaluate(n=>({shadow:getComputedStyle(n).boxShadow,outline:getComputedStyle(n).outlineStyle,background:getComputedStyle(n).backgroundColor}));
+  if(focus.shadow!=='none'||focus.outline!=='none')throw Error(JSON.stringify(focus));
+  const rect=await popup.boundingBox();if(rect.x<0||rect.x+rect.width>width+1||rect.y+rect.height>901)throw Error('Popup bounds '+JSON.stringify(rect));
+  await page.keyboard.press('ArrowDown');if(!await input.getAttribute('aria-activedescendant'))throw Error('Keyboard selection');
+  await page.keyboard.press('Escape');if(await popup.isVisible())throw Error('Escape failed');
+  await input.fill('zzzzz-no-such-note');await popup.waitFor();if(!await page.locator('.museum-article-search-status').textContent().then(t=>t.includes('没有')))throw Error('Empty feedback');
+  await input.fill('');if(await popup.isVisible())throw Error('Empty query');
+  await input.fill('盘口');await popup.waitFor();if(theme==='dark'&&[360,1280].includes(width))await page.screenshot({path:'output/article-search-20261116/after-'+width+'.png'});
+  results.push({theme,width,items:await items.count(),focus,bounds:rect});
+ }
+ const input=page.locator('#org-museum-global-search');await input.fill('duckdb');
+ const first=page.locator('#museum-article-search-options [role=option]').first();const expected=await first.getAttribute('href');
+ await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');await page.waitForURL(expected);
+ await page.locator('#org-museum-global-search').fill('盘口');await page.locator('#museum-article-search-options [role=option]').first().click();await page.waitForURL(/orderbook-depth/);
+ await page.locator('#org-museum-global-search').fill('zzzzz-no-such-note');await page.keyboard.press('Enter');await page.waitForURL(u=>u.pathname.endsWith('index.html')&&u.searchParams.get('q')==='zzzzz-no-such-note');
+ return {results,keyboardNavigation:'pass',pointerNavigation:'pass',fullTextFallback:'pass',theme:await page.url()};
+}
